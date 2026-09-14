@@ -283,7 +283,11 @@ do
     f.external.sky_jobs_base.GetRegisteredNuiCallbacks = function() error("Missing registry") end
     f.load("sky_mechanicjob/source/client/nui_jobs_bridge.lua")
     f.run(f.threads[1])
-    assert(f.has("nui.proxy_registry_unavailable") and f.has("nui.proxy_exhausted"))
+    -- When the live registry export is unavailable the bridge must fall back to the
+    -- static callback set and register proxies instead of failing outright.
+    assert(f.has("nui.proxy_registry_unavailable") and f.has("nui.proxy_registry_fallback"))
+    assert(not f.has("nui.proxy_exhausted"))
+    assert(f.nui["job:getInfo"] ~= nil)
 
     local jobs = fixture("sky_jobs_base", false, true)
     jobs.load("sky_jobs_base/source/client/nui_registry.lua")

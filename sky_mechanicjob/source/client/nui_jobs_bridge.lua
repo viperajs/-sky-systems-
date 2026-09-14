@@ -59,6 +59,179 @@ local mechanicOwnedCallbacks = {
     ["lugWrench:choice"] = true,
 }
 
+-- Fallback set of sky_jobs_base NUI callbacks. Used only when the live
+-- GetRegisteredNuiCallbacks export is unavailable (e.g. an older sky_jobs_base
+-- build that predates the registry export), so the mechanic UI keeps working
+-- instead of losing every proxied callback. The dynamic registry is always
+-- preferred; keep this list in sync with sky_jobs_base RegisterNUICallback calls.
+-- Names owned by mechanic or the "sky:diagnostics:" namespace are filtered at
+-- registration time, so it is safe to list the full jobs_base set here.
+local jobsBaseFallbackCallbacks = {
+    "billingSpecs:list",
+    "billingSpecs:save",
+    "buyBasket",
+    "buyGarageVehicle",
+    "calendar:addEvent",
+    "calendar:getEvents",
+    "camera:getFocus",
+    "camera:photoResult",
+    "camera:setActive",
+    "camera:setFacing",
+    "camera:setFlash",
+    "camera:setFocus",
+    "camera:takePhoto",
+    "cctv:adjustView",
+    "cctv:bodycamSaveResult",
+    "cctv:getCameras",
+    "cctv:getVideoConfig",
+    "cctv:requestBodycamSave",
+    "cctv:setView",
+    "cctv:setWaypoint",
+    "change",
+    "changeClothing",
+    "changePlate",
+    "chat:createGroup",
+    "chat:deleteGroup",
+    "chat:getAllMembers",
+    "chat:getGroup",
+    "chat:getGroups",
+    "chat:getMessages",
+    "chat:getOpenChats",
+    "chat:getUnreadMessages",
+    "chat:leaveGroup",
+    "chat:removeGroupAdmin",
+    "chat:sendMessage",
+    "chat:setActive",
+    "chat:setGroupMembers",
+    "chat:setGroupOwner",
+    "chat:setProfilePhoto",
+    "chat:updateGroup",
+    "config:getImageBases",
+    "creator/addPoint",
+    "creator/clearPoint",
+    "creator/createEntry",
+    "creator/deleteEntry",
+    "creator/getData",
+    "creator/keyboard",
+    "creator/playSound",
+    "creator/removePoint",
+    "creator/renameEntry",
+    "creator/setActiveJob",
+    "creator/setInputFocus",
+    "creator/setJobStationBlip",
+    "creator/setPoint",
+    "creator/setView",
+    "customStorageBack",
+    "customStorageTransfer",
+    "deleteOutfit",
+    "deleteRole",
+    "demoteMember",
+    "documents:getRestrictedClassifications",
+    "duty:getSnapshot",
+    "duty:set",
+    "fireMember",
+    "gallery:addPhoto",
+    "gallery:deletePhoto",
+    "gallery:getPresignedUrl",
+    "getAllPlayerNames",
+    "getFinanceSnapshot",
+    "getGarageVehicleOptions",
+    "getGarageVehicles",
+    "getItemOptions",
+    "getLastTransactions",
+    "getLogs",
+    "getMembers",
+    "getPermissions",
+    "getSkin",
+    "getVehicleStats",
+    "giveBonus",
+    "incident:openMap",
+    "incident:setWaypoint",
+    "itemExists",
+    "job:getInfo",
+    "jobConfigurator:addCreatorZonePoint",
+    "jobConfigurator:clearCreatorZonePoints",
+    "jobConfigurator:close",
+    "jobConfigurator:configs",
+    "jobConfigurator:createCreatorEntry",
+    "jobConfigurator:delete",
+    "jobConfigurator:deleteCreatorEntry",
+    "jobConfigurator:deleteLocations",
+    "jobConfigurator:editCarryItemAttach",
+    "jobConfigurator:editVehicleAttach",
+    "jobConfigurator:getCurrentLocation",
+    "jobConfigurator:list",
+    "jobConfigurator:placeLocation",
+    "jobConfigurator:removeCreatorZonePoint",
+    "jobConfigurator:save",
+    "jobConfigurator:saveCreatorEntry",
+    "jobConfigurator:saveFeatures",
+    "jobConfigurator:saveInteractions",
+    "jobConfigurator:saveSettings",
+    "jobConfigurator:setCreatorZonePoint",
+    "jobConfigurator:setCreatorZonePreview",
+    "jobConfigurator:teleportLocation",
+    "lang:get",
+    "lockerTransfer",
+    "management:getData",
+    "management:getDocumentClassificationOptions",
+    "map:dispatch:accept",
+    "map:dispatch:delete",
+    "map:dispatch:done",
+    "map:exclusion:create",
+    "map:exclusion:delete",
+    "map:getDispatches",
+    "map:getExclusionZones",
+    "map:getHydrants",
+    "map:getOfficers",
+    "map:getPanics",
+    "map:getPings",
+    "map:monitorZone:create",
+    "map:monitorZone:delete",
+    "map:monitorZone:get",
+    "map:setActive",
+    "map:setWaypoint",
+    "moveRoleDown",
+    "moveRoleUp",
+    "multijob:close",
+    "multijob:getSnapshot",
+    "multijob:removeSelf",
+    "multijob:setDuty",
+    "multijob:switch",
+    "openStretcherEditor",
+    "openTrunk",
+    "openTrunkProps",
+    "parkOut",
+    "performTransaction",
+    "promoteMember",
+    "publicForms:addNote",
+    "publicForms:close",
+    "publicForms:getAll",
+    "publicForms:getMyForms",
+    "publicForms:getMyNotes",
+    "publicForms:getNotes",
+    "publicForms:submit",
+    "publicForms:updateStatus",
+    "radial:close",
+    "radial:select",
+    "respondInvite",
+    "rotate",
+    "saveOutfit",
+    "saveRole",
+    "sellGarageVehicle",
+    "sendInvite",
+    "storageTransfer",
+    "tablet:getApps",
+    "tablet:getRestrictedApps",
+    "tablet:launchApp",
+    "tablet:notificationAction",
+    "tablet:themeChanged",
+    "trunkPropSelect",
+    "trunkTransfer",
+    "updateGarageVehiclePlate",
+    "weaponExists",
+}
+
 local function getFallbackCallbackResponse(name, data)
     if name == "lang:get" then
         return {
@@ -150,20 +323,7 @@ local function proxyJobsBaseCallback(name)
     end)
 end
 
-local function registerJobsBaseProxies()
-    if GetResourceState("sky_jobs_base") ~= "started" then
-        return false
-    end
-
-    local ok, names = pcall(function()
-        return exports.sky_jobs_base:GetRegisteredNuiCallbacks()
-    end)
-
-    if not ok or type(names) ~= "table" then
-        logDiagnostics("warn", "nui.proxy_registry_unavailable", { message = not ok and tostring(names) or "Registry response is not a table." })
-        return false
-    end
-
+local function proxyCallbackNames(names, source)
     local registered = 0
     for _, name in ipairs(names) do
         if not mechanicOwnedCallbacks[name] and name:sub(1, 16) ~= "sky:diagnostics:" then
@@ -172,23 +332,55 @@ local function registerJobsBaseProxies()
         end
     end
 
-    logDiagnostics("info", "nui.proxy_registered", { count = registered, jobsCallbacks = #names })
+    logDiagnostics("info", "nui.proxy_registered", { count = registered, jobsCallbacks = #names, source = source })
     return registered > 0
+end
+
+-- allowFallback: when the live registry export is unavailable, register the
+-- static jobsBaseFallbackCallbacks set instead of giving up.
+local function registerJobsBaseProxies(allowFallback)
+    if GetResourceState("sky_jobs_base") ~= "started" then
+        return false
+    end
+
+    local ok, names = pcall(function()
+        return exports.sky_jobs_base:GetRegisteredNuiCallbacks()
+    end)
+
+    if ok and type(names) == "table" then
+        return proxyCallbackNames(names, "registry")
+    end
+
+    local detail = not ok and tostring(names) or "Registry response is not a table."
+    if not allowFallback then
+        logDiagnostics("warn", "nui.proxy_registry_unavailable", { message = detail })
+        return false
+    end
+
+    logDiagnostics("warn", "nui.proxy_registry_fallback", { message = detail, fallbackCallbacks = #jobsBaseFallbackCallbacks })
+    return proxyCallbackNames(jobsBaseFallbackCallbacks, "fallback")
 end
 
 CreateThread(function()
     local attempts = 0
-    while attempts < 60 do
-        if registerJobsBaseProxies() then
+    local maxAttempts = 20
+    while attempts < maxAttempts do
+        if registerJobsBaseProxies(false) then
             return
         end
         attempts = attempts + 1
         if attempts == 1 or attempts % 10 == 0 then
-            logDiagnostics("warn", "nui.proxy_retry", { attempt = attempts, maxAttempts = 60, jobsBaseState = GetResourceState("sky_jobs_base") })
+            logDiagnostics("warn", "nui.proxy_retry", { attempt = attempts, maxAttempts = maxAttempts, jobsBaseState = GetResourceState("sky_jobs_base") })
         end
         Wait(500)
     end
-    logDiagnostics("error", "nui.proxy_exhausted", { attempts = attempts, message = "Jobs NUI callbacks could not be registered after 30 seconds." })
+
+    -- Live registry never became available: fall back to the known callback set
+    -- so the mechanic UI keeps working (calls degrade gracefully per-callback if
+    -- sky_jobs_base is truly outdated and also lacks RunNuiCallback).
+    if not registerJobsBaseProxies(true) then
+        logDiagnostics("error", "nui.proxy_exhausted", { attempts = attempts, message = "Jobs NUI callbacks could not be registered; sky_jobs_base may need a restart." })
+    end
 end)
 
 AddEventHandler("onClientResourceStart", function(resourceName)

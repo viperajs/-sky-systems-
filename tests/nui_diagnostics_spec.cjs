@@ -20,7 +20,7 @@ function fixture(resource, readyFailures = 0) {
     clearTimeout: id => f.timers.delete(id),
     fetch: async (url, options) => {
       f.requests.push({ url, options });
-      if (url.endsWith('/sky:diagnostics:ui') && JSON.parse(options.body).stage === 'ready' && readyFailures-- > 0) {
+      if (url.endsWith('/sжky:diagnostics:ui') && JSON.parse(options.body).stage === 'ready' && readyFailures-- > 0) {
         return { ...f.reply('', false), status: 404 };
       }
       return f.reply();
