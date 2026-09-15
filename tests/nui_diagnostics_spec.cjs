@@ -20,7 +20,7 @@ function fixture(resource, readyFailures = 0) {
     clearTimeout: id => f.timers.delete(id),
     fetch: async (url, options) => {
       f.requests.push({ url, options });
-      if (url.endsWith('/sжky:diagnostics:ui') && JSON.parse(options.body).stage === 'ready' && readyFailures-- > 0) {
+      if (url.endsWith('/sky:diagnostics:ui') && JSON.parse(options.body).stage === 'ready' && readyFailures-- > 0) {
         return { ...f.reply('', false), status: 404 };
       }
       return f.reply();
@@ -174,5 +174,28 @@ function fixture(resource, readyFailures = 0) {
   await assert.rejects(mechanic.context.mechanicCall('orders:getAll'), error => error === originalError);
   assert.equal(mechanic.count('callback.exception'), 1);
   assert.equal(mechanic.timers.size, 0);
-  console.log('PASS: all three UI loggers, media/assets/JS/promises/Vue/router errors, browser ACK/settings, actual jobs/mechanic transports, slow callbacks, and camera playback.');
+
+  // Home dock favorites: persisted usage must survive until tablet:getApps
+  // resolves. Filtering saved routes against the currently-known app list drops
+  // job-specific favorites (e.g. /tablet/mechanic-orders) and reloads the dock
+  // late when the server list finally arrives. The app list is cached so the
+  // dock renders the real favorites on the first paint after a resource restart.
+  assert(!bundle.includes('if(!k.value[at])return Fe;'), 'dock usage must not be filtered by currently-known routes');
+  assert(bundle.includes('window.localStorage.getItem("tablet.appsCache")'), 'the home should seed the app list from cache');
+  assert(bundle.includes('window.localStorage.setItem("tablet.appsCache"'), 'the app list should be cached after loading');
+  assert(bundle.includes('catch{}c.value.length||(c.value=[])'), 'a failed app fetch should keep the cached app list');
+
+  const loaderStart = bundle.indexOf('L=()=>{if(typeof window>"u")return{}');
+  const loaderEnd = bundle.indexOf(',C=w(()=>Object.entries(_.value)', loaderStart);
+  assert(loaderStart > 0 && loaderEnd > loaderStart, 'dock usage loader should be extractable');
+  const usage = { '/tablet/mechanic-orders': { count: 7, lastUsed: 42 } };
+  const dockContext = vm.createContext({
+    wF: 'tablet.dockUsage',
+    k: { value: {} },
+    window: { localStorage: { getItem: () => JSON.stringify(usage) } },
+  });
+  vm.runInContext(`${bundle.slice(loaderStart, loaderEnd)};globalThis.loaded=L();`, dockContext);
+  assert.deepEqual(JSON.parse(JSON.stringify(dockContext.loaded)), usage, 'favorites for routes not yet in the app list must be preserved');
+
+  console.log('PASS: all three UI loggers, media/assets/JS/promises/Vue/router errors, browser ACK/settings, actual jobs/mechanic transports, slow callbacks, camera playback, and dock favorites persistence.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
