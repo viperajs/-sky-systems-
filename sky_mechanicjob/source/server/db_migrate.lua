@@ -4,9 +4,17 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server
 --  Automatic Database Schema Migrations & Table Init
 -- =====================================================
 
+local SCHEMA_VERSION = "1"
+local SCHEMA_VERSION_KVP = "sky_mechanicjob_schema_version"
+
 local function executeSchemaMigrations()
     if Config.AutoExecuteQuery == false then
         Functions.Log("info", "[db_migrate] AutoExecuteQuery is disabled. Skipping database schema migrations.")
+        return
+    end
+
+    if GetResourceKvpString(SCHEMA_VERSION_KVP) == SCHEMA_VERSION then
+        Functions.Log("info", "[db_migrate] Database schema already up to date (v" .. SCHEMA_VERSION .. "). Skipping migrations.")
         return
     end
 
@@ -146,6 +154,8 @@ local function executeSchemaMigrations()
             pcall(function() MySQL.Async.execute(alterQuery, {}) end)
         end
     end
+
+    SetResourceKvp(SCHEMA_VERSION_KVP, SCHEMA_VERSION)
 
     if Functions and Functions.Log then
         Functions.Log("info", "[db_migrate] Database tables verified successfully.")
