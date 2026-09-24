@@ -4,9 +4,26 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/j
 --  Deobfuscated & Cleaned
 -- =====================================================
 
+local DEFAULT_CONFIG_KEY = "sky_mechanicjob"
+local DEFAULT_PRIMARY_COLOR = "#EDC001"
+local MODEL_LOAD_TIMEOUT = 5000
+local COLLISION_LOAD_TIMEOUT = 5000
+local CARRY_ANIM_DICT = "anim@heists@box_carry@"
+local CARRY_ANIM_NAME = "idle"
+local ZONE_PREVIEW_HEIGHT = 100.0
+local ZONE_PREVIEW_STEP = 5.0
+
 local currentConfigKey = nil
 local isPlacementActive = false
 local locationDefinitionsMap = {}
+local openOptions = {}
+local cachedEntries = {}
+
+-- Preview entity and ped of the running placement editor, released on resource stop.
+local activePlacement = {
+    entity = nil,
+    ped = nil
+}
 
 local zonePreviewState = {
     active = false,
@@ -20,24 +37,202 @@ local placementConfig = {
     previewAlpha = 200
 }
 
+local zoneMarkerOptions = {
+    offset = vector3(0.0, 0.0, 0.2),
+    type = 1,
+    scaleX = 0.35, scaleY = 0.35, scaleZ = 0.35,
+    r = 255, g = 140, b = 0, a = 160
+}
+
+local defaultCreatorSections = {
+    { key = "general", label = "General", icon = "sliders" },
+    { key = "shop", label = "Shop", icon = "shopping-cart" },
+    { key = "props", label = "Props", icon = "box" },
+    { key = "vehicles", label = "Vehicles", icon = "car" },
+    { key = "locations", label = "Locations", icon = "map-pin" },
+    { key = "partsDelivery", label = "Parts Delivery", icon = "truck" },
+    { key = "tuningPrices", label = "Tuning Prices", icon = "wrench" }
+}
+
+local defaultExtensions = {
+    { key = "workshops", label = "Workshops", icon = "map-pin" },
+    { key = "partsTheft", label = "Parts Theft", icon = "wrench" },
+    { key = "vehicleCare", label = "Vehicle Care", icon = "sparkles" },
+    { key = "wear", label = "Wear", icon = "activity" },
+    { key = "wheelDamage", label = "Wheel Damage", icon = "gauge" },
+    { key = "mileageHud", label = "Mileage HUD", icon = "hash" },
+    { key = "carryItems", label = "Carry Items", icon = "box" },
+    { key = "features", label = "Features", icon = "sliders" },
+    { key = "interactions", label = "Interactions", icon = "mouse-pointer" }
+}
+
 local function getLocales()
     local localeKey = (Sky and Sky.Config and Sky.Config.locale) or "en"
-    local loc = Locales and Locales[localeKey] or (Locales and Locales.en) or {}
-    if type(loc.Nui) == "table" then
-        return loc.Nui
+    local current = Locales and Locales[localeKey]
+    if type(current) == "table" and type(current.Nui) == "table" then
+        return current.Nui
+    end
+
+    local fallback = Locales and Locales.en
+    if type(fallback) == "table" and type(fallback.Nui) == "table" then
+        return fallback.Nui
     end
     return {}
 end
 
+-- Global because source/client/creator.lua calls it with its own creator data.
+-- Only an array of location definitions replaces the configurator cache.
 function cacheLocationDefinitions(defs)
-    locationDefinitionsMap = {}
-    if type(defs) ~= "table" then return end
+    if type(defs) ~= "table" or type(defs[1]) ~= "table" then return end
 
+    locationDefinitionsMap = {}
     for _, def in ipairs(defs) do
         if type(def) == "table" and type(def.key) == "string" then
             locationDefinitionsMap[def.key] = def
         end
     end
+end
+
+local function requestFailed()
+    return { success = false, error = "request_failed" }
+end
+
+local function triggerServer(name, data)
+    local res = Sky.Cb.Trigger(name, data)
+    if type(res) ~= "table" then
+        return requestFailed()
+    end
+    return res
+end
+
+local function withConfigKey(data)
+    data = type(data) == "table" and data or {}
+    data.configKey = data.configKey or currentConfigKey
+    return data
+end
+
+local function firstTable(...)
+    for i = 1, select("#", ...) do
+        local value = select(i, ...)
+        if type(value) == "table" then
+            return value
+        end
+    end
+    return nil
+end
+
+-- The NUI identifies an entry by jobId/jobName, the server by entryId/entryName.
+local function resolveEntryId(data)
+    local entryId = data.entryId or data.jobId
+    if entryId ~= nil and entryId ~= "" then
+        return entryId
+    end
+
+    local name = data.entryName or data.jobName
+    if type(name) == "string" and name ~= "" then
+        for _, entry in ipairs(cachedEntries) do
+            if type(entry) == "table" and entry.name == name then
+                return entry.id
+            end
+        end
+    end
+    return nil
+end
+
+-- Builds the object the NUI configurator store loads with applyContext().
+-- The store reads the entry list from `entries` only and resets every field that
+-- is missing, so each response must carry the complete context.
+local function buildContext(serverData, options, optionsFirst)
+    serverData = type(serverData) == "table" and serverData or {}
+    options = type(options) == "table" and options or {}
+
+    local first, second = serverData, options
+    local entries
+    if optionsFirst then
+        first, second = options, serverData
+        entries = firstTable(options.entries, options.configs, serverData.entries, serverData.jobs, serverData.workshops, serverData.configs)
+    else
+        entries = firstTable(serverData.entries, serverData.jobs, serverData.workshops, serverData.configs)
+    end
+    entries = entries or {}
+    cachedEntries = entries
+
+    local function pick(key)
+        local value = first[key]
+        if value == nil then
+            value = second[key]
+        end
+        return value
+    end
+
+    local locationDefinitions = pick("locationDefinitions") or {}
+    cacheLocationDefinitions(locationDefinitions)
+
+    return {
+        configKey = serverData.configKey or currentConfigKey,
+        title = options.title or serverData.title or "Mechanic Jobs",
+        subtitle = options.subtitle or serverData.subtitle or "Configure mechanic jobs, shops, vehicles, and workshop locations.",
+        primaryColor = options.primaryColor or DEFAULT_PRIMARY_COLOR,
+        lang = options.lang or (Sky and Sky.Config and Sky.Config.locale) or "en",
+        entries = entries,
+        locationDefinitions = locationDefinitions,
+        creatorSections = options.creatorSections or serverData.creatorSections or defaultCreatorSections,
+        extensions = options.extensions or serverData.extensions or defaultExtensions,
+        featureDefinitions = pick("featureDefinitions") or {},
+        features = pick("features") or {},
+        settingDefinitions = pick("settingDefinitions") or {},
+        settings = pick("settings") or {},
+        interactionDefinitions = pick("interactionDefinitions") or {},
+        interactions = pick("interactions") or {},
+        -- UI hints only; the server callbacks must enforce who may edit.
+        canEdit = true,
+        isAdmin = true,
+        hasPermission = true,
+        permissions = {
+            canEdit = true,
+            canDelete = true,
+            canCreate = true,
+            canSave = true,
+            canPlace = true
+        }
+    }
+end
+
+local function fetchContext(configKey)
+    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:list", { configKey = configKey or currentConfigKey })
+    if type(res) ~= "table" or not res.success or type(res.data) ~= "table" then
+        return nil
+    end
+    return buildContext(res.data, openOptions, false)
+end
+
+-- Answers a successful write with the refreshed context so the NUI shows the change.
+-- Named fields of the original response (uid, entryId, coords, ...) are kept.
+local function withContext(res, configKey)
+    if type(res) ~= "table" then
+        return requestFailed()
+    end
+    if not res.success then
+        return res
+    end
+
+    local context = fetchContext(configKey)
+    if not context then
+        return res
+    end
+
+    for _, source in ipairs({ res.data, res }) do
+        if type(source) == "table" then
+            for key, value in pairs(source) do
+                if type(key) == "string" and context[key] == nil and key ~= "success" and key ~= "error" and key ~= "data" then
+                    context[key] = value
+                end
+            end
+        end
+    end
+
+    res.data = context
+    return res
 end
 
 local function getPlacementModel(locationData)
@@ -67,14 +262,19 @@ local function getPlacementEditor(locationData)
 end
 
 local function runCustomPlacementEditor(editorName, locationData)
-    if editorName == "hospitalBed" and locationData.configKey == "sky_ambulancejob" then
-        if exports and exports.sky_ambulancejob and exports.sky_ambulancejob.OpenJobConfiguratorHospitalBedPlacement then
+    if editorName == "hospitalBed" and locationData.configKey == "sky_ambulancejob" and GetResourceState("sky_ambulancejob") == "started" then
+        local ok, res = pcall(function()
             return exports.sky_ambulancejob:OpenJobConfiguratorHospitalBedPlacement({
                 entryId = locationData.entryId,
                 entryName = locationData.entryName,
                 coords = locationData.coords
             })
+        end)
+        if ok and type(res) == "table" then
+            return res
         end
+        print(("[sky_jobs_base][job_configurator] placement editor %s failed: %s"):format(editorName, tostring(res)))
+        return { success = false, error = "placement_editor_failed" }
     end
 
     return {
@@ -89,7 +289,7 @@ local function parseZonePoints(pointsData)
 
     for _, pt in ipairs(rawList) do
         local coords = (type(pt) == "table" and (pt.coords or pt)) or nil
-        if coords and coords.x and coords.y and coords.z then
+        if type(coords) == "table" and coords.x and coords.y and coords.z then
             table.insert(result, {
                 x = tonumber(coords.x) or 0.0,
                 y = tonumber(coords.y) or 0.0,
@@ -102,43 +302,18 @@ end
 
 local function drawZonePreview(points)
     local count = #points
-    if count < 2 then
-        for i = 1, count do
-            local pt = points[i]
-            for h = 0, 99 do
-                local zStart = pt.z + h
-                DrawLine(pt.x, pt.y, zStart, pt.x, pt.y, zStart + 1.0, 255, 140, 0, 200)
-            end
-            Sky.Show.Marker({ x = pt.x, y = pt.y, z = pt.z }, {
-                offset = vector3(0.0, 0.0, 0.2),
-                type = 1,
-                scaleX = 0.35, scaleY = 0.35, scaleZ = 0.35,
-                red = 255, green = 140, blue = 0, alpha = 160,
-                faceCamera = true, p19 = 2
-            })
-        end
-        return
-    end
-
     for i = 1, count do
         local p1 = points[i]
-        local p2 = points[(i % count) + 1]
+        DrawLine(p1.x, p1.y, p1.z, p1.x, p1.y, p1.z + ZONE_PREVIEW_HEIGHT, 255, 140, 0, 200)
 
-        for h = 0, 99 do
-            local zStart = p1.z + h
-            DrawLine(p1.x, p1.y, zStart, p1.x, p1.y, zStart + 1.0, 255, 140, 0, 200)
-            DrawLine(p1.x, p1.y, zStart + 1.0, p2.x, p2.y, p2.z + h + 1.0, 255, 140, 0, 180)
+        if count >= 2 then
+            local p2 = points[(i % count) + 1]
+            for h = 0.0, ZONE_PREVIEW_HEIGHT, ZONE_PREVIEW_STEP do
+                DrawLine(p1.x, p1.y, p1.z + h, p2.x, p2.y, p2.z + h, 255, 140, 0, 180)
+            end
         end
 
-        DrawLine(p1.x, p1.y, p1.z + 100.0, p2.x, p2.y, p2.z + 100.0, 255, 140, 0, 200)
-
-        Sky.Show.Marker({ x = p1.x, y = p1.y, z = p1.z }, {
-            offset = vector3(0.0, 0.0, 0.2),
-            type = 1,
-            scaleX = 0.35, scaleY = 0.35, scaleZ = 0.35,
-            red = 255, green = 140, blue = 0, alpha = 160,
-            faceCamera = true, p19 = 2
-        })
+        Sky.Show.Marker(p1, zoneMarkerOptions)
     end
 end
 
@@ -169,7 +344,7 @@ local function getCameraDirectionVectors()
 end
 
 local function getModelBottomOffset(modelHash)
-    local min, max = GetModelDimensions(modelHash)
+    local min = GetModelDimensions(modelHash)
     if min and min.z then
         return min.z
     end
@@ -184,6 +359,22 @@ local function adjustCoordsToGround(coords, bottomOffset)
     return coords
 end
 
+local function requestModel(modelHash)
+    if not IsModelInCdimage(modelHash) then
+        return false
+    end
+
+    RequestModel(modelHash)
+    local expire = GetGameTimer() + MODEL_LOAD_TIMEOUT
+    while not HasModelLoaded(modelHash) do
+        if GetGameTimer() > expire then
+            return false
+        end
+        Wait(0)
+    end
+    return true
+end
+
 local function getPlacementHelpText()
     local locKey = (Sky and Sky.Config and Sky.Config.locale) or "en"
     local currentLoc = (Locales and Locales[locKey]) or (Locales and Locales.en) or {}
@@ -196,17 +387,40 @@ local function getPlacementHelpText()
     return helpMsg
 end
 
-local function drawTextOverlay(text)
-    if type(text) ~= "string" or text == "" then return end
+-- A single text component holds at most 99 bytes; longer text is split without
+-- cutting a multi-byte UTF-8 character.
+local function addTextComponents(text)
+    local maxBytes = 99
+    local len = #text
+    local i = 1
+    while i <= len do
+        local j = math.min(i + maxBytes - 1, len)
+        while j < len and j > i do
+            local nextByte = text:byte(j + 1)
+            if nextByte < 0x80 or nextByte >= 0xC0 then break end
+            j = j - 1
+        end
+        AddTextComponentSubstringPlayerName(text:sub(i, j))
+        i = j + 1
+    end
+end
 
+local function setOverlayTextStyle()
     SetTextFont(4)
     SetTextScale(0.35, 0.35)
     SetTextColour(255, 255, 255, 230)
     SetTextCentre(true)
     SetTextOutline()
+end
 
+local function drawTextOverlay(text)
+    if type(text) ~= "string" or text == "" then return end
+
+    -- Each text command consumes the pending style, so it is set for the width
+    -- measurement and again for the draw.
+    setOverlayTextStyle()
     BeginTextCommandGetWidth("STRING")
-    AddTextComponentString(text)
+    addTextComponents(text)
     local width = EndTextCommandGetWidth(true)
 
     local padding = 0.008
@@ -216,9 +430,16 @@ local function drawTextOverlay(text)
 
     DrawRect(0.5, 0.9, rectW, rectH, 0, 0, 0, 160)
 
+    setOverlayTextStyle()
     BeginTextCommandDisplayText("STRING")
-    AddTextComponentString(text)
+    addTextComponents(text)
     EndTextCommandDisplayText(0.5, 0.9 - (baseHeight * 0.5))
+end
+
+local function drawPlacementPrompt()
+    BeginTextCommandDisplayHelp("STRING")
+    AddTextComponentSubstringPlayerName("Press ~INPUT_FRONTEND_RDOWN~ to place location at your position, or ~INPUT_FRONTEND_RRIGHT~ to cancel.")
+    EndTextCommandDisplayHelp(0, false, false, -1)
 end
 
 local function drawCarryAttachOverlay(attachData)
@@ -244,11 +465,9 @@ local function loadAnimDictTimeout(dict, timeout)
 end
 
 local function playCarryAnimation(ped)
-    local animDict = "anim@heists@box_carry@"
-    if not loadAnimDictTimeout(animDict, 2500) then return false end
+    if not HasAnimDictLoaded(CARRY_ANIM_DICT) then return false end
 
-    TaskPlayAnim(ped, animDict, "idle", 4.0, -4.0, -1, 49, 0.0, false, false, false)
-    RemoveAnimDict(animDict)
+    TaskPlayAnim(ped, CARRY_ANIM_DICT, CARRY_ANIM_NAME, 4.0, -4.0, -1, 49, 0.0, false, false, false)
     return true
 end
 
@@ -264,6 +483,44 @@ local function attachEntityToPedBone(entity, ped, attachData)
     AttachEntityToEntity(entity, ped, boneIdx, x, y, z, rx, ry, rz, true, true, false, true, 1, true)
 end
 
+local function releasePlacementEntity()
+    local entity = activePlacement.entity
+    if entity and DoesEntityExist(entity) then
+        DeleteEntity(entity)
+    end
+    activePlacement.entity = nil
+
+    local ped = activePlacement.ped
+    if ped then
+        if DoesEntityExist(ped) then
+            ClearPedTasks(ped)
+        end
+        RemoveAnimDict(CARRY_ANIM_DICT)
+    end
+    activePlacement.ped = nil
+end
+
+AddEventHandler("onResourceStop", function(resourceName)
+    if resourceName ~= GetCurrentResourceName() then return end
+    releasePlacementEntity()
+end)
+
+local function disablePlacementControls()
+    DisableControlAction(0, 30, true)  -- Move left/right
+    DisableControlAction(0, 31, true)  -- Move forward/back
+    DisableControlAction(0, 21, true)  -- Shift (sprint)
+    DisableControlAction(0, 22, true)  -- Space (jump)
+    DisableControlAction(0, 36, true)  -- Ctrl (stealth)
+    DisableControlAction(0, 44, true)  -- Q (cover)
+    DisableControlAction(0, 38, true)  -- E
+    DisableControlAction(0, 140, true)
+    DisableControlAction(0, 141, true)
+    DisableControlAction(0, 142, true)
+    DisableControlAction(0, 24, true)  -- Attack
+    DisableControlAction(0, 25, true)  -- Aim
+    DisableControlAction(0, 200, true) -- Esc pause menu, Esc cancels instead
+end
+
 local function startCarryItemAttachEditor(data, cb)
     if isPlacementActive then
         cb({ success = false, error = "placement_active" })
@@ -276,13 +533,29 @@ local function startCarryItemAttachEditor(data, cb)
         return
     end
 
+    isPlacementActive = true
+
     local modelHash = joaat(propName)
-    if not IsModelValid(modelHash) then
+    if not requestModel(modelHash) then
+        isPlacementActive = false
         cb({ success = false, error = "model_missing" })
         return
     end
 
-    isPlacementActive = true
+    local ped = PlayerPedId()
+    local pCoords = GetEntityCoords(ped)
+
+    local objectEntity = CreateObjectNoOffset(modelHash, pCoords.x, pCoords.y, pCoords.z + 0.2, false, false, false)
+    SetModelAsNoLongerNeeded(modelHash)
+    if not objectEntity or objectEntity == 0 then
+        isPlacementActive = false
+        cb({ success = false, error = "spawn_failed" })
+        return
+    end
+
+    activePlacement.entity = objectEntity
+    activePlacement.ped = ped
+
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
 
@@ -291,20 +564,6 @@ local function startCarryItemAttachEditor(data, cb)
         active = true,
         label = data.label or data.item or propName
     })
-
-    Sky.Load.Model(modelHash)
-    local ped = PlayerPedId()
-    local pCoords = GetEntityCoords(ped)
-
-    local objectEntity = CreateObjectNoOffset(modelHash, pCoords.x, pCoords.y, pCoords.z + 0.2, false, false, false)
-    if not objectEntity or objectEntity == 0 then
-        SetModelAsNoLongerNeeded(modelHash)
-        isPlacementActive = false
-        SetNuiFocus(true, true)
-        SendNUIMessage({ type = "jobConfigurator:placement", active = false })
-        cb({ success = false, error = "spawn_failed" })
-        return
-    end
 
     local attachData = type(data.attach) == "table" and data.attach or {}
     local currentAttach = {
@@ -322,27 +581,30 @@ local function startCarryItemAttachEditor(data, cb)
 
     SetEntityCollision(objectEntity, false, false)
     SetEntityAlpha(objectEntity, 220, false)
-    SetModelAsNoLongerNeeded(modelHash)
 
     attachEntityToPedBone(objectEntity, ped, currentAttach)
+    loadAnimDictTimeout(CARRY_ANIM_DICT, 2500)
     playCarryAnimation(ped)
 
-    CreateThread(function()
-        local editing = true
-        while editing do
-            DisableControlAction(0, 30, true)
-            DisableControlAction(0, 31, true)
-            DisableControlAction(0, 44, true)
-            DisableControlAction(0, 38, true)
-            DisableControlAction(0, 140, true)
-            DisableControlAction(0, 141, true)
-            DisableControlAction(0, 142, true)
-            DisableControlAction(0, 24, true)
-            DisableControlAction(0, 25, true)
+    local function finish(result)
+        releasePlacementEntity()
+        isPlacementActive = false
+        SendNUIMessage({ type = "jobConfigurator:placement", active = false })
+        SetNuiFocus(true, true)
+        cb(result)
+    end
 
+    CreateThread(function()
+        while true do
+            disablePlacementControls()
             drawCarryAttachOverlay(currentAttach)
 
-            if not IsEntityPlayingAnim(ped, "anim@heists@box_carry@", "idle", 3) then
+            if not DoesEntityExist(objectEntity) then
+                finish({ success = false, error = "cancelled" })
+                return
+            end
+
+            if not IsEntityPlayingAnim(ped, CARRY_ANIM_DICT, CARRY_ANIM_NAME, 3) then
                 playCarryAnimation(ped)
             end
 
@@ -372,10 +634,13 @@ local function startCarryItemAttachEditor(data, cb)
                 changed = true
             end
 
+            local shiftHeld = IsDisabledControlPressed(0, 21)
+            local ctrlHeld = IsDisabledControlPressed(0, 36)
+
             if IsDisabledControlPressed(0, 44) then -- Q
-                if IsControlPressed(0, 21) then -- Shift
+                if shiftHeld then
                     currentAttach.ry = currentAttach.ry - rotateStep
-                elseif IsControlPressed(0, 36) then -- Ctrl
+                elseif ctrlHeld then
                     currentAttach.rx = currentAttach.rx - rotateStep
                 else
                     currentAttach.rz = currentAttach.rz - rotateStep
@@ -384,9 +649,9 @@ local function startCarryItemAttachEditor(data, cb)
             end
 
             if IsDisabledControlPressed(0, 38) then -- E
-                if IsControlPressed(0, 21) then -- Shift
+                if shiftHeld then
                     currentAttach.ry = currentAttach.ry + rotateStep
-                elseif IsControlPressed(0, 36) then -- Ctrl
+                elseif ctrlHeld then
                     currentAttach.rx = currentAttach.rx + rotateStep
                 else
                     currentAttach.rz = currentAttach.rz + rotateStep
@@ -399,25 +664,13 @@ local function startCarryItemAttachEditor(data, cb)
             end
 
             if IsControlJustPressed(0, 191) then -- Enter
-                editing = false
-                DeleteEntity(objectEntity)
-                ClearPedTasks(ped)
-                isPlacementActive = false
-                SendNUIMessage({ type = "jobConfigurator:placement", active = false })
-                SetNuiFocus(true, true)
-                cb({ success = true, data = { attach = currentAttach } })
-                break
+                finish({ success = true, data = { attach = currentAttach } })
+                return
             end
 
-            if IsControlJustPressed(0, 177) then -- Backspace
-                editing = false
-                DeleteEntity(objectEntity)
-                ClearPedTasks(ped)
-                isPlacementActive = false
-                SendNUIMessage({ type = "jobConfigurator:placement", active = false })
-                SetNuiFocus(true, true)
-                cb({ success = false, error = "cancelled" })
-                break
+            if IsControlJustPressed(0, 177) then -- Backspace / Esc
+                finish({ success = false, error = "cancelled" })
+                return
             end
 
             Wait(0)
@@ -425,14 +678,14 @@ local function startCarryItemAttachEditor(data, cb)
     end)
 end
 
+-- Runs inside an existing placement session; cb receives the chosen coords.
 local function startPropPlacement(modelName, cb)
     local modelHash = joaat(modelName)
-    if not IsModelValid(modelHash) then
+    if not requestModel(modelHash) then
         cb({ success = false, error = "model_missing" })
         return
     end
 
-    Sky.Load.Model(modelHash)
     local ped = PlayerPedId()
     local pCoords = GetEntityCoords(ped)
     local pForward = GetEntityForwardVector(ped)
@@ -444,14 +697,17 @@ local function startPropPlacement(modelName, cb)
     )
 
     local bottomOffset = getModelBottomOffset(modelHash)
-    local targetPos = adjustCoordsToGround(spawnPos, bottomOffset)
+    -- Ground-snapped position without the user's height offset.
+    local basePos = adjustCoordsToGround(spawnPos, bottomOffset)
 
-    local propObj = CreateObjectNoOffset(modelHash, targetPos.x, targetPos.y, targetPos.z, false, false, false)
+    local propObj = CreateObjectNoOffset(modelHash, basePos.x, basePos.y, basePos.z, false, false, false)
+    SetModelAsNoLongerNeeded(modelHash)
     if not propObj or propObj == 0 then
-        SetModelAsNoLongerNeeded(modelHash)
         cb({ success = false, error = "spawn_failed" })
         return
     end
+
+    activePlacement.entity = propObj
 
     local moveStep = tonumber(placementConfig.moveStep) or 0.08
     local rotateStep = tonumber(placementConfig.rotateStep) or 3.0
@@ -465,25 +721,22 @@ local function startPropPlacement(modelName, cb)
     SetEntityCollision(propObj, false, false)
     FreezeEntityPosition(propObj, true)
     SetEntityAlpha(propObj, alphaVal, false)
-    SetModelAsNoLongerNeeded(modelHash)
+
+    local function finish(result)
+        releasePlacementEntity()
+        cb(result)
+    end
 
     CreateThread(function()
-        local placing = true
-        while placing do
-            DisableControlAction(0, 30, true)
-            DisableControlAction(0, 31, true)
-            DisableControlAction(0, 22, true)
-            DisableControlAction(0, 44, true)
-            DisableControlAction(0, 38, true)
-            DisableControlAction(0, 140, true)
-            DisableControlAction(0, 141, true)
-            DisableControlAction(0, 142, true)
-            DisableControlAction(0, 24, true)
-            DisableControlAction(0, 25, true)
-
+        while true do
+            disablePlacementControls()
             drawTextOverlay(helpText)
 
-            local currentCoords = GetEntityCoords(propObj)
+            if not DoesEntityExist(propObj) then
+                finish({ success = false, error = "cancelled" })
+                return
+            end
+
             local camForward, camRight = getCameraDirectionVectors()
             local moveVec = vector3(0.0, 0.0, 0.0)
 
@@ -492,22 +745,24 @@ local function startPropPlacement(modelName, cb)
             if IsControlPressed(0, 174) then moveVec = moveVec - (camRight * moveStep) end
             if IsControlPressed(0, 175) then moveVec = moveVec + (camRight * moveStep) end
 
-            if IsControlPressed(0, 10) then heightOffset = heightOffset + heightStep end
-            if IsControlPressed(0, 11) then heightOffset = heightOffset - heightStep end
-
-            if moveVec.x ~= 0.0 or moveVec.y ~= 0.0 then
-                local nextBase = vector3(currentCoords.x + moveVec.x, currentCoords.y + moveVec.y, currentCoords.z)
-                local groundPoint = adjustCoordsToGround(nextBase, bottomOffset)
-                local finalPos = vector3(groundPoint.x, groundPoint.y, groundPoint.z + heightOffset)
-                SetEntityCoordsNoOffset(propObj, finalPos.x, finalPos.y, finalPos.z, false, false, false)
+            local changed = false
+            if IsControlPressed(0, 10) then
+                heightOffset = heightOffset + heightStep
+                changed = true
+            end
+            if IsControlPressed(0, 11) then
+                heightOffset = heightOffset - heightStep
+                changed = true
             end
 
-            currentCoords = GetEntityCoords(propObj)
-            local groundBase = adjustCoordsToGround(currentCoords, bottomOffset)
-            local targetZ = groundBase.z + heightOffset
+            if moveVec.x ~= 0.0 or moveVec.y ~= 0.0 then
+                local nextBase = vector3(basePos.x + moveVec.x, basePos.y + moveVec.y, basePos.z)
+                basePos = adjustCoordsToGround(nextBase, bottomOffset)
+                changed = true
+            end
 
-            if math.abs(targetZ - currentCoords.z) > 0.01 then
-                SetEntityCoordsNoOffset(propObj, groundBase.x, groundBase.y, targetZ, false, false, false)
+            if changed then
+                SetEntityCoordsNoOffset(propObj, basePos.x, basePos.y, basePos.z + heightOffset, false, false, false)
             end
 
             if IsDisabledControlPressed(0, 44) then
@@ -520,10 +775,7 @@ local function startPropPlacement(modelName, cb)
             if IsControlJustPressed(0, 191) then -- Enter
                 local finalCoords = GetEntityCoords(propObj)
                 local finalHeading = GetEntityHeading(propObj)
-                DeleteEntity(propObj)
-                placing = false
-
-                cb({
+                finish({
                     success = true,
                     coords = {
                         x = finalCoords.x,
@@ -532,14 +784,12 @@ local function startPropPlacement(modelName, cb)
                         heading = finalHeading
                     }
                 })
-                break
+                return
             end
 
-            if IsControlJustPressed(0, 177) then -- Backspace
-                DeleteEntity(propObj)
-                placing = false
-                cb({ success = false, error = "cancelled" })
-                break
+            if IsControlJustPressed(0, 177) then -- Backspace / Esc
+                finish({ success = false, error = "cancelled" })
+                return
             end
 
             Wait(0)
@@ -561,16 +811,22 @@ RegisterNetEvent("sky_jobs_base:jobConfigurator:sync", function(configKey, data,
 end)
 
 RegisterNetEvent("sky_jobs_base:jobConfigurator:open", function(configKey, options)
-    currentConfigKey = configKey or "sky_mechanicjob"
+    if isPlacementActive then return end
+
+    currentConfigKey = (type(configKey) == "string" and configKey ~= "") and configKey or DEFAULT_CONFIG_KEY
     options = type(options) == "table" and options or {}
+    openOptions = options
 
-    local listRes = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:list", { configKey = currentConfigKey }) or {}
-    local serverData = listRes.data or {}
+    local listRes = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:list", { configKey = currentConfigKey })
+    local serverData = {}
+    if type(listRes) == "table" and listRes.success and type(listRes.data) == "table" then
+        serverData = listRes.data
+    else
+        print(("[sky_jobs_base][job_configurator] list failed for %s: %s"):format(currentConfigKey, tostring(type(listRes) == "table" and listRes.error or "no_response")))
+    end
 
-    local locationDefs = options.locationDefinitions or serverData.locationDefinitions or {}
-    local configs = options.configs or serverData.configs or {}
-
-    cacheLocationDefinitions(locationDefs)
+    local context = buildContext(serverData, options, true)
+    context.locales = getLocales()
 
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
@@ -579,133 +835,85 @@ RegisterNetEvent("sky_jobs_base:jobConfigurator:open", function(configKey, optio
 
     SendNUIMessage({
         type = "jobConfigurator:open",
-        data = {
-            configKey = currentConfigKey,
-            title = options.title or "Mechanic Jobs",
-            subtitle = options.subtitle or "Configure mechanic jobs, shops, vehicles, and workshop locations.",
-            primaryColor = options.primaryColor or "#EDC001",
-            lang = options.lang or (Sky and Sky.Config and Sky.Config.locale) or "en",
-            locales = getLocales(),
-            configs = configs,
-            locationDefinitions = locationDefs,
-            creatorSections = options.creatorSections or {
-                { key = "general", label = "General", icon = "sliders" },
-                { key = "shop", label = "Shop", icon = "shopping-cart" },
-                { key = "props", label = "Props", icon = "box" },
-                { key = "vehicles", label = "Vehicles", icon = "car" },
-                { key = "locations", label = "Locations", icon = "map-pin" },
-                { key = "partsDelivery", label = "Parts Delivery", icon = "truck" },
-                { key = "tuningPrices", label = "Tuning Prices", icon = "wrench" }
-            },
-            extensions = options.extensions or {
-                { key = "workshops", label = "Workshops", icon = "map-pin" },
-                { key = "partsTheft", label = "Parts Theft", icon = "wrench" },
-                { key = "vehicleCare", label = "Vehicle Care", icon = "sparkles" },
-                { key = "wear", label = "Wear", icon = "activity" },
-                { key = "wheelDamage", label = "Wheel Damage", icon = "gauge" },
-                { key = "mileageHud", label = "Mileage HUD", icon = "hash" },
-                { key = "carryItems", label = "Carry Items", icon = "box" },
-                { key = "features", label = "Features", icon = "sliders" },
-                { key = "interactions", label = "Interactions", icon = "mouse-pointer" }
-            },
-            featureDefinitions = options.featureDefinitions or serverData.featureDefinitions or {},
-            features = options.features or serverData.features or {},
-            settingDefinitions = options.settingDefinitions or serverData.settingDefinitions or {},
-            settings = options.settings or serverData.settings or {},
-            interactionDefinitions = options.interactionDefinitions or serverData.interactionDefinitions or {},
-            interactions = options.interactions or serverData.interactions or {},
-            canEdit = true,
-            isAdmin = true,
-            hasPermission = true,
-            permissions = {
-                canEdit = true,
-                canDelete = true,
-                canCreate = true,
-                canSave = true,
-                canPlace = true
-            }
-        }
+        data = context
     })
 end)
 
 RegisterNUICallback("jobConfigurator:configs", function(data, cb)
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:configs", {}) or { success = false, error = "request_failed" }
+    local res = triggerServer("sky_jobs_base:jobConfigurator:configs", {})
+
+    -- The selector reads data.configs; the server answers with a bare array.
+    if res.success and type(res.data) == "table" and res.data.configs == nil then
+        local configs = {}
+        for _, config in ipairs(res.data) do
+            if type(config) == "table" then
+                config.configKey = config.configKey or config.key
+                configs[#configs + 1] = config
+            end
+        end
+        res.data = { configs = configs }
+    end
     cb(res)
 end)
 
 RegisterNUICallback("jobConfigurator:list", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
+    data = withConfigKey(data)
 
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:list", data) or { success = false, error = "request_failed" }
+    local res = triggerServer("sky_jobs_base:jobConfigurator:list", data)
     if res.success and type(res.data) == "table" then
-        cacheLocationDefinitions(res.data.locationDefinitions)
+        res.data = buildContext(res.data, openOptions, false)
     end
     cb(res)
 end)
 
 RegisterNUICallback("jobConfigurator:save", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:save", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(withContext(triggerServer("sky_jobs_base:jobConfigurator:save", data), data.configKey))
 end)
 
 RegisterNUICallback("jobConfigurator:saveFeatures", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:saveFeatures", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:saveFeatures", data))
 end)
 
 RegisterNUICallback("jobConfigurator:saveSettings", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:saveSettings", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:saveSettings", data))
 end)
 
 RegisterNUICallback("jobConfigurator:saveInteractions", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:saveInteractions", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:saveInteractions", data))
 end)
 
 RegisterNUICallback("jobConfigurator:delete", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:delete", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    -- The NUI sends the whole entry as `job`; the server looks up `id`.
+    if data.id == nil and type(data.job) == "table" then
+        data.id = data.job.id
+    end
+    cb(withContext(triggerServer("sky_jobs_base:jobConfigurator:delete", data), data.configKey))
 end)
 
 RegisterNUICallback("jobConfigurator:createCreatorEntry", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
+    data = withConfigKey(data)
 
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:createCreatorEntry", data) or { success = false, error = "request_failed" }
+    local res = triggerServer("sky_jobs_base:jobConfigurator:createCreatorEntry", data)
+    -- The NUI reads the new id from data.entryId.
+    if res.success and type(res.data) ~= "table" then
+        res.data = { entryId = res.entryId, entry = res.entry }
+    end
     cb(res)
 end)
 
 RegisterNUICallback("jobConfigurator:saveCreatorEntry", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:saveCreatorEntry", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:saveCreatorEntry", data))
 end)
 
 RegisterNUICallback("jobConfigurator:deleteCreatorEntry", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:deleteCreatorEntry", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:deleteCreatorEntry", data))
 end)
 
 RegisterNUICallback("jobConfigurator:placeLocation", function(data, cb)
@@ -714,24 +922,36 @@ RegisterNUICallback("jobConfigurator:placeLocation", function(data, cb)
         return
     end
 
-    data = type(data) == "table" and data or {}
-    local customEditor = getPlacementEditor(data)
+    data = withConfigKey(data)
+    data.entryId = resolveEntryId(data)
+    data.entryName = data.entryName or data.jobName
+    data.uid = data.uid or data.pointUid
+    -- Without allowMultiple the server overwrites the first point of the same type,
+    -- so re-placing a known point or adding another one must set it.
+    if data.createNewPoint == true or data.uid ~= nil then
+        data.allowMultiple = true
+    end
 
-    if customEditor and customEditor ~= "" then
+    local configKey = data.configKey
+    local function saveLocation()
+        return withContext(triggerServer("sky_jobs_base:jobConfigurator:setLocation", data), configKey)
+    end
+
+    local customEditor = getPlacementEditor(data)
+    if customEditor then
         isPlacementActive = true
         SetNuiFocus(false, false)
         SetNuiFocusKeepInput(false)
 
         CreateThread(function()
             local res = runCustomPlacementEditor(customEditor, data)
-            local finalRes = nil
+            local finalRes
 
-            if res and res.success and type(res.coords) == "table" then
+            if type(res) == "table" and res.success and type(res.coords) == "table" then
                 data.coords = res.coords
-                local rpcRes = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:setLocation", data)
-                finalRes = rpcRes or { success = false, error = "request_failed" }
+                finalRes = saveLocation()
             else
-                finalRes = { success = false, error = (res and res.error) or "request_failed" }
+                finalRes = { success = false, error = (type(res) == "table" and res.error) or "request_failed" }
             end
 
             isPlacementActive = false
@@ -754,16 +974,6 @@ RegisterNUICallback("jobConfigurator:placeLocation", function(data, cb)
     local function finishPlacement(resData)
         isPlacementActive = false
         SendNUIMessage({ type = "jobConfigurator:placement", active = false })
-        if resData and resData.success then
-            SendNUIMessage({
-                type = "jobConfigurator:updateLocation",
-                data = resData
-            })
-            SendNUIMessage({
-                type = "jobConfigurator:setPoint",
-                data = resData
-            })
-        end
         SetNuiFocus(true, true)
         cb(resData)
     end
@@ -771,6 +981,7 @@ RegisterNUICallback("jobConfigurator:placeLocation", function(data, cb)
     local propModel = getPlacementModel(data)
 
     CreateThread(function()
+        -- Wait until the key that submitted the NUI action is released.
         while IsControlPressed(0, 191) or IsControlPressed(0, 201) do
             Wait(0)
         end
@@ -778,39 +989,36 @@ RegisterNUICallback("jobConfigurator:placeLocation", function(data, cb)
         local resultPayload = nil
         while not resultPayload do
             Wait(0)
-            BeginTextCommandDisplayHelp("STRING")
-            AddTextComponentSubstringPlayerName("Press ~INPUT_FRONTEND_RDOWN~ to place location at your position, or ~INPUT_FRONTEND_RRIGHT~ to cancel.")
-            EndTextCommandDisplayHelp(0, false, false, -1)
+            DisableControlAction(0, 200, true)
+            drawPlacementPrompt()
 
             if IsControlJustReleased(0, 191) or IsControlJustReleased(0, 201) or IsControlJustReleased(0, 38) then -- ENTER or E
-                if propModel and propModel ~= "" then
-                    local placementDone = false
+                if propModel then
+                    local placement = nil
                     startPropPlacement(propModel, function(pRes)
-                        if pRes and pRes.success and type(pRes.coords) == "table" then
-                            data.coords = pRes.coords
-                            local rpcRes = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:setLocation", data)
-                            resultPayload = rpcRes or { success = false, error = "request_failed" }
-                        else
-                            resultPayload = { success = false, error = (pRes and pRes.error) or "request_failed" }
-                        end
-                        placementDone = true
+                        placement = pRes or { success = false, error = "request_failed" }
                     end)
 
-                    while not placementDone do Wait(0) end
-                    break
+                    while not placement do Wait(0) end
+
+                    if placement.success and type(placement.coords) == "table" then
+                        data.coords = placement.coords
+                        resultPayload = saveLocation()
+                    else
+                        resultPayload = { success = false, error = placement.error or "request_failed" }
+                    end
+                else
+                    local ped = PlayerPedId()
+                    local coords = GetEntityCoords(ped)
+                    data.coords = {
+                        x = coords.x,
+                        y = coords.y,
+                        z = coords.z - 1.0,
+                        heading = GetEntityHeading(ped)
+                    }
+
+                    resultPayload = saveLocation()
                 end
-
-                local ped = PlayerPedId()
-                local coords = GetEntityCoords(ped)
-                data.coords = {
-                    x = coords.x,
-                    y = coords.y,
-                    z = coords.z - 1.0,
-                    heading = GetEntityHeading(ped)
-                }
-
-                local rpcRes = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:setLocation", data)
-                resultPayload = rpcRes or { success = false, error = "request_failed" }
             elseif IsControlJustReleased(0, 177) or IsControlJustReleased(0, 202) then
                 resultPayload = { success = false, error = "cancelled" }
             end
@@ -838,12 +1046,22 @@ RegisterNUICallback("jobConfigurator:teleportLocation", function(data, cb)
     local veh = GetVehiclePedIsIn(ped, false)
     local entityToTeleport = (veh ~= 0 and veh) or ped
 
+    -- Hold the entity until collision streams in so it does not fall through the map.
+    RequestCollisionAtCoord(x, y, z)
+    FreezeEntityPosition(entityToTeleport, true)
     SetEntityCoords(entityToTeleport, x, y, z, false, false, false, false)
 
     local heading = tonumber(coords.heading or data.heading)
     if heading then
         SetEntityHeading(entityToTeleport, heading)
     end
+
+    local expire = GetGameTimer() + COLLISION_LOAD_TIMEOUT
+    while not HasCollisionLoadedAroundEntity(entityToTeleport) and GetGameTimer() < expire do
+        RequestCollisionAtCoord(x, y, z)
+        Wait(0)
+    end
+    FreezeEntityPosition(entityToTeleport, false)
 
     cb({ success = true })
 end)
@@ -870,11 +1088,32 @@ RegisterNUICallback("jobConfigurator:getCurrentLocation", function(data, cb)
 end)
 
 RegisterNUICallback("jobConfigurator:deleteLocations", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
+    data = withConfigKey(data)
+    local configKey = data.configKey
+    local entryId = resolveEntryId(data)
 
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:deleteLocations", data) or { success = false, error = "request_failed" }
-    cb(res)
+    if type(data.points) ~= "table" then
+        data.entryId = entryId
+        cb(withContext(triggerServer("sky_jobs_base:jobConfigurator:deleteLocations", data), configKey))
+        return
+    end
+
+    -- The NUI sends a `points` list the server does not read. Delete each point by
+    -- uid; the point type is left out because it would remove every point of that type.
+    local res = { success = true }
+    for _, point in ipairs(data.points) do
+        local uid = type(point) == "table" and (point.pointUid or point.uid) or nil
+        if uid ~= nil and uid ~= "" then
+            res = triggerServer("sky_jobs_base:jobConfigurator:deleteLocations", {
+                configKey = configKey,
+                entryId = point.entryId or entryId,
+                uid = uid
+            })
+            if not res.success then break end
+        end
+    end
+
+    cb(withContext(res, configKey))
 end)
 
 local function startZonePointPlacement(data, rpcEvent, cb)
@@ -908,6 +1147,9 @@ local function startZonePointPlacement(data, rpcEvent, cb)
         local resultPayload = nil
         while not resultPayload do
             Wait(0)
+            DisableControlAction(0, 200, true)
+            drawPlacementPrompt()
+
             if IsControlJustReleased(0, 191) or IsControlJustReleased(0, 201) then
                 local ped = PlayerPedId()
                 local coords = GetEntityCoords(ped)
@@ -917,8 +1159,7 @@ local function startZonePointPlacement(data, rpcEvent, cb)
                     z = coords.z - 1.0
                 }
 
-                local rpcRes = Sky.Cb.Trigger(rpcEvent, data)
-                resultPayload = rpcRes or { success = false, error = "request_failed" }
+                resultPayload = triggerServer(rpcEvent, data)
             elseif IsControlJustReleased(0, 177) or IsControlJustReleased(0, 202) then
                 resultPayload = { success = false, error = "cancelled" }
             end
@@ -929,36 +1170,29 @@ local function startZonePointPlacement(data, rpcEvent, cb)
 end
 
 RegisterNUICallback("jobConfigurator:addCreatorZonePoint", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
+    data = withConfigKey(data)
     startZonePointPlacement(data, "sky_jobs_base:jobConfigurator:addCreatorZonePoint", cb)
 end)
 
 RegisterNUICallback("jobConfigurator:setCreatorZonePoint", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
+    data = withConfigKey(data)
     startZonePointPlacement(data, "sky_jobs_base:jobConfigurator:setCreatorZonePoint", cb)
 end)
 
 RegisterNUICallback("jobConfigurator:removeCreatorZonePoint", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:removeCreatorZonePoint", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:removeCreatorZonePoint", data))
 end)
 
 RegisterNUICallback("jobConfigurator:clearCreatorZonePoints", function(data, cb)
-    data = type(data) == "table" and data or {}
-    data.configKey = data.configKey or currentConfigKey
-
-    local res = Sky.Cb.Trigger("sky_jobs_base:jobConfigurator:clearCreatorZonePoints", data) or { success = false, error = "request_failed" }
-    cb(res)
+    data = withConfigKey(data)
+    cb(triggerServer("sky_jobs_base:jobConfigurator:clearCreatorZonePoints", data))
 end)
 
 RegisterNUICallback("jobConfigurator:setCreatorZonePreview", function(data, cb)
-    zonePreviewState.active = (data and data.active == true)
-    zonePreviewState.points = parseZonePoints(data and data.points)
+    data = type(data) == "table" and data or {}
+    zonePreviewState.active = data.active == true
+    zonePreviewState.points = parseZonePoints(data.points)
     cb({ success = true })
 end)
 
@@ -970,28 +1204,19 @@ RegisterNUICallback("jobConfigurator:close", function(data, cb)
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
     currentConfigKey = nil
+    openOptions = {}
+    cachedEntries = {}
     locationDefinitionsMap = {}
     zonePreviewState.active = false
     zonePreviewState.points = {}
     cb({ success = true })
 end)
 
+-- /jobconfig and /jobcreator are registered on the server (source/server/main.lua),
+-- which is where the command permission belongs. A client command with the same
+-- name would run locally and the server command would never be reached.
 RegisterNetEvent("sky_jobs_base:jobConfigurator:openCmd", function(configKey)
-    TriggerEvent("sky_jobs_base:jobConfigurator:open", configKey or "sky_mechanicjob", {
-        primaryColor = "#EDC001"
+    TriggerEvent("sky_jobs_base:jobConfigurator:open", configKey or DEFAULT_CONFIG_KEY, {
+        primaryColor = DEFAULT_PRIMARY_COLOR
     })
 end)
-
-RegisterCommand("jobconfig", function(source, args)
-    local configKey = (args and args[1]) or "sky_mechanicjob"
-    TriggerEvent("sky_jobs_base:jobConfigurator:open", configKey, {
-        primaryColor = "#EDC001"
-    })
-end, false)
-
-RegisterCommand("jobcreator", function(source, args)
-    local configKey = (args and args[1]) or "sky_mechanicjob"
-    TriggerEvent("sky_jobs_base:jobConfigurator:open", configKey, {
-        primaryColor = "#EDC001"
-    })
-end, false)
