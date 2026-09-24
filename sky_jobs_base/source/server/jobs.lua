@@ -1404,6 +1404,40 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:setLocation", function(source, da
     }
 end)
 
+local function findCreatorEntryIndex(entries, id)
+    for i, entry in ipairs(entries) do
+        if tostring(entry.id) == tostring(id) then
+            return i
+        end
+    end
+    return nil
+end
+
+local function isCreatorEntryNameTaken(entries, name, exceptId)
+    local wanted = name:lower()
+    for _, entry in ipairs(entries) do
+        if type(entry.name) == "string" and entry.name:lower() == wanted
+            and (exceptId == nil or tostring(entry.id) ~= tostring(exceptId)) then
+            return true
+        end
+    end
+    return false
+end
+
+local function createCreatorEntryId(entries, name)
+    local base = name:lower():gsub("[^%w_]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+    if base == "" then
+        base = "entry"
+    end
+
+    local id, suffix = base, 2
+    while findCreatorEntryIndex(entries, id) do
+        id = base .. "_" .. suffix
+        suffix = suffix + 1
+    end
+    return id
+end
+
 Sky.Cb.Register("sky_jobs_base:jobConfigurator:save", function(source, data)
     data = type(data) == "table" and data or {}
     local creatorData = loadWorkshopCreatorData()
@@ -1424,19 +1458,32 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:save", function(source, data)
             end
         end
         if not found then table.insert(creatorData.entries, data.entry) end
-    elseif type(data.job) == "table" and (data.job.id or data.job.jobKey or data.job.name) then
-        local found = false
-        if not data.job.id then
-            data.job.id = data.job.jobKey or (string.lower(data.job.name):gsub("%s+", "_"))
+    elseif type(data.job) == "table" then
+        local job = data.job
+        local name = type(job.name) == "string" and job.name:match("^%s*(.-)%s*$") or ""
+        if name == "" then
+            return { success = false, error = "invalid_name" }
         end
-        for i, e in ipairs(creatorData.entries) do
-            if e.id == data.job.id then
-                creatorData.entries[i] = data.job
-                found = true
-                break
+        job.name = name
+
+        local index = job.id ~= nil and findCreatorEntryIndex(creatorData.entries, job.id) or nil
+        if isCreatorEntryNameTaken(creatorData.entries, name, index and creatorData.entries[index].id) then
+            return { success = false, error = "job_name_exists" }
+        end
+
+        if index then
+            creatorData.entries[index] = job
+        else
+            if job.id == nil then
+                -- "New" and "Duplicate" send a copy of another entry without an id. Its
+                -- jobKey/job still name the source entry's job, so they must not be used
+                -- for the id; that made every new entry overwrite the entry with that id.
+                job.id = createCreatorEntryId(creatorData.entries, name)
+                job.jobKey = name
+                job.job = name
             end
+            table.insert(creatorData.entries, job)
         end
-        if not found then table.insert(creatorData.entries, data.job) end
     elseif type(data.data) == "table" then
         if type(data.data.entries) == "table" then
             creatorData.entries = data.data.entries
