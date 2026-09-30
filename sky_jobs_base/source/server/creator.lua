@@ -9,6 +9,13 @@ Sky_Jobs.Creator = Sky_Jobs.Creator or {}
 
 local creatorCache = {}
 
+-- Lets writers outside this file (the job configurator in jobs.lua) keep getData current.
+function Sky_Jobs.Creator.SetCachedData(creatorKey, data)
+    if type(creatorKey) == "string" and type(data) == "table" then
+        creatorCache[creatorKey] = data
+    end
+end
+
 local function ensureCreatorTable()
     if MySQL and MySQL.query and MySQL.query.await then
         MySQL.query.await([[

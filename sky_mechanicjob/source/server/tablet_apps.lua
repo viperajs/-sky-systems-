@@ -63,17 +63,40 @@ local MECHANIC_TABLET_APPS = {
     }
 }
 
+-- Jobs from config.lua plus the workshops created in /jobconfig, which the server's
+-- Config.Jobs does not contain.
+local function getMechanicJobNames()
+    local names, seen = {}, {}
+    local function add(name)
+        if type(name) == "string" and name ~= "" and not seen[name] then
+            seen[name] = true
+            names[#names + 1] = name
+        end
+    end
+
+    for _, j in ipairs(Config.Jobs or {}) do
+        add(type(j) == "table" and j.name or j)
+    end
+    if #names == 0 then
+        add("mechanic")
+    end
+    for _, name in ipairs(Functions.GetConfiguratorJobNames()) do
+        add(name)
+    end
+    return names
+end
+
 local function registerMechanicAppsWithJobsBase()
     local state = GetResourceState("sky_jobs_base")
     if state == "started" or state == "starting" then
         local finalApps = {}
-        local jobsToRegister = (Config.Jobs and #Config.Jobs > 0) and Config.Jobs or { { name = "mechanic" } }
-        
+        local jobNames = getMechanicJobNames()
+
         for _, app in ipairs(MECHANIC_TABLET_APPS) do
-            for _, j in ipairs(jobsToRegister) do
+            for _, jobName in ipairs(jobNames) do
                 local appCopy = {}
                 for k, v in pairs(app) do appCopy[k] = v end
-                appCopy.job = j.name
+                appCopy.job = jobName
                 table.insert(finalApps, appCopy)
             end
         end
@@ -89,6 +112,13 @@ end)
 
 AddEventHandler("onResourceStart", function(resourceName)
     if resourceName == "sky_jobs_base" then
+        registerMechanicAppsWithJobsBase()
+    end
+end)
+
+-- Server-local event from sky_jobs_base when a workshop job is added or renamed.
+AddEventHandler("sky_jobs_base:jobConfigurator:jobNamesUpdated", function(configKey)
+    if configKey == "sky_mechanicjob" then
         registerMechanicAppsWithJobsBase()
     end
 end)
