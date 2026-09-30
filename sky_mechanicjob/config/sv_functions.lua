@@ -217,6 +217,20 @@ function Functions.GetJobGrade(source)
     return 0
 end
 
+--- Job names of the workshops created in the shared /jobconfig UI (sky_jobs_base).
+--- The server keeps the Config.Jobs from config.lua, so these are checked in addition.
+---@return string[]
+function Functions.GetConfiguratorJobNames()
+    if not (Config and Config.UseJobConfigurator) or GetResourceState("sky_jobs_base") ~= "started" then
+        return {}
+    end
+
+    local ok, names = pcall(function()
+        return exports.sky_jobs_base:GetJobConfiguratorJobNames()
+    end)
+    return (ok and type(names) == "table") and names or {}
+end
+
 --- Check if player is a mechanic or belongs to configured mechanic jobs
 ---@param source number|string
 ---@return boolean
@@ -226,6 +240,11 @@ function Functions.IsMechanic(source)
 
     for _, j in ipairs(Config.Jobs or {}) do
         if j.name == jobName then
+            return true
+        end
+    end
+    for _, name in ipairs(Functions.GetConfiguratorJobNames()) do
+        if name == jobName then
             return true
         end
     end

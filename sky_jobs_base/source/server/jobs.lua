@@ -1263,6 +1263,31 @@ local function loadWorkshopCreatorData()
     return data
 end
 
+-- Job names used by the workshop entries (jobKey and name), for sky_mechanicjob's server
+-- side, which otherwise only knows the jobs in its own config.lua.
+local workshopJobNames = {}
+
+local function publishWorkshopJobNames(entries)
+    local names, seen = {}, {}
+    for _, entry in ipairs(type(entries) == "table" and entries or {}) do
+        if type(entry) == "table" then
+            for _, value in ipairs({ entry.jobKey, entry.name }) do
+                if type(value) == "string" and value ~= "" and not seen[value] then
+                    seen[value] = true
+                    names[#names + 1] = value
+                end
+            end
+        end
+    end
+
+    workshopJobNames = names
+    TriggerEvent("sky_jobs_base:jobConfigurator:jobNamesUpdated", "sky_mechanicjob", names)
+end
+
+registerExport("GetJobConfiguratorJobNames", function()
+    return workshopJobNames
+end)
+
 local function saveWorkshopCreatorData(data)
     if type(data) ~= "table" then return false end
     pcall(function()
@@ -1274,6 +1299,12 @@ local function saveWorkshopCreatorData(data)
             ["@data"] = json.encode(data)
         })
     end)
+    -- sky_jobs_base:creator:getData (creator.lua) serves players who join later and the
+    -- mechanic resource from a cache; without this it kept returning the data from
+    -- before the save until the resource restarted.
+    if Sky_Jobs.Creator and Sky_Jobs.Creator.SetCachedData then
+        Sky_Jobs.Creator.SetCachedData("workshopcreator", data)
+    end
     TriggerClientEvent("sky_jobs_base:creatorUpdated", -1, "workshopcreator", data)
 
     local features = type(data.features) == "table" and data.features or defaultFeatures
@@ -1281,8 +1312,23 @@ local function saveWorkshopCreatorData(data)
     local entries = type(data.entries) == "table" and data.entries or {}
 
     TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", -1, "sky_mechanicjob", entries, features, settings)
+    publishWorkshopJobNames(entries)
     return true
 end
+
+-- Publish once at start so sky_mechanicjob knows the workshop jobs before the first save.
+-- Retried because the database or the creator table (creator.lua) may not be ready yet.
+CreateThread(function()
+    for _ = 1, 20 do
+        local ok, data = pcall(loadWorkshopCreatorData)
+        if ok and type(data) == "table" then
+            publishWorkshopJobNames(data.entries)
+            return
+        end
+        Wait(3000)
+    end
+    print("[sky_jobs_base][job_configurator] could not load the workshop jobs at start; they are published again on the next save.")
+end)
 
 Sky.Cb.Register("sky_jobs_base:jobConfigurator:list", function(source, data)
     local configKey = tostring(data and data.configKey or "sky_mechanicjob")
@@ -1308,17 +1354,25 @@ end)
 
 Sky.Cb.Register("sky_jobs_base:jobConfigurator:setLocation", function(source, data)
     data = type(data) == "table" and data or {}
-    local entryId = tostring(data.entryId or data.id or data.creatorEntryId or data.configId or (data.entry and data.entry.id) or "mechanic_lscustoms")
+    local rawEntryId = data.entryId or data.id or data.creatorEntryId or data.configId or (type(data.entry) == "table" and data.entry.id) or nil
+    local entryId = tostring(rawEntryId or "mechanic_lscustoms")
     local locType = tostring(data.locationType or data.type or "location")
     local coords = type(data.coords) == "table" and data.coords or {}
 
     local creatorData = loadWorkshopCreatorData()
+    local entryName = tostring(data.entryName or data.name or ""):lower()
     local targetEntry = nil
     for _, entry in ipairs(creatorData.entries) do
-        if tostring(entry.id) == entryId or tostring(entry.name):lower() == tostring(data.entryName or data.name or ""):lower() then
+        if (rawEntryId ~= nil and tostring(entry.id) == entryId) or (entryName ~= "" and tostring(entry.name):lower() == entryName) then
             targetEntry = entry
             break
         end
+    end
+
+    -- A job that is not saved yet has no entry; falling back to the first entry put its
+    -- locations on another workshop.
+    if not targetEntry and (rawEntryId ~= nil or entryName ~= "") then
+        return { success = false, error = "entry_not_found" }
     end
 
     if not targetEntry and #creatorData.entries > 0 then
@@ -1424,6 +1478,44 @@ local function isCreatorEntryNameTaken(entries, name, exceptId)
     return false
 end
 
+-- Qbox job names are the case-sensitive keys of qbx_core's shared/jobs.lua, and a workshop
+-- only works for players whose job name matches exactly. Returns the name with Qbox's
+-- casing and whether that job exists (nil when qbx_core is not running).
+local function resolveQboxJobName(name)
+    if GetResourceState("qbx_core") ~= "started" then
+        return name, nil
+    end
+
+    local ok, jobs = pcall(function()
+        return exports.qbx_core:GetJobs()
+    end)
+    if not ok or type(jobs) ~= "table" then
+        return name, nil
+    end
+
+    if jobs[name] then
+        return name, true
+    end
+
+    local wanted = name:lower()
+    for jobName in pairs(jobs) do
+        if type(jobName) == "string" and jobName:lower() == wanted then
+            return jobName, true
+        end
+    end
+    return name, false
+end
+
+local function warnMissingQboxJob(source, name)
+    local message = ("Saved, but Qbox has no job named '%s'. Add it to qbx_core/shared/jobs.lua or rename this job; until then no player can use it."):format(name)
+    print(("[sky_jobs_base][job_configurator] %s"):format(message))
+
+    local src = tonumber(source)
+    if src and src > 0 then
+        TriggerClientEvent("sky_base:notification", src, "Job Configurator", message, "warn", 10000)
+    end
+end
+
 local function createCreatorEntryId(entries, name)
     local base = name:lower():gsub("[^%w_]+", "_"):gsub("^_+", ""):gsub("_+$", "")
     if base == "" then
@@ -1464,25 +1556,49 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:save", function(source, data)
         if name == "" then
             return { success = false, error = "invalid_name" }
         end
-        job.name = name
 
         local index = job.id ~= nil and findCreatorEntryIndex(creatorData.entries, job.id) or nil
-        if isCreatorEntryNameTaken(creatorData.entries, name, index and creatorData.entries[index].id) then
+        local existing = index and creatorData.entries[index] or nil
+
+        -- The editor's name field is the framework job name. "New" and "Duplicate" send a
+        -- copy of another entry without an id that still carries that entry's jobKey/job,
+        -- so new entries (and entries whose jobKey already follows their name) take their
+        -- jobKey/job from the name. Older entries with a separate jobKey, like
+        -- "Los Santos Customs" -> "mechanic", keep it.
+        local nameIsJob = existing == nil or existing.jobKey == nil or existing.jobKey == existing.name
+        local qboxJobFound = nil
+        if nameIsJob then
+            name, qboxJobFound = resolveQboxJobName(name)
+        end
+        job.name = name
+
+        if isCreatorEntryNameTaken(creatorData.entries, name, existing and existing.id) then
             return { success = false, error = "job_name_exists" }
         end
 
-        if index then
+        if nameIsJob then
+            job.jobKey = name
+            job.job = name
+        elseif job.jobKey == nil then
+            job.jobKey = existing.jobKey
+            job.job = job.job or existing.job
+        end
+
+        if existing then
+            if job.points == nil then
+                job.points = existing.points
+            end
             creatorData.entries[index] = job
         else
             if job.id == nil then
-                -- "New" and "Duplicate" send a copy of another entry without an id. Its
-                -- jobKey/job still name the source entry's job, so they must not be used
-                -- for the id; that made every new entry overwrite the entry with that id.
+                -- A generated id, so a new entry can never replace an existing one.
                 job.id = createCreatorEntryId(creatorData.entries, name)
-                job.jobKey = name
-                job.job = name
             end
             table.insert(creatorData.entries, job)
+        end
+
+        if qboxJobFound == false then
+            warnMissingQboxJob(source, name)
         end
     elseif type(data.data) == "table" then
         if type(data.data.entries) == "table" then

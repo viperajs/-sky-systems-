@@ -139,6 +139,35 @@ local function resolveEntryId(data)
     return nil
 end
 
+-- The NUI lists placed locations from entry.locations ({ uid, type, coords }), but the
+-- server and the game keep them in entry.points (flat x/y/z), so the list is rebuilt
+-- from points; otherwise every placed location keeps showing "Not set".
+local function pointsToLocations(entry)
+    local settings = type(entry.locationSettings) == "table" and entry.locationSettings or {}
+    local locations = {}
+    for _, point in ipairs(entry.points) do
+        if type(point) == "table" and point.type ~= nil and point.x ~= nil and point.y ~= nil and point.z ~= nil then
+            local uid = point.uid ~= nil and tostring(point.uid) or nil
+            local pointSettings = uid and settings[uid]
+            locations[#locations + 1] = {
+                uid = uid,
+                pointUid = uid,
+                type = point.type,
+                label = point.label,
+                modelSet = point.modelSet,
+                coords = {
+                    x = tonumber(point.x) or 0.0,
+                    y = tonumber(point.y) or 0.0,
+                    z = tonumber(point.z) or 0.0,
+                    heading = tonumber(point.heading) or 0.0
+                },
+                requiresOnDuty = not (type(pointSettings) == "table" and pointSettings.requiresOnDuty == false)
+            }
+        end
+    end
+    return locations
+end
+
 -- Builds the object the NUI configurator store loads with applyContext().
 -- The store reads the entry list from `entries` only and resets every field that
 -- is missing, so each response must carry the complete context.
@@ -155,6 +184,11 @@ local function buildContext(serverData, options, optionsFirst)
         entries = firstTable(serverData.entries, serverData.jobs, serverData.workshops, serverData.configs)
     end
     entries = entries or {}
+    for _, entry in ipairs(entries) do
+        if type(entry) == "table" and type(entry.points) == "table" then
+            entry.locations = pointsToLocations(entry)
+        end
+    end
     cachedEntries = entries
 
     local function pick(key)
@@ -221,15 +255,16 @@ local function withContext(res, configKey)
         return res
     end
 
-    for _, source in ipairs({ res.data, res }) do
-        if type(source) == "table" then
-            for key, value in pairs(source) do
-                if type(key) == "string" and context[key] == nil and key ~= "success" and key ~= "error" and key ~= "data" then
-                    context[key] = value
-                end
+    local function mergeNamedFields(source)
+        if type(source) ~= "table" then return end
+        for key, value in pairs(source) do
+            if type(key) == "string" and context[key] == nil and key ~= "success" and key ~= "error" and key ~= "data" then
+                context[key] = value
             end
         end
     end
+    mergeNamedFields(res.data)
+    mergeNamedFields(res)
 
     res.data = context
     return res
@@ -868,22 +903,41 @@ end)
 
 RegisterNUICallback("jobConfigurator:save", function(data, cb)
     data = withConfigKey(data)
+    -- `locations` is only the display copy of `points` built in buildContext.
+    if type(data.job) == "table" then
+        data.job.locations = nil
+    end
     cb(withContext(triggerServer("sky_jobs_base:jobConfigurator:save", data), data.configKey))
 end)
 
-RegisterNUICallback("jobConfigurator:saveFeatures", function(data, cb)
+-- The NUI store replaces its features/settings/interactions with data.<section> after a
+-- save, but the server answers with the bare map, which blanked the section. Answer with
+-- the refreshed context, which carries every section and its definitions.
+local function saveSection(section, eventName, data, cb)
     data = withConfigKey(data)
-    cb(triggerServer("sky_jobs_base:jobConfigurator:saveFeatures", data))
+
+    local res = triggerServer(eventName, data)
+    local saved = res.data
+    if res.success then
+        res.data = nil
+        res = withContext(res, data.configKey)
+        if type(res.data) ~= "table" then
+            res.data = { [section] = saved }
+        end
+    end
+    cb(res)
+end
+
+RegisterNUICallback("jobConfigurator:saveFeatures", function(data, cb)
+    saveSection("features", "sky_jobs_base:jobConfigurator:saveFeatures", data, cb)
 end)
 
 RegisterNUICallback("jobConfigurator:saveSettings", function(data, cb)
-    data = withConfigKey(data)
-    cb(triggerServer("sky_jobs_base:jobConfigurator:saveSettings", data))
+    saveSection("settings", "sky_jobs_base:jobConfigurator:saveSettings", data, cb)
 end)
 
 RegisterNUICallback("jobConfigurator:saveInteractions", function(data, cb)
-    data = withConfigKey(data)
-    cb(triggerServer("sky_jobs_base:jobConfigurator:saveInteractions", data))
+    saveSection("interactions", "sky_jobs_base:jobConfigurator:saveInteractions", data, cb)
 end)
 
 RegisterNUICallback("jobConfigurator:delete", function(data, cb)
@@ -925,6 +979,11 @@ RegisterNUICallback("jobConfigurator:placeLocation", function(data, cb)
     data = withConfigKey(data)
     data.entryId = resolveEntryId(data)
     data.entryName = data.entryName or data.jobName
+    -- A job that is not saved yet has no entry to put the location on.
+    if data.entryId == nil and data.entryName ~= nil then
+        cb({ success = false, error = "entry_not_found" })
+        return
+    end
     data.uid = data.uid or data.pointUid
     -- Without allowMultiple the server overwrites the first point of the same type,
     -- so re-placing a known point or adding another one must set it.
@@ -1095,6 +1154,13 @@ RegisterNUICallback("jobConfigurator:deleteLocations", function(data, cb)
     if type(data.points) ~= "table" then
         data.entryId = entryId
         cb(withContext(triggerServer("sky_jobs_base:jobConfigurator:deleteLocations", data), configKey))
+        return
+    end
+
+    -- Without an entry id the server deletes the uid from every entry, which for a job
+    -- that is not saved yet (its points are copies) hit the entry it was copied from.
+    if entryId == nil and (data.jobName ~= nil or data.entryName ~= nil) then
+        cb({ success = false, error = "entry_not_found" })
         return
     end
 
