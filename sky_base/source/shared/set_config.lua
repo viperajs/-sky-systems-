@@ -59,8 +59,8 @@ if Sky.Config.garage == "auto" then
         { resource = "qbx_core", value = "qbox" }
     }, "Could not detect the garage automatically.")
 
-    if Sky.Config.inventory == "ds-servercreator" then
-        Sky.Config.inventory = Sky.Config.framework
+    if Sky.Config.garage == "ds-servercreator" then
+        Sky.Config.garage = Sky.Config.framework
         Sky.Debug("info", "DS ServerCreator detected, using framework garage functions (" .. tostring(Sky.Config.framework) .. ").")
     end
 end

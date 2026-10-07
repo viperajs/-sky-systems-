@@ -30,8 +30,8 @@ end
 function Functions.ShowHelpNotification(msg, key)
     if GetResourceState("ox_lib") == "started" then
         Sky.Show.RegisterToggle("helpNotify", {
-            key = key,
-            msg = msg,
+            key = key or "E",
+            msg = msg or "",
             show = function(self)
                 exports.ox_lib:showTextUI("["..self.key.."] "..self.msg)
             end,

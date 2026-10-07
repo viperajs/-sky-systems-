@@ -46,13 +46,11 @@ if Sky.Config.framework == "qbox" then
     -- server-bound sync runs via the server-side QBCore:Server:OnJobUpdate handler
     RegisterNetEvent('QBCore:Client:OnJobUpdate', function(JobInfo)
         TriggerEvent("sky_base:updateJob", JobInfo)
-        TriggerServerEvent("sky_base:updateJob", JobInfo)
     end)
 
     -- catch direct duty toggle from QBCore/QBox native system
     RegisterNetEvent('QBCore:Client:SetDuty', function(onDuty)
         TriggerEvent("sky_base:updateDuty", onDuty == true)
-        TriggerServerEvent("sky_base:syncDuty", onDuty == true)
     end)
 
     --Added Item
@@ -77,24 +75,8 @@ if Sky.Config.framework == "qbox" then
         TriggerEvent("sky_base:playerUnloaded", src)
     end)
 
-    -- catch server-side job/duty changes from QBox (e.g. admin, other scripts)
-    AddEventHandler("QBCore:Server:OnJobUpdate", function(src, job)
-        if src and job and type(job) == "table" then
-            if Sky_Jobs and Sky_Jobs.PlayerCache and Sky_Jobs.PlayerCache.UpdateJob then
-                Sky_Jobs.PlayerCache.UpdateJob(src, job)
-            end
-        end
-    end)
-
-    -- authoritative duty sync: qbx_core fires this server-locally from SetJobDuty;
-    -- re-reads PlayerData.job (incl. onduty) instead of trusting any forwarded flag
-    AddEventHandler("QBCore:Server:SetDuty", function(src)
-        if not src then return end
-        local xPlayer = exports.qbx_core:GetPlayer(src)
-        if xPlayer and Sky_Jobs and Sky_Jobs.PlayerCache and Sky_Jobs.PlayerCache.UpdateJob then
-            Sky_Jobs.PlayerCache.UpdateJob(src, xPlayer.PlayerData.job)
-        end
-    end)
+    -- Job and duty changes are read by the job resources themselves (sky_jobs_base listens
+    -- to QBCore:Server:SetDuty / OnJobUpdate); Sky_Jobs does not exist in this resource.
 
     function Sky.FW.IsPlayerOnline(sourceOrIdentifier)
         local xPlayer = exports.qbx_core:GetPlayer(sourceOrIdentifier)
@@ -137,36 +119,54 @@ if Sky.Config.framework == "qbox" then
         return xPlayer
     end
 
+    -- Player by server id (online only), FiveM identifier (online) or citizenid (online,
+    -- then offline). Sky.FW.GetIdentifier hands out citizenids, which qbx_core:GetPlayer
+    -- does not resolve, and the old offline lookup searched the license column with them.
+    local function resolvePlayer(identifier, allowOffline)
+        local src = tonumber(identifier)
+        if src then
+            return exports.qbx_core:GetPlayer(src)
+        end
+        if type(identifier) ~= "string" or identifier == "" then
+            return nil
+        end
+        if identifier:find(":", 1, true) then
+            return exports.qbx_core:GetPlayer(identifier)
+        end
+
+        local xPlayer = exports.qbx_core:GetPlayerByCitizenId(identifier)
+        if not xPlayer and allowOffline ~= false then
+            xPlayer = getOfflinePlayerSafe(identifier, "citizenid")
+        end
+        return xPlayer
+    end
+
+    local function getCharinfo(identifier)
+        local xPlayer = resolvePlayer(identifier)
+        local charinfo = xPlayer and xPlayer.PlayerData and xPlayer.PlayerData.charinfo
+        return type(charinfo) == "table" and charinfo or nil
+    end
+
+    -- nil when unknown, so callers can fall back (e.g. to GetPlayerName).
     function Sky.FW.GetName(sourceOrIdentifier)
-        local xPlayer = exports.qbx_core:GetPlayer(sourceOrIdentifier)
+        local charinfo = getCharinfo(sourceOrIdentifier)
+        if not charinfo then return nil end
 
-        if not xPlayer then
-            xPlayer = getOfflinePlayerSafe(sourceOrIdentifier, "name lookup identifier")
-        end
-
-        if not xPlayer or not xPlayer.PlayerData or not xPlayer.PlayerData.charinfo then
-            return "Unknown Player"
-        end
-
-        return Sky.String.SanitizeForSQL(string.format(
-            "%s %s",
-            xPlayer.PlayerData.charinfo.firstname or "",
-            xPlayer.PlayerData.charinfo.lastname or ""
-        ))
+        local name = string.format("%s %s", charinfo.firstname or "", charinfo.lastname or ""):match("^%s*(.-)%s*$")
+        if name == "" then return nil end
+        return Sky.String.SanitizeForSQL(name)
     end
 
     function Sky.FW.GetFirstname(sourceOrIdentifier)
-        local xPlayer = exports.qbx_core:GetPlayer(sourceOrIdentifier)
-        if xPlayer == nil then xPlayer = getOfflinePlayerSafe(sourceOrIdentifier, "firstname lookup identifier") end
-        if not xPlayer or not xPlayer.PlayerData or not xPlayer.PlayerData.charinfo then return end
-        return Sky.String.SanitizeForSQL(xPlayer.PlayerData.charinfo.firstname)
+        local charinfo = getCharinfo(sourceOrIdentifier)
+        if not charinfo then return end
+        return Sky.String.SanitizeForSQL(charinfo.firstname or "")
     end
 
     function Sky.FW.GetLastname(sourceOrIdentifier)
-        local xPlayer = exports.qbx_core:GetPlayer(sourceOrIdentifier)
-        if xPlayer == nil then xPlayer = getOfflinePlayerSafe(sourceOrIdentifier, "lastname lookup identifier") end
-        if not xPlayer or not xPlayer.PlayerData or not xPlayer.PlayerData.charinfo then return end
-        return Sky.String.SanitizeForSQL(xPlayer.PlayerData.charinfo.lastname)
+        local charinfo = getCharinfo(sourceOrIdentifier)
+        if not charinfo then return end
+        return Sky.String.SanitizeForSQL(charinfo.lastname or "")
     end
 
     function Sky.FW.GetGender(source)
@@ -202,38 +202,41 @@ if Sky.Config.framework == "qbox" then
         }
     end
 
+    local function normalizeAccount(account)
+        if account == "money" then return "cash" end
+        if account == "black_money" then return "black" end
+        return account
+    end
+
+    local function isValidAmount(amount)
+        return type(amount) == "number" and amount == amount and amount > 0 and amount ~= math.huge
+    end
+
     function Sky.FW.GetAccountMoney(source, account)
         local xPlayer = exports.qbx_core:GetPlayer(source)
-        if account == "money" then
-            account = "cash"
-        elseif account == "black_money" then
-            account = "black"
-        end
-        return xPlayer.PlayerData.money[account]
+        if not xPlayer then return 0 end
+        return tonumber(xPlayer.PlayerData.money[normalizeAccount(account)]) or 0
     end
 
+    -- Returns whether the money was added; callers refund or abort on false.
     function Sky.FW.AddAccountMoney(source, account, amount)
         local xPlayer = exports.qbx_core:GetPlayer(source)
-        if account == "money" then
-            account = "cash"
-        elseif account == "black_money" then
-            account = "black"
-        end
-        xPlayer.Functions.AddMoney(account, amount)
+        amount = tonumber(amount)
+        if not xPlayer or not isValidAmount(amount) then return false end
+        return xPlayer.Functions.AddMoney(normalizeAccount(account), amount) ~= false
     end
 
+    -- Only true when qbx_core actually removed the money (negative amounts, unknown
+    -- accounts and vetoed removals used to count as paid).
     function Sky.FW.RemoveAccountMoney(source, account, amount)
         local xPlayer = exports.qbx_core:GetPlayer(source)
-        if account == "money" then
-            account = "cash"
-        elseif account == "black_money" then
-            account = "black"
-        end
-        if xPlayer.PlayerData.money[account] >= amount then
-            xPlayer.Functions.RemoveMoney(account, amount)
-            return true
-        end
-        return false
+        amount = tonumber(amount)
+        if not xPlayer or not isValidAmount(amount) then return false end
+
+        account = normalizeAccount(account)
+        local balance = tonumber(xPlayer.PlayerData.money[account])
+        if not balance or balance < amount then return false end
+        return xPlayer.Functions.RemoveMoney(account, amount) ~= false
     end
 
     local jobUsersCache = {}
@@ -292,30 +295,23 @@ if Sky.Config.framework == "qbox" then
     ---@param source string|number Can be license or player id
     ---@return string
     function Sky.FW.GetJob(source)
-        if Sky.FW.IsPlayerOnline(source) then
-            local xPlayer = exports.qbx_core:GetPlayer(source)
-            if xPlayer ~= nil then
-                return xPlayer.PlayerData.job.name
-            else
-                return ""
-            end
-        else
-            local jobData = Sky.DB.GetValue("players", "license", source, "job")
-            if not jobData then
-                Sky.Debug("warn",
-                    "[Sky.FW.GetJob] No job data found for offline player with license: " .. tostring(source))
-                return ""
-            end
-            return jobData.name
-        end
+        local xPlayer = resolvePlayer(source)
+        local job = xPlayer and xPlayer.PlayerData and xPlayer.PlayerData.job
+        return type(job) == "table" and job.name or ""
     end
 
     ---Set Job for online or offline Player
     ---@param source string|number Can be license or player id
     ---@param jobName string
     ---@param jobGrade number
+    -- Returns qbx_core's result: false (and the error) for an unknown job or grade.
     function Sky.FW.SetJob(source, jobName, jobGrade)
-        exports.qbx_core:SetJob(source, jobName, jobGrade)
+        local ok, err = exports.qbx_core:SetJob(source, jobName, tonumber(jobGrade) or 0)
+        jobUsersCache = {}
+        if ok == false then
+            Sky.Debug("warn", "[qbox] SetJob %s -> %s (grade %s) failed: %s", tostring(source), tostring(jobName), tostring(jobGrade), type(err) == "table" and tostring(err.message or err.code) or tostring(err))
+        end
+        return ok ~= false, err
     end
 
     ---Set Duty status for a player
@@ -343,52 +339,67 @@ if Sky.Config.framework == "qbox" then
     end
 
     function Sky.FW.DoesJobExist(jobName, grade)
-        local jobs = exports.qbx_core:GetJobs()
-        local job = jobs[jobName]
-        if job then
-            return true
-        end
-        return false
+        if type(jobName) ~= "string" or jobName == "" then return false end
+        local job = exports.qbx_core:GetJob(jobName)
+        if not job then return false end
+        if grade == nil then return true end
+        return type(job.grades) == "table" and job.grades[tonumber(grade)] ~= nil
     end
 
     ---Get Jobs
     ---@return {name: string, label: string, grades: {[string]: {grade: number, name: string, label?: string, payment: string}}}
     function Sky.FW.GetJobs()
-        local jobs = exports.qbx_core:GetJobs()
+        local jobs = exports.qbx_core:GetJobs() or {}
+        local result = {}
         for name, job in pairs(jobs) do
             local normalizedGrades = {}
-            
-            for id, grade in ipairs(job.grades) do
-                normalizedGrades[tostring(id)] = {}
-                normalizedGrades[tostring(id)].grade = tonumber(id)
-                normalizedGrades[tostring(id)].payment = grade.payment or 0
-                normalizedGrades[tostring(id)].name = string.lower(grade.name)
-                normalizedGrades[tostring(id)].label = grade.name
+            -- qbx grades start at [0], so ipairs skipped the first grade (and any after a gap).
+            for id, grade in pairs(type(job.grades) == "table" and job.grades or {}) do
+                local key = tostring(id)
+                normalizedGrades[key] = {
+                    grade = tonumber(id),
+                    payment = grade.payment or 0,
+                    name = string.lower(grade.name or key),
+                    label = grade.name or key,
+                    isboss = grade.isboss == true
+                }
             end
-            jobs[name] = {
+            result[name] = {
                 name = name,
                 label = job.label,
                 grades = normalizedGrades
             }
         end
-        return jobs
+        return result
     end
 
+    -- GetPlayersInBucket(0) is empty on Qbox unless a script set routing buckets.
     function Sky.FW.GetPlayers()
-        return exports.qbx_core:GetPlayersInBucket(0)
+        local players = {}
+        for _, id in ipairs(GetPlayers()) do
+            local src = tonumber(id)
+            if src and exports.qbx_core:GetPlayer(src) then
+                players[#players + 1] = src
+            end
+        end
+        return players
     end
 
+    -- Vehicles belong to a character (citizenid); the license is shared by all
+    -- characters of an account.
     function Sky.FW.IsVehicleOwnedByPlayer(source, plate)
         local xPlayer = exports.qbx_core:GetPlayer(source)
-        local isVehicleOwned = Sky.Query("SELECT * FROM player_vehicles WHERE plate = @plate AND license = @license", {
-            ["@plate"] = plate,
-            ["@license"] = xPlayer.PlayerData.license,
-        })
-        if not isVehicleOwned[1] or isVehicleOwned[1].license ~= xPlayer.PlayerData.license then
+        if not xPlayer or type(plate) ~= "string" or plate == "" then
             return false
-        else
-            return true
         end
+
+        local trimmed = plate:match("^%s*(.-)%s*$")
+        local rows = Sky.Query("SELECT 1 FROM player_vehicles WHERE (plate = @plate OR plate = @rawPlate) AND citizenid = @citizenid LIMIT 1", {
+            ["@plate"] = trimmed,
+            ["@rawPlate"] = plate,
+            ["@citizenid"] = xPlayer.PlayerData.citizenid,
+        })
+        return type(rows) == "table" and rows[1] ~= nil
     end
 
     ---Get Job Data from online or offline Player
@@ -396,51 +407,40 @@ if Sky.Config.framework == "qbox" then
     ---@param what "name"|"label"|"grade"|"grade_name"|"grade_label"|"duty"
     ---@return string?
     function Sky.FW.GetJobData(source, what)
-        if Sky.FW.IsPlayerOnline(source) then
-            local xPlayer = exports.qbx_core:GetPlayer(source)
-            if not xPlayer then return nil end
-            if what == "name" then
-                return xPlayer.PlayerData.job.name
-            elseif what == "label" then
-                return xPlayer.PlayerData.job.label
-            elseif what == "grade" then
-                return xPlayer.PlayerData.job.grade.level
-            elseif what == "grade_name" then
-                return xPlayer.PlayerData.job.grade.name
-            elseif what == "grade_label" then
-                return xPlayer.PlayerData.job.grade.name
-            elseif what == "duty" then
-                return xPlayer.PlayerData.job.onduty
-            end
-        else
-            if type(source) == "number" then
-                Sky.Debug("warn",
-                    "[Sky.FW.GetJobData] Offline player job data requested with player ID. License expected. Source: "
-                    .. tostring(source))
-                return ""
-            end
-            local jobData = Sky.DB.GetValue("players", "license", source, "job")
-            if what == "name" then
-                return jobData.name
-            elseif what == "label" then
-                return jobData.label
-            elseif what == "grade" then
-                return jobData.grade.level
-            elseif what == "grade_name" then
-                return jobData.grade.name
-            elseif what == "grade_label" then
-                return jobData.grade.name
-            end
+        local xPlayer = resolvePlayer(source)
+        local job = xPlayer and xPlayer.PlayerData and xPlayer.PlayerData.job
+        if type(job) ~= "table" then return nil end
+
+        if what == "name" then
+            return job.name
+        elseif what == "label" then
+            return job.label
+        elseif what == "grade" then
+            return job.grade and job.grade.level
+        elseif what == "grade_name" or what == "grade_label" then
+            return job.grade and job.grade.name
+        elseif what == "duty" then
+            return job.onduty == true
+        elseif what == "isboss" then
+            return job.isboss == true
         end
+        return nil
+    end
+
+    -- Qbox marks boss grades with isboss; callers otherwise guessed "grade >= 4".
+    function Sky.FW.IsPlayerBoss(source)
+        return Sky.FW.GetJobData(source, "isboss") == true
     end
 
     function Sky.FW.GetStatus(source, name)
         local xPlayer = exports.qbx_core:GetPlayer(source)
+        if not xPlayer then return nil end
         return xPlayer.PlayerData.metadata[name]
     end
 
     function Sky.FW.SetStatus(source, name, value)
         local xPlayer = exports.qbx_core:GetPlayer(source)
+        if not xPlayer then return end
 
         xPlayer.Functions.SetMetaData(name, value)
         xPlayer.Functions.UpdatePlayerData(false)
@@ -448,6 +448,7 @@ if Sky.Config.framework == "qbox" then
 
     function Sky.FW.ChangePlayerName(source, firstname, lastname)
         local xPlayer = exports.qbx_core:GetPlayer(source)
+        if not xPlayer then return end
         local charInfo = xPlayer.PlayerData.charinfo
         charInfo.firstname = firstname
         charInfo.lastname = lastname
@@ -465,7 +466,8 @@ if Sky.Config.framework == "qbox" then
 
     function Sky.FW.IsDead(source)
         local xPlayer = exports.qbx_core:GetPlayer(source)
-        return xPlayer.PlayerData.metadata.isdead
+        if not xPlayer then return false end
+        return xPlayer.PlayerData.metadata.isdead == true
     end
 
     function Sky.FW.GetPlaytime(source)

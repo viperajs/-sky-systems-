@@ -82,6 +82,13 @@ function Sky.Vehicle:Spawn(model, coords, heading)
     Sky.Load.Model(hash)
 
     local veh = CreateVehicle(hash, pos, head, true, true)
+    -- A failed spawn (bad model) returned 0 and then waited forever for its collision.
+    if not veh or veh == 0 then
+        if Sky.Debug then
+            Sky.Debug("error", "Vehicle spawn failed for model " .. tostring(model))
+        end
+        return 0
+    end
     local netId = NetworkGetNetworkIdFromEntity(veh)
     SetNetworkIdCanMigrate(netId, true)
     SetEntityAsMissionEntity(veh, true, true)
@@ -91,7 +98,8 @@ function Sky.Vehicle:Spawn(model, coords, heading)
     SetVehRadioStation(veh, "OFF")
 
     RequestCollisionAtCoord(pos)
-    while not HasCollisionLoadedAroundEntity(veh) do
+    local collisionExpire = GetGameTimer() + 5000
+    while not HasCollisionLoadedAroundEntity(veh) and GetGameTimer() < collisionExpire do
         Wait(0)
     end
 

@@ -371,7 +371,10 @@ end
 
 function GetActiveJobKey()
     if type(Sky_Jobs) == "table" and type(Sky_Jobs.Access) == "table" then
-        if Sky_Jobs.Access.HasSnapshot() ~= true then
+        -- Refresh waits for the server, which only works inside a thread. Called while this
+        -- file loaded, it raised "attempt to yield from outside a coroutine" and aborted the
+        -- rest of the file (configurator sync, sendUi, releaseNuiFocus, ...).
+        if Sky_Jobs.Access.HasSnapshot() ~= true and coroutine.isyieldable() then
             Sky_Jobs.Access.Refresh()
         end
         return Sky_Jobs.Access.GetJobKey()
@@ -449,12 +452,15 @@ function RefreshTuningCostProfile(jobKey)
     end
 end
 
-tuningCostProfile = ResolveTuningCostProfile(GetActiveJobKey())
+tuningCostProfile = ResolveTuningCostProfile(nil)
 customHandlingConfig = Config and Config.CustomHandlingOptions or { profiles = {} }
 stagedCostByModType = {}
 flatCostByModType = {}
 
-RefreshTuningCostProfile(GetActiveJobKey())
+-- The player's job comes from the server, so the profile is refreshed in a thread.
+CreateThread(function()
+    RefreshTuningCostProfile(GetActiveJobKey())
+end)
 
 AddEventHandler("sky_jobs_base:access:stateChanged", function(data)
     local jobKey = type(data) == "table" and data.jobKey or nil

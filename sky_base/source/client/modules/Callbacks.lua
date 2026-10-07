@@ -39,29 +39,31 @@ function Sky.Cb.TriggerWithTimeout(name, timeout, ...)
     assert(name ~= nil, 'Parameter "name" must be a string!')
     assert(timeout ~= nil, 'Parameter "timeout" must be a number!')
 
-    local requestId = currentRequestId
+    -- Every resource's transport receives the shared sky_base:scResponse event, so the
+    -- id carries the resource name; plain counters let resources take each other's replies.
+    local requestId = ("%s:%d"):format(GetCurrentResourceName(), currentRequestId)
     currentRequestId = (currentRequestId + 1) % 65536
-    local requestKey = name .. tostring(requestId)
+    local requestKey = name .. requestId
 
-    TriggerServerEvent("sky_base:sc", name, requestId, { ... })
     callbackResponses[requestKey] = true
+    TriggerServerEvent("sky_base:sc", name, requestId, { ... })
 
     local startTime = GetGameTimer()
     while callbackResponses[requestKey] == true do
         Citizen.Wait(50)
         if GetGameTimer() > (startTime + timeout) then
             callbackResponses[requestKey] = "ERROR"
-            print(("ServerCallback %s timed out after %sms! Args: %s"):format(name, timeout, json.encode({...})))
+            print(("ServerCallback %s timed out after %sms!"):format(name, timeout))
             break
         end
     end
 
-    if callbackResponses[requestKey] == "ERROR" then
-        return
-    end
-
+    -- Read and clear the slot on every path; a late reply then finds nothing pending.
     local resultData = callbackResponses[requestKey]
     callbackResponses[requestKey] = nil
+    if type(resultData) ~= "table" then
+        return
+    end
 
     return table.unpack(resultData)
 end
@@ -102,14 +104,9 @@ RegisterNetEvent("sky_base:cc", function(name, requestId, args)
     local requestKey = name .. tostring(requestId)
     local cb = callbacks[name]
 
+    -- Another resource's transport may own this callback; it answers.
     if not cb then
-        print("ClientCallback " .. name .. " does not exist!")
-        TriggerServerEvent("sky_base:ccDoesNotExist", requestKey, name)
         return
-    end
-
-    if true then
-        print(('[DEBUG] ClientCallback "%s" executing with args: %s'):format(tostring(name), json.encode(args)))
     end
 
     local packed = table.pack(pcall(cb, table.unpack(args or {})))
@@ -130,27 +127,24 @@ RegisterNetEvent("sky_base:cc", function(name, requestId, args)
     for i = 2, packed.n do
         resultArgs[i - 1] = packed[i]
     end
-    
-    if true then
-        print(('[DEBUG] ClientCallback "%s" finished. Result: %s'):format(tostring(name), json.encode(resultArgs)))
-    end
+
 
     TriggerServerEvent("sky_base:ccResponse", requestKey, resultArgs)
 end)
 
 RegisterNetEvent("sky_base:scResponse", function(requestKey, data)
-    if callbackResponses[requestKey] == nil then return end
+    if callbackResponses[requestKey] ~= true then return end
     callbackResponses[requestKey] = data
 end)
 
 RegisterNetEvent("sky_base:scDoesNotExist", function(requestKey, name)
-    if callbackResponses[requestKey] == nil then return end
+    if callbackResponses[requestKey] ~= true then return end
     callbackResponses[requestKey] = "ERROR"
     print('ServerCallback "' .. name .. '" does not exist!')
 end)
 
 RegisterNetEvent("sky_base:scError", function(requestKey, name, err)
-    if callbackResponses[requestKey] == nil then return end
+    if callbackResponses[requestKey] ~= true then return end
     callbackResponses[requestKey] = "ERROR"
     if err == nil then
         print('ServerCallback "' .. name .. '" ran into an error! Check the server console for errors!')

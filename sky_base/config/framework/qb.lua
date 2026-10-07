@@ -553,6 +553,12 @@ if Sky.Config.framework == "qb" then
         return playtimeMinutes
     end
 
+    function Sky.FW.IsPlayerBoss(source)
+        local xPlayer = QBCore.Functions.GetPlayer(tonumber(source) or source)
+        local job = xPlayer and xPlayer.PlayerData and xPlayer.PlayerData.job
+        return type(job) == "table" and job.isboss == true
+    end
+
     function Sky.FW.HasCommandPermission(source, acePerm)
         if source == 0 then return true end
         return IsPlayerAceAllowed(source, acePerm)

@@ -10,6 +10,8 @@ Sky.Cb = {}
 
 local serverCallbacks = {}
 local clientCallbackResponses = {}
+-- Player each pending server->client request was sent to; only that player may answer.
+local pendingClientTargets = {}
 local currentClientRequestId = 0
 
 --- Register a server callback that clients can invoke.
@@ -48,32 +50,39 @@ function Sky.Cb.TriggerClient(source, name, ...)
     currentClientRequestId = (currentClientRequestId + 1) % 65536
     local requestKey = name .. tostring(requestId)
 
-    TriggerClientEvent("sky_base:cc", source, name, requestId, { ... })
     clientCallbackResponses[requestKey] = true
+    pendingClientTargets[requestKey] = tonumber(source)
+    TriggerClientEvent("sky_base:cc", source, name, requestId, { ... })
 
     local startTime = GetGameTimer()
     while clientCallbackResponses[requestKey] == true do
         Citizen.Wait(50)
         if GetGameTimer() > (startTime + timeout) then
-            clientCallbackResponses[requestKey] = "ERROR"
             Sky.Debug("error", "ClientCallback " .. name .. " timed out after " .. timeout .. "ms!")
             break
         end
     end
 
-    if clientCallbackResponses[requestKey] == "ERROR" then
-        return nil
-    end
-
+    -- Read and clear the slot on every path; a late reply then finds nothing pending.
     local resultData = clientCallbackResponses[requestKey]
     clientCallbackResponses[requestKey] = nil
+    pendingClientTargets[requestKey] = nil
 
-    return table.unpack(resultData or {})
+    if type(resultData) ~= "table" then
+        return nil
+    end
+    return table.unpack(resultData)
+end
+
+local function isPendingFrom(requestKey, src)
+    return clientCallbackResponses[requestKey] == true and pendingClientTargets[requestKey] == tonumber(src)
 end
 
 --- Handle incoming client requests to execute a server callback.
 RegisterNetEvent("sky_base:sc", function(name, requestId, args)
     local src = source
+    if type(name) ~= "string" or (type(requestId) ~= "string" and type(requestId) ~= "number") then return end
+    if args ~= nil and type(args) ~= "table" then return end
     local requestKey = name .. tostring(requestId)
     local cb = serverCallbacks[name]
 
@@ -116,18 +125,18 @@ end)
 
 --- Handle incoming client responses to a server-initiated client callback.
 RegisterNetEvent("sky_base:ccResponse", function(requestKey, data)
-    if clientCallbackResponses[requestKey] == nil then return end
-    clientCallbackResponses[requestKey] = data
+    if not isPendingFrom(requestKey, source) then return end
+    clientCallbackResponses[requestKey] = type(data) == "table" and data or {}
 end)
 
 RegisterNetEvent("sky_base:ccDoesNotExist", function(requestKey, name)
-    if clientCallbackResponses[requestKey] == nil then return end
+    if not isPendingFrom(requestKey, source) then return end
     clientCallbackResponses[requestKey] = "ERROR"
     Sky.Debug("error", ('ClientCallback "%s" does not exist on client!'):format(tostring(name)))
 end)
 
 RegisterNetEvent("sky_base:ccError", function(requestKey, name, err)
-    if clientCallbackResponses[requestKey] == nil then return end
+    if not isPendingFrom(requestKey, source) then return end
     clientCallbackResponses[requestKey] = "ERROR"
     Sky.Debug("error", ('ClientCallback "%s" ran into an error on client:\n%s'):format(tostring(name), tostring(err)))
 end)
