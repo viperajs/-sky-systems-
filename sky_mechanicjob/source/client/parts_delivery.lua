@@ -1186,18 +1186,16 @@ local function registerJobInteraction(jobName)
     end)
 end
 
--- Register for default "mechanic" job
-registerJobInteraction("mechanic")
-
--- Register for all configured jobs
-for _, job in ipairs(Config.Jobs or {}) do
-    registerJobInteraction(job and job.name)
+-- Register for "mechanic" and every configured job (its jobKey is the framework job
+-- sky_jobs_base raises the interaction for).
+for _, jobName in ipairs(GetMechanicJobNames()) do
+    registerJobInteraction(jobName)
 end
 
 -- Re-register when job config updates
 AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
-    for _, job in ipairs(Config.Jobs or {}) do
-        registerJobInteraction(job and job.name)
+    for _, jobName in ipairs(GetMechanicJobNames()) do
+        registerJobInteraction(jobName)
     end
 end)
 

@@ -776,16 +776,15 @@ local function registerJobInteractionEvents(jobName)
     end)
 end
 
-registerJobInteractionEvents("mechanic")
-for _, job in ipairs(Config and Config.Jobs or {}) do
-    local jName = type(job) == "table" and job.name or job
-    registerJobInteractionEvents(jName)
+-- sky_jobs_base raises the interaction with the workshop's framework job (jobKey), which
+-- for /jobconfig workshops differs from their display name.
+for _, jobName in ipairs(GetMechanicJobNames()) do
+    registerJobInteractionEvents(jobName)
 end
 
 AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
-    for _, job in ipairs(Config and Config.Jobs or {}) do
-        local jName = type(job) == "table" and job.name or job
-        registerJobInteractionEvents(jName)
+    for _, jobName in ipairs(GetMechanicJobNames()) do
+        registerJobInteractionEvents(jobName)
     end
 end)
 

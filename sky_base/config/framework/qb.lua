@@ -60,6 +60,7 @@ if Sky.Config.framework == "qb" then
 
     -- catch direct duty toggle from QBCore/QBox native system
     RegisterNetEvent('QBCore:Client:SetDuty', function(onDuty)
+        TriggerEvent("sky_base:updateDuty", onDuty == true)
         TriggerServerEvent("sky_base:syncDuty", onDuty == true)
     end)
 

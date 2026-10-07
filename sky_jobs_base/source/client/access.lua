@@ -58,7 +58,9 @@ local function setAccessState(isEmployed, isOnDuty, jobKey)
     local empFlag = (isEmployed == true) and (sanitizedKey ~= nil)
     local dutyFlag = empFlag and (isOnDuty == true)
 
-    local isChanged = (accessState.employed ~= empFlag)
+    -- Duty and job changes must be announced too; listeners (e.g. sky_mechanicjob's
+    -- access state) otherwise kept the old duty state.
+    local isChanged = (accessState.employed ~= empFlag or accessState.onDuty ~= dutyFlag or accessState.jobKey ~= sanitizedKey)
     accessState.employed = empFlag
     accessState.onDuty = dutyFlag
     accessState.jobKey = sanitizedKey
@@ -69,10 +71,21 @@ local function setAccessState(isEmployed, isOnDuty, jobKey)
     end
 end
 
+local function isUnemployedJob(jobName)
+    local defaultJob = Config and Config.MultiJob and Config.MultiJob.defaultJob or "unemployed"
+    return jobName == defaultJob or jobName == "unemployed"
+end
+
 local function updateJob(data)
     local jobName = extractJobName(data)
-    if not jobName then
+    if not jobName or isUnemployedJob(jobName) then
         setAccessState(false, false, nil)
+        return
+    end
+
+    -- Framework job tables carry the duty state of the new job.
+    if type(data) == "table" and type(data.onduty) == "boolean" then
+        setAccessState(true, data.onduty, jobName)
         return
     end
 
@@ -193,12 +206,30 @@ RegisterNetEvent("sky_jobs_base:creator:updatePlayerJob", function(data)
 end)
 
 RegisterNetEvent("sky_jobs_base:creator:updatePlayerDuty", function(onDuty, jobData)
-    local key = jobData or accessState.jobKey
-    if key then
+    local key = extractJobName(jobData) or accessState.jobKey
+    if key and not isUnemployedJob(key) then
         setAccessState(true, onDuty == true, key)
     else
         setAccessState(false, false, nil)
     end
+end)
+
+-- Framework duty changes (sky_base forwards QBCore:Client:SetDuty).
+RegisterNetEvent("sky_base:updateDuty", function(onDuty)
+    if accessState.jobKey then
+        setAccessState(true, onDuty == true, accessState.jobKey)
+    end
+end)
+
+-- The job is only known once a character is loaded.
+RegisterNetEvent("sky_base:playerLoaded", function()
+    CreateThread(function()
+        for _ = 1, 10 do
+            local _, isReady = Sky_Jobs.Access.Refresh()
+            if isReady then return end
+            Wait(2000)
+        end
+    end)
 end)
 
 CreateThread(function()

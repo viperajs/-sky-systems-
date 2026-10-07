@@ -489,22 +489,32 @@ else
     -- -----------------------------------------------------
     --  INTERACTION POINT WRAPPERS
     -- -----------------------------------------------------
-    function Sky.CreateInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.CreateInteractionPoint) == "function" then
-                return sky.CreateInteractionPoint(...)
-            end
+    -- Points live in sky_base and are created through its exports. The functions inside
+    -- exports.sky_base:Get() arrive here as function references (callable tables), so the
+    -- former type(fn) == "function" check never passed and no point was ever created.
+    local function callSkyBaseInteraction(method, ...)
+        if GetResourceState("sky_base") ~= "started" then
+            return nil
         end
+
+        local args = table.pack(...)
+        local ok, result = pcall(function()
+            return exports.sky_base[method](exports.sky_base, table.unpack(args, 1, args.n))
+        end)
+        if ok then
+            return result
+        end
+
+        print(("^1[%s] sky_base %s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+        return nil
+    end
+
+    function Sky.CreateInteractionPoint(...)
+        return callSkyBaseInteraction("CreateInteractionPoint", ...)
     end
 
     function Sky.DeleteInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.DeleteInteractionPoint) == "function" then
-                return sky.DeleteInteractionPoint(...)
-            end
-        end
+        return callSkyBaseInteraction("DeleteInteractionPoint", ...)
     end
 
     -- -----------------------------------------------------

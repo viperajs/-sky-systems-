@@ -386,6 +386,42 @@ if IsDuplicityVersion() then
         return nil
     end
 
+    -- sky_base's framework adapters (config/framework) are not loaded in this resource,
+    -- so Sky.FW never existed here and every job, grade, duty and money lookup silently
+    -- fell back to defaults: every player was "unemployed" with grade 0, and money was
+    -- never added or removed. Sky.FW.<method> is forwarded to sky_base instead.
+    if type(Sky.FW) ~= "table" then
+        Sky.FW = setmetatable({}, {
+            __index = function(fw, method)
+                if type(method) ~= "string" or GetResourceState("sky_base") ~= "started" then
+                    return nil
+                end
+
+                local ok, exists = pcall(function()
+                    return exports.sky_base:HasFrameworkFunction(method)
+                end)
+                if not ok or exists ~= true then
+                    return nil
+                end
+
+                local function forward(...)
+                    local args = table.pack(...)
+                    local callOk, result = pcall(function()
+                        return exports.sky_base:CallFramework(method, table.unpack(args, 1, args.n))
+                    end)
+                    if callOk then
+                        return result
+                    end
+                    print(("^1[%s] Sky.FW.%s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+                    return nil
+                end
+
+                rawset(fw, method, forward)
+                return forward
+            end
+        })
+    end
+
     -- Sky_Jobs Server Bridge
     Sky_Jobs.PlayerCache = Sky_Jobs.PlayerCache or {}
     Sky_Jobs.Access = Sky_Jobs.Access or {}
@@ -623,22 +659,32 @@ else
     -- -----------------------------------------------------
     --  INTERACTION POINT WRAPPERS
     -- -----------------------------------------------------
-    function Sky.CreateInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.CreateInteractionPoint) == "function" then
-                return sky.CreateInteractionPoint(...)
-            end
+    -- Points live in sky_base and are created through its exports. The functions inside
+    -- exports.sky_base:Get() arrive here as function references (callable tables), so the
+    -- former type(fn) == "function" check never passed and no point was ever created.
+    local function callSkyBaseInteraction(method, ...)
+        if GetResourceState("sky_base") ~= "started" then
+            return nil
         end
+
+        local args = table.pack(...)
+        local ok, result = pcall(function()
+            return exports.sky_base[method](exports.sky_base, table.unpack(args, 1, args.n))
+        end)
+        if ok then
+            return result
+        end
+
+        print(("^1[%s] sky_base %s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+        return nil
+    end
+
+    function Sky.CreateInteractionPoint(...)
+        return callSkyBaseInteraction("CreateInteractionPoint", ...)
     end
 
     function Sky.DeleteInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.DeleteInteractionPoint) == "function" then
-                return sky.DeleteInteractionPoint(...)
-            end
-        end
+        return callSkyBaseInteraction("DeleteInteractionPoint", ...)
     end
 
     -- -----------------------------------------------------

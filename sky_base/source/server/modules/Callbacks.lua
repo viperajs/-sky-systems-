@@ -83,8 +83,12 @@ RegisterNetEvent("sky_base:sc", function(name, requestId, args)
         return
     end
 
-    if true then
-        Sky.Debug("info", ('ServerCallback "%s" executing with args: %s (Source: %s)'):format(tostring(name), json.encode(args), tostring(src)))
+    -- Encoding every request and reply was always on (if true), which serialised large
+    -- payloads (e.g. all workshops) on every call. Only in debug mode now.
+    local debugEnabled = Sky.IsDebugActive and Sky.IsDebugActive() == true
+    if debugEnabled then
+        local okArgs, encodedArgs = pcall(json.encode, args)
+        Sky.Debug("debug", ('ServerCallback "%s" executing with args: %s (Source: %s)'):format(tostring(name), okArgs and encodedArgs or "?", tostring(src)))
     end
 
     local packed = table.pack(pcall(cb, src, table.unpack(args or {})))
@@ -102,8 +106,9 @@ RegisterNetEvent("sky_base:sc", function(name, requestId, args)
         resultArgs[i - 1] = packed[i]
     end
     
-    if true then
-        Sky.Debug("info", ('ServerCallback "%s" finished. Result: %s'):format(tostring(name), json.encode(resultArgs)))
+    if debugEnabled then
+        local okResult, encodedResult = pcall(json.encode, resultArgs)
+        Sky.Debug("debug", ('ServerCallback "%s" finished. Result: %s'):format(tostring(name), okResult and encodedResult or "?"))
     end
 
     TriggerClientEvent("sky_base:scResponse", src, requestKey, resultArgs)

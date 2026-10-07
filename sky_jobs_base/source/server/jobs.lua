@@ -76,27 +76,109 @@ registerExport("Get", function()
     return Sky_Jobs
 end)
 
+-- sky_mechanicjob's server asks this first for a player's duty state.
+registerExport("isOnDuty", function(source)
+    return Sky_Jobs.PlayerCache.IsOnDuty(source)
+end)
+
 function Sky_Jobs.PlayerCache.IsOnDuty(source)
     local src = tonumber(source)
     if not src or src <= 0 then return true end
+    if Config and Config.DutySystem == false then return true end
 
+    -- Set by the duty terminal and kept in sync with the framework's duty events below
+    -- (ESX has no duty of its own, so the framework value cannot be the only source).
     if playerDutyState[src] ~= nil then
         return playerDutyState[src] == true
     end
 
     if Sky and Sky.FW and Sky.FW.GetJobData then
         local duty = Sky.FW.GetJobData(src, "duty")
-        if duty ~= nil then return duty == true end
+        if type(duty) == "boolean" then return duty end
     end
 
     return true
 end
 
+-- Qbox / QBCore duty changes made outside the duty terminal (/duty, other scripts) and
+-- the duty a new job starts with. Raised server-side only by the framework.
+AddEventHandler("QBCore:Server:SetDuty", function(src, onDuty)
+    src = tonumber(src)
+    if src and type(onDuty) == "boolean" then
+        playerDutyState[src] = onDuty
+    end
+end)
+
+AddEventHandler("QBCore:Server:OnJobUpdate", function(src, job)
+    src = tonumber(src)
+    if src and type(job) == "table" then
+        playerDutyState[src] = type(job.onduty) == "boolean" and job.onduty or nil
+    end
+end)
+
 function Sky_Jobs.PlayerCache.SetDuty(source, onDuty)
     local src = tonumber(source)
     if not src or src <= 0 then return end
     playerDutyState[src] = (onDuty == true)
+    if Sky and Sky.FW and Sky.FW.SetDuty then
+        Sky.FW.SetDuty(src, onDuty == true)
+    end
 end
+
+-- Permission check for admin commands and admin-only callbacks. Groups come from
+-- Config.CommandPermissions; ACE `sky_jobs_base.<permission>` or `command.<permission>`
+-- also grants it. The server console (source 0) is always allowed.
+function Sky_Jobs.HasPermission(source, permission)
+    local src = tonumber(source)
+    if src == 0 then return true end
+    if not src or src < 0 or type(permission) ~= "string" then return false end
+
+    local srcStr = tostring(src)
+    if IsPlayerAceAllowed(srcStr, ("sky_jobs_base.%s"):format(permission))
+        or IsPlayerAceAllowed(srcStr, ("command.%s"):format(permission)) then
+        return true
+    end
+
+    local groups = Config and Config.CommandPermissions and Config.CommandPermissions[permission]
+    if type(groups) ~= "table" then
+        return false
+    end
+
+    for _, group in ipairs(groups) do
+        if type(group) == "string" and IsPlayerAceAllowed(srcStr, ("group.%s"):format(group)) then
+            return true
+        end
+    end
+
+    if GetResourceState("qbx_core") == "started" then
+        for _, group in ipairs(groups) do
+            local ok, allowed = pcall(function()
+                return exports.qbx_core:HasPermission(src, group)
+            end)
+            if ok and allowed == true then
+                return true
+            end
+        end
+    end
+
+    if Sky and Sky.FW and Sky.FW.HasCommandPermission then
+        for _, group in ipairs(groups) do
+            if Sky.FW.HasCommandPermission(src, group) == true then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- Job name a player has when they have no job (multijob default job).
+local function isUnemployedJob(jobName)
+    if type(jobName) ~= "string" or jobName == "" then return true end
+    local defaultJob = Config and Config.MultiJob and Config.MultiJob.defaultJob or "unemployed"
+    return jobName == defaultJob or jobName == "unemployed"
+end
+Sky_Jobs.IsUnemployedJob = isUnemployedJob
 
 function Sky_Jobs.PlayerCache.GetJob(source)
     local src = tonumber(source)
@@ -158,6 +240,12 @@ Sky.Cb.Register("sky_jobs_base:creator:getPlayerJob", function(source, data)
     local src = tonumber(source)
     if not src then return { success = false, data = { ready = false } } end
 
+    -- Before the character is loaded the framework has no job for the player yet; the
+    -- client keeps asking until it is ready.
+    if Sky and Sky.FW and Sky.FW.IsPlayerOnline and Sky.FW.IsPlayerOnline(src) == false then
+        return { success = true, data = { ready = false } }
+    end
+
     local jobName = Sky_Jobs.PlayerCache.GetJob(src)
     local gradeLevel = Sky_Jobs.PlayerCache.GetJobGrade(src)
 
@@ -168,12 +256,15 @@ Sky.Cb.Register("sky_jobs_base:creator:getPlayerJob", function(source, data)
         isBoss = (gradeLevel >= 4)
     end
 
+    -- No jobKey for the default job: clients treat any jobKey as employed.
+    local jobKey = (not isUnemployedJob(jobName)) and jobName or nil
+
     return {
         success = true,
         data = {
             ready = true,
-            jobKey = jobName,
-            job = jobName,
+            jobKey = jobKey,
+            job = jobKey,
             grade = gradeLevel,
             isBoss = isBoss
         }
@@ -192,7 +283,7 @@ Sky.Cb.Register("sky_jobs_base:creator:getPlayerDuty", function(source, data)
         data = {
             ready = true,
             onDuty = isOnDuty,
-            jobKey = jobName
+            jobKey = (not isUnemployedJob(jobName)) and jobName or nil
         }
     }
 end)
@@ -1067,7 +1158,20 @@ end)
 --  JOB CONFIGURATOR SERVER CALLBACKS
 -- -----------------------------------------------------
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:configs", function(source)
+Sky_Jobs.Configurator = Sky_Jobs.Configurator or {}
+
+-- Every configurator callback reads or rewrites all workshops, so only players with the
+-- /jobconfig permission may call them (any client can trigger any callback).
+local function registerConfiguratorCallback(name, handler)
+    Sky.Cb.Register(name, function(source, ...)
+        if not Sky_Jobs.HasPermission(source, "jobconfig") then
+            return { success = false, error = "no_permission" }
+        end
+        return handler(source, ...)
+    end)
+end
+
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:configs", function(source)
     return {
         success = true,
         data = {
@@ -1175,6 +1279,62 @@ local defaultLocationDefinitions = {
     { key = "stolen_parts_dealer", label = "Stolen Parts Dealer", icon = "user-secret", placementType = "marker", allowMultiple = true, canPlace = true, enabled = true }
 }
 
+-- Workshops used until the configurator is saved for the first time. creator.lua used
+-- to write its own copy of these into the database; both now share this one.
+local function getDefaultWorkshopData()
+    return {
+        entries = {
+            {
+                id = "mechanic_lscustoms",
+                name = "Los Santos Customs",
+                jobKey = "mechanic",
+                job = "mechanic",
+                storageCapacity = 1000,
+                lockerCapacity = 300,
+                nitroAccess = true,
+                workshopVehicleClasses = {},
+                points = {
+                    { uid = "lsc_duty", type = "duty", label = "Duty Station", x = -341.0, y = -145.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_storage", type = "storage", label = "Parts Storage", x = -347.0, y = -133.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_locker", type = "locker", label = "Employee Lockers", x = -348.0, y = -131.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_shop", type = "shop", label = "Wholesale Shop", x = -350.0, y = -136.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_delivery", type = "parts_drop", label = "Delivery Drop", x = -355.0, y = -140.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_wardrobe", type = "wardrobe", label = "Wardrobe", x = -343.0, y = -148.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_boss", type = "management", label = "Management", x = -340.0, y = -143.0, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_lift_1", type = "lift", label = "Car Lift 1", x = -338.5, y = -136.5, z = 39.0, heading = 70.0, modelSet = "default" },
+                    { uid = "lsc_tuning", type = "self_service_tuning", label = "Tuning Area", x = -338.5, y = -136.5, z = 39.0, heading = 70.0 },
+                    { uid = "lsc_dyno", type = "dyno", label = "Dyno Stand", x = -330.0, y = -140.0, z = 39.0, heading = 70.0 }
+                }
+            },
+            {
+                id = "mechanic_bennys",
+                name = "Benny's Original Motor Works",
+                jobKey = "mechanic",
+                job = "mechanic",
+                storageCapacity = 1000,
+                lockerCapacity = 300,
+                nitroAccess = true,
+                workshopVehicleClasses = {},
+                points = {
+                    { uid = "bennys_duty", type = "duty", label = "Duty Station", x = -205.5, y = -1310.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_storage", type = "storage", label = "Parts Storage", x = -208.0, y = -1315.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_locker", type = "locker", label = "Employee Lockers", x = -210.0, y = -1315.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_shop", type = "shop", label = "Wholesale Shop", x = -215.0, y = -1318.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_delivery", type = "parts_drop", label = "Delivery Drop", x = -220.0, y = -1320.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_wardrobe", type = "wardrobe", label = "Wardrobe", x = -204.0, y = -1320.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_boss", type = "management", label = "Management", x = -207.0, y = -1308.0, z = 31.3, heading = 0.0 },
+                    { uid = "bennys_lift_1", type = "lift", label = "Car Lift 1", x = -212.0, y = -1320.0, z = 30.89, heading = 0.0, modelSet = "default" },
+                    { uid = "bennys_tuning", type = "self_service_tuning", label = "Tuning Area", x = -212.0, y = -1320.0, z = 30.89, heading = 0.0 },
+                    { uid = "bennys_dyno", type = "dyno", label = "Dyno Stand", x = -218.0, y = -1315.0, z = 31.3, heading = 0.0 }
+                }
+            }
+        },
+        features = {},
+        settings = {},
+        interactions = {}
+    }
+end
+
 local function loadWorkshopCreatorData()
     local row = MySQL.single.await("SELECT data FROM sky_jobs_creator_data WHERE creator_key = 'workshopcreator' LIMIT 1")
     local data = nil
@@ -1186,34 +1346,7 @@ local function loadWorkshopCreatorData()
     end
 
     if not data then
-        data = {
-            entries = {
-                {
-                    id = "mechanic_lscustoms",
-                    name = "Los Santos Customs",
-                    jobKey = "mechanic",
-                    job = "mechanic",
-                    storageCapacity = 1000,
-                    lockerCapacity = 300,
-                    nitroAccess = true,
-                    workshopVehicleClasses = {},
-                    points = {
-                        { uid = "lsc_duty", type = "duty", label = "Duty Station", x = -341.0, y = -145.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_storage", type = "storage", label = "Parts Storage", x = -347.0, y = -133.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_locker", type = "locker", label = "Employee Lockers", x = -348.0, y = -131.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_shop", type = "shop", label = "Wholesale Shop", x = -350.0, y = -136.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_delivery", type = "parts_drop", label = "Delivery Drop", x = -355.0, y = -140.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_wardrobe", type = "wardrobe", label = "Wardrobe", x = -343.0, y = -148.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_boss", type = "management", label = "Management", x = -340.0, y = -143.0, z = 39.0, heading = 70.0 },
-                        { uid = "lsc_lift_1", type = "lift", label = "Car Lift 1", x = -338.5, y = -136.5, z = 39.0, heading = 70.0, modelSet = "default" },
-                        { uid = "lsc_dyno", type = "dyno", label = "Dyno Stand", x = -330.0, y = -140.0, z = 39.0, heading = 70.0 }
-                    }
-                }
-            },
-            features = {},
-            settings = {},
-            interactions = {}
-        }
+        data = getDefaultWorkshopData()
     end
 
     data.entries = type(data.entries) == "table" and data.entries or {}
@@ -1290,7 +1423,7 @@ end)
 
 local function saveWorkshopCreatorData(data)
     if type(data) ~= "table" then return false end
-    pcall(function()
+    local saved, err = pcall(function()
         MySQL.query.await([[
             INSERT INTO sky_jobs_creator_data (creator_key, data)
             VALUES ('workshopcreator', @data)
@@ -1299,6 +1432,12 @@ local function saveWorkshopCreatorData(data)
             ["@data"] = json.encode(data)
         })
     end)
+    -- Reporting success here made the admin see "saved" while the change was lost on
+    -- the next restart.
+    if not saved then
+        print(("[sky_jobs_base][job_configurator] saving the workshops failed: %s"):format(tostring(err)))
+        return false
+    end
     -- sky_jobs_base:creator:getData (creator.lua) serves players who join later and the
     -- mechanic resource from a cache; without this it kept returning the data from
     -- before the save until the resource restarted.
@@ -1316,6 +1455,12 @@ local function saveWorkshopCreatorData(data)
     return true
 end
 
+-- Shared with creator.lua (sky_jobs_base:creator:getData / requestSync / saveData).
+Sky_Jobs.Configurator.LoadWorkshopData = loadWorkshopCreatorData
+Sky_Jobs.Configurator.SaveWorkshopData = saveWorkshopCreatorData
+
+local SAVE_FAILED = { success = false, error = "save_failed" }
+
 -- Publish once at start so sky_mechanicjob knows the workshop jobs before the first save.
 -- Retried because the database or the creator table (creator.lua) may not be ready yet.
 CreateThread(function()
@@ -1330,7 +1475,7 @@ CreateThread(function()
     print("[sky_jobs_base][job_configurator] could not load the workshop jobs at start; they are published again on the next save.")
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:list", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:list", function(source, data)
     local configKey = tostring(data and data.configKey or "sky_mechanicjob")
     local creatorData = loadWorkshopCreatorData()
 
@@ -1352,12 +1497,35 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:list", function(source, data)
     }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:setLocation", function(source, data)
+-- Point uids must be unique across all workshops: a uid that matched another point
+-- (the old 4-digit random suffix) overwrote that point.
+local function createPointUid(entries, locType)
+    local taken = {}
+    for _, entry in ipairs(entries) do
+        for _, pt in ipairs(type(entry) == "table" and type(entry.points) == "table" and entry.points or {}) do
+            if type(pt) == "table" and pt.uid ~= nil then
+                taken[tostring(pt.uid)] = true
+            end
+        end
+    end
+
+    local base = tostring(locType):lower():gsub("[^%w_]+", "_")
+    local uid
+    repeat
+        uid = ("%s_%d%03d"):format(base, os.time(), math.random(0, 999))
+    until not taken[uid]
+    return uid
+end
+
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:setLocation", function(source, data)
     data = type(data) == "table" and data or {}
     local rawEntryId = data.entryId or data.id or data.creatorEntryId or data.configId or (type(data.entry) == "table" and data.entry.id) or nil
     local entryId = tostring(rawEntryId or "mechanic_lscustoms")
     local locType = tostring(data.locationType or data.type or "location")
     local coords = type(data.coords) == "table" and data.coords or {}
+    if not (tonumber(coords.x) and tonumber(coords.y) and tonumber(coords.z)) then
+        return { success = false, error = "invalid_coords" }
+    end
 
     local creatorData = loadWorkshopCreatorData()
     local entryName = tostring(data.entryName or data.name or ""):lower()
@@ -1400,7 +1568,8 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:setLocation", function(source, da
     end
 
     targetEntry.points = targetEntry.points or {}
-    local pointUid = data.uid or (locType .. "_" .. tostring(math.random(1000, 9999)))
+    entryId = tostring(targetEntry.id)
+    local pointUid = data.uid ~= nil and data.uid ~= "" and tostring(data.uid) or createPointUid(creatorData.entries, locType)
 
     local foundPoint = false
     for _, pt in ipairs(targetEntry.points) do
@@ -1430,7 +1599,15 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:setLocation", function(source, da
         })
     end
 
-    saveWorkshopCreatorData(creatorData)
+    -- The NUI sends the location's "requires on duty" toggle with the placement.
+    if type(data.requiresOnDuty) == "boolean" then
+        targetEntry.locationSettings = type(targetEntry.locationSettings) == "table" and targetEntry.locationSettings or {}
+        targetEntry.locationSettings[tostring(pointUid)] = { requiresOnDuty = data.requiresOnDuty }
+    end
+
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
 
     return {
         success = true,
@@ -1530,7 +1707,7 @@ local function createCreatorEntryId(entries, name)
     return id
 end
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:save", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:save", function(source, data)
     data = type(data) == "table" and data or {}
     local creatorData = loadWorkshopCreatorData()
 
@@ -1620,11 +1797,13 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:save", function(source, data)
         creatorData.interactions = data.interactions
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true, data = creatorData.entries }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveCreatorEntry", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:saveCreatorEntry", function(source, data)
     data = type(data) == "table" and data or {}
     local entry = data.entry or data
     if type(entry) ~= "table" or not entry.id then
@@ -1645,11 +1824,13 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveCreatorEntry", function(sourc
         table.insert(creatorData.entries, entry)
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:createCreatorEntry", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:createCreatorEntry", function(source, data)
     data = type(data) == "table" and data or {}
     local newId = "entry_" .. tostring(GetGameTimer()) .. "_" .. tostring(math.random(100, 999))
     local creatorData = loadWorkshopCreatorData()
@@ -1673,12 +1854,14 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:createCreatorEntry", function(sou
     for k, v in pairs(creatorData.features or defaultFeatures) do newEntry.features[k] = v end
 
     table.insert(creatorData.entries, newEntry)
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
 
     return { success = true, entryId = newId, entry = newEntry }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:deleteCreatorEntry", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:deleteCreatorEntry", function(source, data)
     data = type(data) == "table" and data or {}
     local entryId = tostring(data.entryId or data.id or "")
     if entryId == "" then return { success = false, error = "invalid_entry_id" } end
@@ -1690,11 +1873,13 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:deleteCreatorEntry", function(sou
         end
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:deleteLocations", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:deleteLocations", function(source, data)
     data = type(data) == "table" and data or {}
     local entryId = tostring(data.entryId or "")
     local locType = tostring(data.locationType or "")
@@ -1714,27 +1899,29 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:deleteLocations", function(source
         end
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:addCreatorZonePoint", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:addCreatorZonePoint", function(source, data)
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:setCreatorZonePoint", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:setCreatorZonePoint", function(source, data)
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:removeCreatorZonePoint", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:removeCreatorZonePoint", function(source, data)
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:clearCreatorZonePoints", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:clearCreatorZonePoints", function(source, data)
     return { success = true }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveFeatures", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:saveFeatures", function(source, data)
     data = type(data) == "table" and data or {}
     local featuresPayload = data.features or data
     if type(featuresPayload) ~= "table" then
@@ -1749,11 +1936,13 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveFeatures", function(source, d
         end
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true, data = creatorData.features }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveSettings", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:saveSettings", function(source, data)
     data = type(data) == "table" and data or {}
     local settingsPayload = data.settings or data
     if type(settingsPayload) ~= "table" then
@@ -1768,11 +1957,13 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveSettings", function(source, d
         end
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true, data = creatorData.settings }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveInteractions", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:saveInteractions", function(source, data)
     data = type(data) == "table" and data or {}
     local interactionsPayload = data.interactions or data
     if type(interactionsPayload) ~= "table" then
@@ -1782,11 +1973,13 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:saveInteractions", function(sourc
     local creatorData = loadWorkshopCreatorData()
     creatorData.interactions = interactionsPayload
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true, data = creatorData.interactions }
 end)
 
-Sky.Cb.Register("sky_jobs_base:jobConfigurator:delete", function(source, data)
+registerConfiguratorCallback("sky_jobs_base:jobConfigurator:delete", function(source, data)
     data = type(data) == "table" and data or {}
     local entryId = tostring(data.id or data.entryId or data.key or "")
     if entryId == "" then
@@ -1800,14 +1993,34 @@ Sky.Cb.Register("sky_jobs_base:jobConfigurator:delete", function(source, data)
         end
     end
 
-    saveWorkshopCreatorData(creatorData)
+    if not saveWorkshopCreatorData(creatorData) then
+        return SAVE_FAILED
+    end
     return { success = true }
 end)
 
-RegisterServerEvent("sky_jobs_base:jobConfigurator:requestSync", function(configKey)
+-- Every client's sky_mechanicjob asks for the workshop config when it starts, so this is
+-- open to all players; it only ever sends the (read-only) workshop data.
+local lastConfiguratorSyncAt = {}
+
+RegisterServerEvent("sky_jobs_base:jobConfigurator:requestSync", function()
     local src = source
-    local creatorData = loadWorkshopCreatorData()
-    TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", src, configKey or "sky_mechanicjob", creatorData.entries, creatorData.features, creatorData.settings)
+    local now = GetGameTimer()
+    if lastConfiguratorSyncAt[src] and now - lastConfiguratorSyncAt[src] < 2000 then
+        return
+    end
+    lastConfiguratorSyncAt[src] = now
+
+    local ok, creatorData = pcall(loadWorkshopCreatorData)
+    if not ok or type(creatorData) ~= "table" then
+        print(("[sky_jobs_base][job_configurator] sync for %s failed: %s"):format(tostring(src), tostring(creatorData)))
+        return
+    end
+    TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", src, "sky_mechanicjob", creatorData.entries, creatorData.features, creatorData.settings)
+end)
+
+AddEventHandler("playerDropped", function()
+    lastConfiguratorSyncAt[source] = nil
 end)
 
 -- -----------------------------------------------------
@@ -1869,42 +2082,101 @@ end)
 --  ADMINISTRATIVE COMMANDS
 -- -----------------------------------------------------
 
-RegisterCommand("setboss", function(source, args)
-    local targetSrc = tonumber(args[1]) or source
+local function commandReply(source, message, kind)
+    local src = tonumber(source)
+    if src and src > 0 then
+        TriggerClientEvent("sky_base:notification", src, "Jobs", message, kind or "info", 5000)
+    else
+        print(("[sky_jobs_base] %s"):format(message))
+    end
+end
+
+-- These commands were registered unrestricted (RegisterCommand(..., false)) without a
+-- permission check, so every player could make themselves boss or take any job.
+local function registerAdminCommand(name, permission, handler)
+    RegisterCommand(name, function(source, args, raw)
+        if not Sky_Jobs.HasPermission(source, permission) then
+            commandReply(source, "You do not have permission to use this command.", "error")
+            return
+        end
+        handler(source, type(args) == "table" and args or {}, raw)
+    end, false)
+end
+
+local function resolveCommandTarget(source, arg)
+    local target = tonumber(arg) or tonumber(source)
+    if not target or target <= 0 or not GetPlayerName(target) then
+        return nil
+    end
+    return target
+end
+
+local function doesJobExist(jobName)
+    if Sky and Sky.FW and Sky.FW.DoesJobExist then
+        return Sky.FW.DoesJobExist(jobName) == true
+    end
+    return true
+end
+
+registerAdminCommand("setboss", "setboss", function(source, args)
+    local targetSrc = resolveCommandTarget(source, args[1])
+    if not targetSrc then
+        commandReply(source, "Usage: /setboss [playerId] [job] [grade] - player not found.", "error")
+        return
+    end
+
     local jobName = args[2] or Sky_Jobs.PlayerCache.GetJob(targetSrc)
     local grade = tonumber(args[3]) or 4
-    if Sky and Sky.FW and Sky.FW.SetJob then
-        Sky.FW.SetJob(targetSrc, jobName, grade)
-        print(("[sky_jobs_base] setboss executed: %s -> %s (grade %s)"):format(targetSrc, jobName, grade))
+    if isUnemployedJob(jobName) or not doesJobExist(jobName) then
+        commandReply(source, ("Job '%s' does not exist."):format(tostring(jobName)), "error")
+        return
     end
-end, false)
 
-RegisterCommand(Config.MultiJob and Config.MultiJob.giveJobCommand or "givejob", function(source, args)
-    local targetSrc = tonumber(args[1]) or source
+    SetPlayerJob(targetSrc, jobName, grade)
+    commandReply(source, ("Set %s to %s (grade %s)."):format(GetPlayerFullName(targetSrc), jobName, grade), "success")
+end)
+
+registerAdminCommand(Config.MultiJob and Config.MultiJob.giveJobCommand or "givejob", "givejob", function(source, args)
+    local targetSrc = resolveCommandTarget(source, args[1])
     local jobName = args[2]
     local grade = tonumber(args[3]) or 0
-    if not jobName then return end
-    if Sky and Sky.FW and Sky.FW.SetJob then
-        Sky.FW.SetJob(targetSrc, jobName, grade)
-        print(("[sky_jobs_base] givejob executed: %s -> %s (grade %s)"):format(targetSrc, jobName, grade))
+    if not targetSrc or type(jobName) ~= "string" or jobName == "" then
+        commandReply(source, "Usage: /givejob <playerId> <job> [grade]", "error")
+        return
     end
-end, false)
-
-RegisterCommand(Config.MultiJob and Config.MultiJob.removeJobCommand or "removejob", function(source, args)
-    local targetSrc = tonumber(args[1]) or source
-    local jobName = args[2]
-    if Sky and Sky.FW and Sky.FW.SetJob then
-        Sky.FW.SetJob(targetSrc, Config.MultiJob and Config.MultiJob.defaultJob or "unemployed", 0)
-        print(("[sky_jobs_base] removejob executed: %s removed job %s"):format(targetSrc, tostring(jobName)))
+    if not doesJobExist(jobName) then
+        commandReply(source, ("Job '%s' does not exist."):format(jobName), "error")
+        return
     end
-end, false)
 
-RegisterCommand(Config.MultiJob and Config.MultiJob.adminCommand or "multijobadmin", function(source, args)
-    print("[sky_jobs_base] multijobadmin command placeholder. Use FW commands for multijob.")
-end, false)
+    SetPlayerJob(targetSrc, jobName, grade)
+    commandReply(source, ("Gave %s the job %s (grade %s)."):format(GetPlayerFullName(targetSrc), jobName, grade), "success")
+end)
 
-RegisterCommand("dutytest", function(source, args)
-    local targetSrc = tonumber(args[1]) or source
+registerAdminCommand(Config.MultiJob and Config.MultiJob.removeJobCommand or "removejob", "removejob", function(source, args)
+    local targetSrc = resolveCommandTarget(source, args[1])
+    if not targetSrc then
+        commandReply(source, "Usage: /removejob <playerId> [job]", "error")
+        return
+    end
+
+    local defaultJob = Config.MultiJob and Config.MultiJob.defaultJob or "unemployed"
+    local defaultGrade = Config.MultiJob and tonumber(Config.MultiJob.defaultGrade) or 0
+    SetPlayerJob(targetSrc, defaultJob, defaultGrade)
+    commandReply(source, ("Removed the job of %s."):format(GetPlayerFullName(targetSrc)), "success")
+end)
+
+registerAdminCommand(Config.MultiJob and Config.MultiJob.adminCommand or "multijobadmin", "multijobadmin", function(source, args)
+    commandReply(source, "multijobadmin is not available; use /givejob and /removejob.", "info")
+end)
+
+registerAdminCommand("dutytest", "dutytest", function(source, args)
+    local targetSrc = resolveCommandTarget(source, args[1])
+    if not targetSrc then
+        commandReply(source, "Usage: /dutytest [playerId] [on|off]", "error")
+        return
+    end
+
     local state = args[2]
     if state == "on" or state == "1" or state == "true" then
         Sky_Jobs.PlayerCache.SetDuty(targetSrc, true)
@@ -1914,5 +2186,9 @@ RegisterCommand("dutytest", function(source, args)
         local current = Sky_Jobs.PlayerCache.IsOnDuty(targetSrc)
         Sky_Jobs.PlayerCache.SetDuty(targetSrc, not current)
     end
-    print(("[sky_jobs_base] dutytest executed: %s is now %s duty"):format(targetSrc, Sky_Jobs.PlayerCache.IsOnDuty(targetSrc) and "ON" or "OFF"))
-end, false)
+
+    local onDuty = Sky_Jobs.PlayerCache.IsOnDuty(targetSrc)
+    local jobName = Sky_Jobs.PlayerCache.GetJob(targetSrc)
+    TriggerClientEvent("sky_jobs_base:creator:updatePlayerDuty", targetSrc, onDuty, (not isUnemployedJob(jobName)) and jobName or nil)
+    commandReply(source, ("%s is now %s duty."):format(GetPlayerFullName(targetSrc), onDuty and "ON" or "OFF"), "success")
+end)

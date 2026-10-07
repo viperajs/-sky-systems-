@@ -539,11 +539,9 @@ function Functions.ShowNotification(source, title, message, msgType)
     local src = tonumber(source)
     if not src or src <= 0 then return end
 
-    TriggerClientEvent("sky_base:showNotification", src, {
-        title = title or "",
-        msg = message or "",
-        type = msgType or "info"
-    })
+    -- sky_base's client only handles sky_base:notification (title, message, type);
+    -- the former sky_base:showNotification event had no handler.
+    TriggerClientEvent("sky_base:notification", src, title or "", message or "", msgType or "info")
 end
 
 --- Check if player has permission for command / admin action

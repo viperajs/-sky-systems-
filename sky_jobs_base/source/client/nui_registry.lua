@@ -31,7 +31,10 @@ RegisterNUICallback = function(name, handler)
 end
 
 registerExport("RunNuiCallback", function(name, data, cb)
-    if type(name) ~= "string" or type(cb) ~= "function" then
+    -- cb comes from another resource (sky_mechanicjob's bridge) as a callable table.
+    local cbMeta = type(cb) == "table" and getmetatable(cb) or nil
+    local isCallable = type(cb) == "function" or (type(cbMeta) == "table" and cbMeta.__call ~= nil)
+    if type(name) ~= "string" or not isCallable then
         return false
     end
 
