@@ -354,13 +354,21 @@ if Sky.Config.framework == "esx" then
         return xPlayer.getAccount(account).money
     end
 
+    local function isValidAmount(amount)
+        return type(amount) == "number" and amount == amount and amount > 0 and amount ~= math.huge
+    end
+
+    -- Both return whether the money actually moved, so callers can refund or abort.
     function Sky.FW.AddAccountMoney(source, account, amount)
         _sky_dbg("Sky.FW.AddAccountMoney", source, account, amount)
         if account == "cash" then
             account = "money"
         end
         local xPlayer = ESX.GetPlayerFromId(source)
+        amount = tonumber(amount)
+        if not xPlayer or not isValidAmount(amount) or not xPlayer.getAccount(account) then return false end
         xPlayer.addAccountMoney(account, amount)
+        return true
     end
 
     function Sky.FW.RemoveAccountMoney(source, account, amount)
@@ -369,7 +377,10 @@ if Sky.Config.framework == "esx" then
             account = "money"
         end
         local xPlayer = ESX.GetPlayerFromId(source)
-        if xPlayer.getAccount(account).money >= amount then
+        amount = tonumber(amount)
+        if not xPlayer or not isValidAmount(amount) then return false end
+        local accountData = xPlayer.getAccount(account)
+        if accountData and accountData.money >= amount then
             xPlayer.removeAccountMoney(account, amount)
             return true
         end

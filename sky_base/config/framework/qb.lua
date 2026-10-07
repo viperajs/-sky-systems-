@@ -248,28 +248,33 @@ if Sky.Config.framework == "qb" then
         return xPlayer.PlayerData.money[account]
     end
 
+    local function normalizeAccount(account)
+        if account == "money" then return "cash" end
+        if account == "black_money" then return "black" end
+        return account
+    end
+
+    local function isValidAmount(amount)
+        return type(amount) == "number" and amount == amount and amount > 0 and amount ~= math.huge
+    end
+
+    -- Both return whether the money actually moved, so callers can refund or abort.
     function Sky.FW.AddAccountMoney(source, account, amount)
         local xPlayer = QBCore.Functions.GetPlayer(source)
-        if account == "money" then
-            account = "cash"
-        elseif account == "black_money" then
-            account = "black"
-        end
-        xPlayer.Functions.AddMoney(account, amount)
+        amount = tonumber(amount)
+        if not xPlayer or not isValidAmount(amount) then return false end
+        return xPlayer.Functions.AddMoney(normalizeAccount(account), amount) ~= false
     end
 
     function Sky.FW.RemoveAccountMoney(source, account, amount)
         local xPlayer = QBCore.Functions.GetPlayer(source)
-        if account == "money" then
-            account = "cash"
-        elseif account == "black_money" then
-            account = "black"
-        end
-        if xPlayer.PlayerData.money[account] >= amount then
-            xPlayer.Functions.RemoveMoney(account, amount)
-            return true
-        end
-        return false
+        amount = tonumber(amount)
+        if not xPlayer or not isValidAmount(amount) then return false end
+
+        account = normalizeAccount(account)
+        local balance = tonumber(xPlayer.PlayerData.money[account])
+        if not balance or balance < amount then return false end
+        return xPlayer.Functions.RemoveMoney(account, amount) ~= false
     end
 
     local jobUsersCache = {}
