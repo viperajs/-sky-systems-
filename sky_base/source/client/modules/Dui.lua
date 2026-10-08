@@ -34,11 +34,13 @@ local function getRenderTarget(name, model)
     return renderId
 end
 
-local function drawSpriteToRenderTarget(renderId)
+-- Draws the screen's own runtime texture (CreateScreen names it per screen id; the fixed
+-- "skybase_b_dict"/"skybase_b_txd" names did not exist, so render targets stayed blank).
+local function drawSpriteToRenderTarget(renderId, runtimeTxd, textureName)
     SetTextRenderId(renderId)
     Set_2dLayer(4)
     SetScriptGfxDrawBehindPausemenu(1)
-    DrawSprite("skybase_b_dict", "skybase_b_txd", 0.5, 0.5, 1.0, 1.0, 0.0, 255, 255, 255, 255)
+    DrawSprite(runtimeTxd, textureName, 0.5, 0.5, 1.0, 1.0, 0.0, 255, 255, 255, 255)
     SetTextRenderId(GetDefaultScriptRendertargetRenderId())
     SetScriptGfxDrawBehindPausemenu(0)
 end
@@ -101,10 +103,16 @@ function Sky.Dui.CreateScreen(id, entity, url, width, height, scale, offset, tar
     PushScaleformMovieFunctionParameterInt(height)
     PopScaleformMovieFunctionVoid()
 
+    -- Both loops stop once this instance is replaced (sky_base:updateDui re-creates the
+    -- screen under the same id); before, every update left two more loops running.
+    local function isCurrent()
+        return Sky.Dui.instances[id] == screenInstance
+    end
+
     -- Visibility & Stream Distance Loop
     CreateThread(function()
-        while DoesEntityExist(entity) and Sky.Dui.instances[id] do
-            local inst = Sky.Dui.instances[id]
+        while DoesEntityExist(entity) and isCurrent() do
+            local inst = screenInstance
             local pedCoords = GetEntityCoords(PlayerPedId())
             local entCoords = GetEntityCoords(entity)
             local dist = #(pedCoords - entCoords)
@@ -123,27 +131,22 @@ function Sky.Dui.CreateScreen(id, entity, url, width, height, scale, offset, tar
             Wait(checkInterval)
         end
 
-        local inst = Sky.Dui.instances[id]
-        if inst then
-            if inst.duiObj then
-                DestroyDui(inst.duiObj)
-            end
-            table.insert(Sky.Dui.availableScaleforms, inst.scaleformName)
-            Sky.Dui.instances[id] = nil
+        if isCurrent() then
+            Sky.Dui.RemoveScreen(id)
         end
     end)
 
     -- Render Loop
     CreateThread(function()
-        while DoesEntityExist(entity) and Sky.Dui.instances[id] do
-            local inst = Sky.Dui.instances[id]
+        while DoesEntityExist(entity) and isCurrent() do
+            local inst = screenInstance
             if inst and inst.isVisible and inst.scaleform and HasScaleformMovieLoaded(inst.scaleform) then
                 local worldCoords = GetOffsetFromEntityInWorldCoords(entity, offset.x, offset.y, offset.z)
                 if target then
                     local model = GetEntityModel(entity)
                     local renderId = getRenderTarget(target, model)
                     if renderId ~= -1 then
-                        drawSpriteToRenderTarget(renderId)
+                        drawSpriteToRenderTarget(renderId, inst.runtimeTxd, inst.textureName)
                     end
                 else
                     local heading = GetEntityHeading(entity)

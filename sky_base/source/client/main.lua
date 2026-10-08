@@ -75,6 +75,15 @@ local CreatorPrefixes = {
 -- -----------------------------------------------------
 --  INTERNAL UTILITIES
 -- -----------------------------------------------------
+-- A function passed in from another resource (export, event) arrives as a callable
+-- table (function reference), so type(value) == "function" is not enough.
+local function isCallable(value)
+    if type(value) == "function" then return true end
+    if type(value) ~= "table" then return false end
+    local mt = getmetatable(value)
+    return type(mt) == "table" and mt.__call ~= nil
+end
+
 local function getTableKeys(tbl)
     local keys = {}
     for k in pairs(tbl) do
@@ -232,7 +241,7 @@ local function canInteract(point, playerPed, inVehicle)
     if point.requireVehicle and not inVehicle then
         return false
     end
-    if type(point.canInteract) == "function" then
+    if isCallable(point.canInteract) then
         return not not point.canInteract(point, playerPed)
     end
     return true
@@ -288,6 +297,7 @@ local function spawnNpc(point)
     local pedObj = Sky.Ped:new()
     pedObj:Spawn(spec.pedHash, point.coords, spec.heading, {
         scenario = spec.scenario,
+        animation = spec.animation,
         onSpawn = spec.onSpawn,
         spawnProfile = "interaction"
     })
@@ -348,7 +358,9 @@ CreateThread(function()
     local sleep = 2000
     while true do
         Wait(sleep)
-        if not next(InteractionPoints) then
+        -- Target points without a marker live only in TargetPoints; their NPCs still
+        -- have to be streamed in.
+        if not next(InteractionPoints) and not next(TargetPoints) then
             if activeInteractionsCount <= 0 then
                 activeTargetPoints = {}
                 activeInteractionPoints = {}
@@ -430,6 +442,9 @@ CreateThread(function()
                             end
 
                             if not pt.markerOnly and dist < pt.interactionDistance then
+                                -- IsControlJustPressed is only true for one frame, so poll
+                                -- every frame while in range, with or without a marker.
+                                sleep = 0
                                 Sky.Show.HelpNotification(pt.message, "E")
                                 if IsControlJustPressed(0, 38) then
                                     triggerInteraction(idx, pt, ped)
@@ -451,32 +466,34 @@ end)
 function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, blip, resourceName, interactDist, existingEntity, onPedSpawned, extraOpts)
     local getCoordsFn = nil
     local srcEntity = nil
+    local entityOffset = nil
 
-    if type(coords) == "function" then
+    -- The options table is replaced by plain coords below for entity points, so its
+    -- flags are read first.
+    local pointOptions = (type(coords) == "table" and not isCallable(coords)) and coords or {}
+    local canInteractFn = isCallable(pointOptions.canInteract) and pointOptions.canInteract or nil
+    local reqVehicle = pointOptions.requireVehicle == true
+    local forceMarker = (type(extraOpts) == "table" and extraOpts.forceMarkerInteraction == true) or pointOptions.forceMarkerInteraction == true
+
+    -- Checked first: indexing a function reference raises an error.
+    if isCallable(coords) then
         getCoordsFn = coords
         coords = getCoordsFn()
     elseif type(coords) == "table" and coords.entity then
         srcEntity = coords.entity
-        if type(coords.getCoords) == "function" then
+        if isCallable(coords.getCoords) then
             getCoordsFn = coords.getCoords
             coords = getCoordsFn(srcEntity)
-        elseif type(coords.offset) == "table" then
-            coords = GetOffsetFromEntityInWorldCoords(srcEntity, coords.offset.x or 0.0, coords.offset.y or 0.0, coords.offset.z or 0.0)
+        elseif type(coords.offset) == "table" or type(coords.offset) == "vector3" then
+            entityOffset = coords.offset
+            coords = GetOffsetFromEntityInWorldCoords(srcEntity, entityOffset.x or 0.0, entityOffset.y or 0.0, entityOffset.z or 0.0)
         else
             coords = GetEntityCoords(srcEntity)
         end
-    elseif type(coords) == "table" and type(coords.getCoords) == "function" then
+    elseif type(coords) == "table" and isCallable(coords.getCoords) then
         getCoordsFn = coords.getCoords
         coords = getCoordsFn()
     end
-
-    local canInteractFn = nil
-    if type(coords) == "table" and type(coords.canInteract) == "function" then
-        canInteractFn = coords.canInteract
-    end
-
-    local reqVehicle = type(coords) == "table" and (coords.requireVehicle == true)
-    local forceMarker = (type(extraOpts) == "table" and extraOpts.forceMarkerInteraction == true) or (type(coords) == "table" and coords.forceMarkerInteraction == true)
 
     if not (coords and coords.x) then return end
     local pos = vector3(coords.x, coords.y, coords.z)
@@ -494,6 +511,7 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
                 pedHash = npc.pedHash,
                 heading = npc.heading,
                 scenario = npc.scenario,
+                animation = npc.animation,
                 onSpawn = npc.onSpawn
             }
         end
@@ -506,8 +524,8 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
             if npc.scenario then
                 TaskStartScenarioInPlace(npcEnt, npc.scenario, 0, true)
             end
-            if type(npc.onSpawn) == "function" then
-                npc.onSpawn(npcEnt)
+            if isCallable(npc.onSpawn) then
+                pcall(npc.onSpawn, npcEnt)
             end
         end
         if onPedSpawned then
@@ -517,6 +535,7 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
         local pedObj = Sky.Ped:new()
         pedObj:Spawn(npcSpecData.pedHash, pos, npcSpecData.heading, {
             scenario = npcSpecData.scenario,
+            animation = npcSpecData.animation,
             onSpawn = npcSpecData.onSpawn,
             spawnProfile = "interaction"
         })
@@ -532,12 +551,12 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
         blipId = Sky.Show.Blip(pos, blip.sprite, blip.color, blip.name)
     end
 
-    local interactionDist = tonumber((type(extraOpts) == "table" and extraOpts.interactionDistance) or (type(coords) == "table" and coords.interactionDistance) or interactDist)
+    local interactionDist = tonumber((type(extraOpts) == "table" and extraOpts.interactionDistance) or pointOptions.interactionDistance or interactDist)
     if not interactionDist then
         interactionDist = tonumber(Config.interactionDistance) or 2.0
     end
 
-    local drawDist = tonumber((type(extraOpts) == "table" and extraOpts.drawDistance) or (type(coords) == "table" and coords.drawDistance)) or (interactionDist + DRAW_BUFFER)
+    local drawDist = tonumber((type(extraOpts) == "table" and extraOpts.drawDistance) or pointOptions.drawDistance) or (interactionDist + DRAW_BUFFER)
     local activeDist = math.max(interactionDist, drawDist)
 
     if next(marker) then
@@ -548,7 +567,7 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
 
     local streamDist = STREAM_NPC_DIST
     if STREAM_NPC_ENABLED then
-        local configuredStreamDist = tonumber((type(extraOpts) == "table" and extraOpts.streamNpcDistance) or (type(coords) == "table" and coords.streamNpcDistance))
+        local configuredStreamDist = tonumber((type(extraOpts) == "table" and extraOpts.streamNpcDistance) or pointOptions.streamNpcDistance)
         if configuredStreamDist then
             streamDist = configuredStreamDist
         end
@@ -575,7 +594,7 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
         }
 
         local targetCanInteract = nil
-        if type(canInteractFn) == "function" or reqVehicle then
+        if canInteractFn or reqVehicle then
             targetCanInteract = function()
                 if reqVehicle then
                     local ped = PlayerPedId()
@@ -583,7 +602,7 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
                         return false
                     end
                 end
-                if type(canInteractFn) == "function" then
+                if canInteractFn then
                     local ped = PlayerPedId()
                     return not not canInteractFn(pointData, GetEntityCoords(ped))
                 end
@@ -607,7 +626,9 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
             pointData.targetType = "entity"
             pointData.targetEntity = npcEnt
             trackPed(pointData, npcEnt)
-        elseif not STREAM_NPC_ENABLED then
+        elseif not (STREAM_NPC_ENABLED and npcSpecData) then
+            -- A streamed NPC gets the option when it spawns (spawnNpc). Every other point
+            -- needs its entity option or zone now, or it is never targetable.
             if srcEntity and DoesEntityExist(srcEntity) then
                 Sky.Target.AddLocalEntity(srcEntity, { targetOpt })
                 pointData.targetType = "entity"
@@ -624,11 +645,11 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
             end
         end
 
-        if STREAM_NPC_ENABLED then
+        if STREAM_NPC_ENABLED and npcSpecData then
             pointData.coords = pos
             pointData.getCoords = getCoordsFn
             pointData.sourceEntity = srcEntity
-            pointData.offset = (type(coords) == "table" and coords.offset) or nil
+            pointData.offset = entityOffset
             pointData.npcSpec = npcSpecData
             pointData.streamDistance = streamDist
             pointData.npcSpawned = (npcEnt ~= nil)
@@ -651,7 +672,7 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
                 index = tostring(activeIndex),
                 getCoords = getCoordsFn,
                 sourceEntity = srcEntity,
-                offset = (type(coords) == "table" and coords.offset) or nil,
+                offset = entityOffset,
                 canInteract = canInteractFn,
                 requireVehicle = reqVehicle,
                 markerOnly = true
@@ -677,12 +698,13 @@ function Sky.CreateInteractionPoint(coords, message, event, id, marker, npc, bli
             index = strIdx,
             getCoords = getCoordsFn,
             sourceEntity = srcEntity,
-            offset = (type(coords) == "table" and coords.offset) or nil,
+            offset = entityOffset,
             canInteract = canInteractFn,
             requireVehicle = reqVehicle
         }
 
-        if STREAM_NPC_ENABLED then
+        -- Counted only with an NPC spec: DeleteInteractionPoint decrements only for those.
+        if STREAM_NPC_ENABLED and npcSpecData then
             pointData.npcSpec = npcSpecData
             pointData.streamDistance = streamDist
             pointData.npcSpawned = (npcEnt ~= nil)
@@ -746,6 +768,17 @@ function Sky.DeleteInteractionPoint(targetId, keepEntity)
 
     return deletedNpc
 end
+
+-- Other resources create their points through these exports. Reaching the functions
+-- through exports.sky_base:Get() hands them over as function references, which the
+-- import wrappers rejected with a type(...) == "function" check, so no point was made.
+registerExport("CreateInteractionPoint", function(...)
+    return Sky.CreateInteractionPoint(...)
+end)
+
+registerExport("DeleteInteractionPoint", function(...)
+    return Sky.DeleteInteractionPoint(...)
+end)
 
 local function cleanupResourceInteractions(targetRes, isSelf)
     for _, idx in ipairs(getTableKeys(TargetPoints)) do

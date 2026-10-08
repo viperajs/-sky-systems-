@@ -314,6 +314,12 @@ end
 
 local defaultCostProfile = Config and Config.TuningCostProfile or {}
 
+-- Jobs from /jobconfig keep the framework job in jobKey/job; name is the workshop's
+-- display name (e.g. "Los Santos Customs" -> "mechanic").
+local function jobMatchesName(job, jobName)
+    return job.jobKey == jobName or job.job == jobName or job.name == jobName
+end
+
 function GetJobConfigByName(jobName)
     if type(jobName) ~= "string" or jobName == "" then
         return Config and Config.Jobs and Config.Jobs[1] or nil
@@ -321,7 +327,7 @@ function GetJobConfigByName(jobName)
 
     if Config and Config.Jobs then
         for _, job in ipairs(Config.Jobs) do
-            if type(job) == "table" and job.name == jobName then
+            if type(job) == "table" and jobMatchesName(job, jobName) then
                 return job
             end
         end
@@ -331,12 +337,44 @@ function GetJobConfigByName(jobName)
 end
 
 function IsJobConfigured(jobName)
-    return GetJobConfigByName(jobName) ~= nil
+    return type(jobName) == "string" and jobName ~= "" and GetJobConfigByName(jobName) ~= nil
+end
+
+-- Used by the instant tuning locations (tuning.lua) for mechanicOnly; it was never defined.
+function isConfiguredMechanicJob(jobName)
+    return jobName == "mechanic" or IsJobConfigured(jobName)
+end
+
+-- Every job name a workshop interaction can be raised for: "mechanic" plus the
+-- jobKey, job and name of each job in Config.Jobs.
+function GetMechanicJobNames()
+    local names, seen = {}, {}
+    local function add(name)
+        if type(name) == "string" and name ~= "" and not seen[name] then
+            seen[name] = true
+            names[#names + 1] = name
+        end
+    end
+
+    add("mechanic")
+    for _, job in ipairs(Config and Config.Jobs or {}) do
+        if type(job) == "table" then
+            add(job.jobKey)
+            add(job.job)
+            add(job.name)
+        else
+            add(job)
+        end
+    end
+    return names
 end
 
 function GetActiveJobKey()
     if type(Sky_Jobs) == "table" and type(Sky_Jobs.Access) == "table" then
-        if Sky_Jobs.Access.HasSnapshot() ~= true then
+        -- Refresh waits for the server, which only works inside a thread. Called while this
+        -- file loaded, it raised "attempt to yield from outside a coroutine" and aborted the
+        -- rest of the file (configurator sync, sendUi, releaseNuiFocus, ...).
+        if Sky_Jobs.Access.HasSnapshot() ~= true and coroutine.isyieldable() then
             Sky_Jobs.Access.Refresh()
         end
         return Sky_Jobs.Access.GetJobKey()
@@ -351,8 +389,9 @@ function GetSelfServicePricingConfig()
     }
 end
 
+-- Same rule as the server (server/pricing.lua): the job's entry, else the first entry.
 function ResolveTuningCostProfile(jobKey)
-    local jobConfig = GetJobConfigByName(jobKey) or {}
+    local jobConfig = GetJobConfigByName(jobKey) or (Config and Config.Jobs and Config.Jobs[1]) or {}
     local profile = jobConfig.tuningCostProfile or {}
 
     local result = {
@@ -378,9 +417,6 @@ function ResolveSelfServicePricingContext(profileJob, isSelfService)
     local selfServiceCfg = GetSelfServicePricingConfig()
 
     if selfServiceCfg.publicUsersSeePrices then
-        if isConfigured then
-            return { hidePrices = false, profileJob = activeJobKey }
-        end
         local fallbackJob = profileJob
         if not fallbackJob and Config and Config.Jobs and Config.Jobs[1] then
             fallbackJob = Config.Jobs[1].name
@@ -389,7 +425,7 @@ function ResolveSelfServicePricingContext(profileJob, isSelfService)
     end
 
     if isConfigured then
-        return { hidePrices = false, profileJob = activeJobKey }
+        return { hidePrices = false, profileJob = profileJob or activeJobKey }
     end
 
     return { hidePrices = true, profileJob = nil }
@@ -414,12 +450,15 @@ function RefreshTuningCostProfile(jobKey)
     end
 end
 
-tuningCostProfile = ResolveTuningCostProfile(GetActiveJobKey())
+tuningCostProfile = ResolveTuningCostProfile(nil)
 customHandlingConfig = Config and Config.CustomHandlingOptions or { profiles = {} }
 stagedCostByModType = {}
 flatCostByModType = {}
 
-RefreshTuningCostProfile(GetActiveJobKey())
+-- The player's job comes from the server, so the profile is refreshed in a thread.
+CreateThread(function()
+    RefreshTuningCostProfile(GetActiveJobKey())
+end)
 
 AddEventHandler("sky_jobs_base:access:stateChanged", function(data)
     local jobKey = type(data) == "table" and data.jobKey or nil
@@ -549,9 +588,10 @@ local function parseInstantTuningConfig(data)
 
     for _, loc in ipairs(rawLocs) do
         if type(loc) == "table" then
-            local x = tonumber(loc.x)
-            local y = tonumber(loc.y)
-            local z = tonumber(loc.z)
+            local c = (type(loc.coords) == "table" or type(loc.coords) == "vector3") and loc.coords or loc
+            local x = tonumber(c.x)
+            local y = tonumber(c.y)
+            local z = tonumber(c.z)
 
             if x and y and z then
                 local locObj = {
@@ -607,7 +647,13 @@ local function applyConfigOverrides(data)
     Config.OrderInstall = Config.OrderInstall or {}
     Config.TuningWorkshopRequirement = Config.TuningWorkshopRequirement or {}
 
-    parseInstantTuningConfig(data)
+    -- Only when /jobconfig sends instant tuning settings; otherwise adv_config.lua stays.
+    for key in pairs(data) do
+        if type(key) == "string" and key:find("^instantTuning") then
+            parseInstantTuningConfig(data)
+            break
+        end
+    end
 
     for key, value in pairs(data) do
         if key == "primaryColor" then
@@ -712,16 +758,70 @@ local function applyConfigOverrides(data)
     end
 end
 
+-- /jobconfig workshops carry no shop or tuning cost profile; they keep the matching Lua job
+-- (by job key) or the first one underneath, as the server does.
+local LUA_JOBS = Config and Config.Jobs or {}
+
+local function mergeConfiguratorJobs(entries)
+    local merged = {}
+    for _, entry in ipairs(entries) do
+        if type(entry) == "table" then
+            local key = entry.jobKey or entry.job or entry.name
+            local base = LUA_JOBS[1] or {}
+            for _, job in ipairs(LUA_JOBS) do
+                if type(job) == "table" and job.name == key then
+                    base = job
+                    break
+                end
+            end
+            local job = {}
+            for k, v in pairs(base) do job[k] = v end
+            for k, v in pairs(entry) do job[k] = v end
+            merged[#merged + 1] = job
+        end
+    end
+    return merged
+end
+
 if Config and Config.UseJobConfigurator then
     RegisterNetEvent("sky_jobs_base:jobConfigurator:updated", function(resName, jobs, features, overrides)
         if resName ~= "sky_mechanicjob" then return end
-        Config.Jobs = jobs
-        Config.ToggleFeatures = features
-        applyConfigOverrides(overrides)
+        if type(jobs) ~= "table" then return end
+        Config.Jobs = mergeConfiguratorJobs(jobs)
+        Config.ToggleFeatures = type(features) == "table" and features or Config.ToggleFeatures
+        applyConfigOverrides(type(overrides) == "table" and overrides or {})
         TriggerEvent("sky_mechanicjob:jobConfigurator:updated")
     end)
     TriggerServerEvent("sky_jobs_base:jobConfigurator:requestSync", "sky_mechanicjob")
 end
+
+-- Definitions for the workshop locations placed in /jobconfig, taken from
+-- Config.Interactions. sky_jobs_base builds the markers, NPCs and prompts of these
+-- points from them (e.g. the stolen parts dealer NPC, public self-service tuning).
+local CREATOR_POINT_INTERACTIONS = {
+    self_service_tuning = "self_service_tuning",
+    stolen_parts_dealer = "stolen_parts_dealer",
+    parts_drop = "part_delivery",
+    lift = "workshop_lift",
+    engine_swap = "engine_hoist_location"
+}
+
+local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
+
+registerExport("GetCreatorTypeDefinitions", function(creatorKey)
+    if creatorKey ~= nil and creatorKey ~= "workshopcreator" then
+        return {}
+    end
+
+    local interactions = Config and Config.Interactions or {}
+    local definitions = {}
+    for pointType, interactionKey in pairs(CREATOR_POINT_INTERACTIONS) do
+        if type(interactions[interactionKey]) == "table" then
+            definitions[pointType] = interactions[interactionKey]
+        end
+    end
+    return definitions
+end)
 
 WHEEL_TYPE_KEY_BY_INDEX = {
     [0] = "sport", [1] = "muscle", [2] = "lowrider", [3] = "suv",

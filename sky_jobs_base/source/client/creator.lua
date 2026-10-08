@@ -65,15 +65,43 @@ local creatorUiState = {
     selectedJobKey = nil
 }
 
+-- The player's job and duty decide which job-bound points are shown. Nothing job-bound
+-- is shown until the job is known, and playerJobKey is nil for players without a job.
+local playerJobLoaded = false
 local playerJobKey = nil
-local playerDutyActive = false
-local playerDutyLoaded = false
 local isPlayerOnDuty = false
-local dutyJobKey = nil
 local isDutyRebuildPending = false
 local isDutyRebuildRunning = false
 local isDutyRebuildQueued = false
 local DEBOUNCE_WAIT_MS = 1000
+
+-- Point types placed in the job configurator, mapped to the interaction they open.
+local POINT_TYPE_ALIASES = {
+    bossmenu = "boss_menu",
+    management = "boss_menu",
+    tuning = "self_service_tuning",
+    duty = "duty_terminal",
+    duty_station = "duty_terminal",
+    shop = "wholesale_shop"
+}
+
+-- Used when neither the job resource nor Config.Interactions defines the type.
+-- interaction = false: the job resource handles the point itself (lift and engine hoist
+-- props in sky_mechanicjob), so no marker or prompt is created for it here.
+local BUILTIN_TYPE_DEFINITIONS = {
+    duty_terminal = { duty = false },
+    boss_menu = { duty = true },
+    wardrobe = { duty = true },
+    storage = { duty = true },
+    locker = { duty = true },
+    wholesale_shop = { duty = true },
+    parts_drop = { duty = true },
+    dyno = { duty = true },
+    self_service_tuning = { public = true, forceMarkerInteraction = true, interactionDistance = 2.5 },
+    stolen_parts_dealer = { public = true },
+    lift = { interaction = false },
+    engine_swap = { interaction = false }
+}
 
 local function deepCopyTable(tbl)
     if type(tbl) ~= "table" then return tbl end
@@ -123,12 +151,7 @@ end
 local rebuildAllInteractions -- forward declaration
 
 local function triggerDebouncedRebuild()
-    if isDutyRebuildRunning then
-        isDutyRebuildQueued = true
-        return
-    end
-
-    if isDutyRebuildPending then
+    if isDutyRebuildRunning or isDutyRebuildPending then
         isDutyRebuildQueued = true
         return
     end
@@ -142,8 +165,13 @@ local function triggerDebouncedRebuild()
         end
 
         isDutyRebuildRunning = true
-        rebuildAllInteractions()
+        -- An error must not leave the running flag set: every later rebuild would only
+        -- be queued and the points would never update again.
+        local ok, err = pcall(rebuildAllInteractions)
         isDutyRebuildRunning = false
+        if not ok then
+            print(("[sky_jobs_base][creator] rebuilding interaction points failed: %s"):format(tostring(err)))
+        end
 
         if isDutyRebuildQueued then
             isDutyRebuildQueued = false
@@ -162,24 +190,36 @@ local function sanitizeStringKey(val)
     return nil
 end
 
-local function updatePlayerJob(jobKey)
-    local sanitized = sanitizeStringKey(jobKey)
-    local wasDutyLoaded = playerDutyLoaded
-    local oldJob = dutyJobKey or playerJobKey
+-- Job updates arrive as a job name or as a framework job table ({ name = ..., onduty = ... }).
+local function extractJobName(data)
+    if type(data) == "table" then
+        return sanitizeStringKey(data.name or data.job or data.jobKey or data.id)
+    end
+    return sanitizeStringKey(data)
+end
 
-    playerJobKey = sanitized
-    playerDutyLoaded = true
-    dutyJobKey = nil
+local function isUnemployedJob(jobName)
+    if not jobName then return true end
+    local defaultJob = Config and Config.MultiJob and Config.MultiJob.defaultJob or "unemployed"
+    return jobName == defaultJob or jobName == "unemployed"
+end
 
-    if sanitized then
-        local res = Sky.Cb.Trigger("sky_jobs_base:getOnDutyJobFor", { jobKey = sanitized })
-        if res and res.success and res.data and res.data.jobKey then
-            dutyJobKey = sanitizeStringKey(res.data.jobKey)
-        end
+local function updatePlayerJob(jobData)
+    local jobName = extractJobName(jobData)
+    if isUnemployedJob(jobName) then
+        jobName = nil
     end
 
-    local currentActiveJob = dutyJobKey or playerJobKey
-    if not wasDutyLoaded or oldJob ~= currentActiveJob then
+    local changed = not playerJobLoaded or playerJobKey ~= jobName
+    playerJobLoaded = true
+    playerJobKey = jobName
+
+    if type(jobData) == "table" and type(jobData.onduty) == "boolean" and isPlayerOnDuty ~= jobData.onduty then
+        isPlayerOnDuty = jobData.onduty
+        changed = true
+    end
+
+    if changed then
         triggerDebouncedRebuild()
     end
 end
@@ -193,55 +233,70 @@ end
 
 local function updatePlayerDuty(onDutyState)
     local isDuty = onDutyState == true
-    local changed = (isPlayerOnDuty ~= isDuty)
-
+    if isPlayerOnDuty == isDuty then return end
     isPlayerOnDuty = isDuty
-    if not playerDutyActive then
-        playerDutyActive = true
-    end
-
-    if changed or not playerDutyActive then
-        triggerDebouncedRebuild()
-    end
+    triggerDebouncedRebuild()
 end
 
-local function isJobActiveForCreator(jobKey)
+local function isTable(val) return type(val) == "table" end
+
+local function normalizePointTypeName(typeName)
+    if type(typeName) ~= "string" then return typeName end
+    local lower = typeName:lower():gsub("%s+", "_"):gsub("-", "_"):gsub("_+", "_")
+    return lower
+end
+
+local function getNormalizedTypeKey(pointType)
+    local norm = normalizePointTypeName(pointType)
+    return POINT_TYPE_ALIASES[norm] or norm
+end
+
+-- Is the player a member of the entry's job? A configured off-duty job (offDutyJob, or
+-- the multijob off-duty prefix) counts as a member who is off duty.
+local function isEntryJobMember(entry)
+    local jobKey = sanitizeStringKey(type(entry) == "table" and (entry.jobKey or entry.job) or nil)
+    if not jobKey then return true end
+
     if creatorUiState.active and creatorUiState.selectedJobKey then
         return creatorUiState.selectedJobKey == jobKey
     end
 
-    if not playerDutyLoaded or not playerJobKey then
-        return true
-    end
+    if not playerJobLoaded or not playerJobKey then return false end
+    if playerJobKey == jobKey then return true end
 
-    if playerJobKey == jobKey then
-        return true
-    end
+    local offDutyJob = type(entry.offDutyJob) == "table" and entry.offDutyJob.enabled ~= false and sanitizeStringKey(entry.offDutyJob.job) or nil
+    if offDutyJob and playerJobKey == offDutyJob then return true end
 
-    if dutyJobKey and dutyJobKey == jobKey then
-        return true
-    end
-
-    return false
+    local prefix = Config and Config.MultiJob and Config.MultiJob.offDutyPrefix or "off_"
+    return type(prefix) == "string" and prefix ~= "" and playerJobKey == prefix .. jobKey
 end
 
-local function checkJobMatches(data)
-    if type(data) ~= "table" then return false end
-    local key = sanitizeStringKey(data.jobKey)
-    if not key then return true end
-    return isJobActiveForCreator(key)
-end
-
-local function isDutySystemDisabled(data)
+-- A location's "requires on duty" toggle from the configurator wins over the type default.
+local function requiresOnDuty(entry, point, typeDef)
     if not IS_DUTY_SYSTEM_ENABLED then return false end
-    return type(data) ~= "table"
+
+    local settings = type(entry) == "table" and type(entry.locationSettings) == "table" and entry.locationSettings or nil
+    local pointSettings = settings and point and point.uid ~= nil and settings[tostring(point.uid)] or nil
+    if type(pointSettings) == "table" and type(pointSettings.requiresOnDuty) == "boolean" then
+        return pointSettings.requiresOnDuty
+    end
+
+    return not (isTable(typeDef) and typeDef.duty == false)
 end
 
-local function isDutyInteractionAllowed(pointData, pointType)
+-- Can the player see and use this point right now?
+local function canUseInteractionPoint(entry, point, typeDef, pointType)
+    if isTable(typeDef) and typeDef.interaction == false then return false end
+    if pointType == "duty_terminal" and not IS_DUTY_SYSTEM_ENABLED then return false end
+    if isTable(typeDef) and typeDef.public == true then return true end
+
+    if not isEntryJobMember(entry) then return false end
     if pointType == "duty_terminal" then return true end
-    if not isDutySystemDisabled(pointData) then return true end
-    if not playerDutyActive then return true end
-    return isPlayerOnDuty == true
+
+    if requiresOnDuty(entry, point, typeDef) and not isPlayerOnDuty then
+        return false
+    end
+    return true
 end
 
 local function hasInteractionToggleEnabled(cfg)
@@ -252,51 +307,9 @@ local function hasInteractionToggleEnabled(cfg)
     return true
 end
 
-local function checkInteractionNPCConfig(interactionKey, configData)
-    local cfg = configData or (Config and Config.Interactions and Config.Interactions[interactionKey])
-    if cfg then
-        return (type(cfg.npc) == "table") and hasInteractionToggleEnabled(cfg.npc)
-    end
-    return nil
+local function hasNpcConfig(typeDef)
+    return isTable(typeDef) and type(typeDef.npc) == "table" and hasInteractionToggleEnabled(typeDef.npc) and typeDef.npc.pedHash ~= nil
 end
-
-local function isTable(val) return type(val) == "table" end
-
-local function isJobDutyStateActive(pointData)
-    if not playerDutyLoaded then return false end
-    local jobKey = sanitizeStringKey(pointData and pointData.jobKey)
-    if not jobKey then return false end
-
-    if dutyJobKey and dutyJobKey == jobKey then return true end
-    return playerJobKey == jobKey
-end
-
-local function canShowInteractionPoint(pointData, pointConfig, typeDef, pointType)
-    if pointType == "duty_terminal" then
-        if not IS_DUTY_SYSTEM_ENABLED then return false end
-    end
-
-    if isTable(typeDef) then return true end
-    if checkJobMatches(pointData) then
-        if not isDutyInteractionAllowed(pointConfig, pointType) then
-            return false
-        end
-    end
-
-    if checkInteractionNPCConfig(pointType, typeDef) then
-        return true
-    end
-
-    if checkJobMatches(pointData) then return true end
-
-    if pointType == "duty_terminal" then
-        return isJobDutyStateActive(pointData)
-    end
-
-    return false
-end
-
-local function dummyAlwaysTrue(val) return true end
 
 local function setCreatorInputFocused(focused)
     if not creatorUiState.active then return end
@@ -387,7 +400,10 @@ local function createStationBlip(creatorKey, entryData, pointCoords, creatorConf
 
     if blipCfg.enabled == false then return end
 
-    local blip = AddBlipForCoord(pointCoords.x, pointCoords.y, pointCoords.z)
+    local x, y, z = tonumber(pointCoords.x), tonumber(pointCoords.y), tonumber(pointCoords.z)
+    if not (x and y and z) then return end
+
+    local blip = AddBlipForCoord(x, y, z)
     SetBlipSprite(blip, tonumber(blipCfg.sprite) or 1)
     SetBlipDisplay(blip, tonumber(blipCfg.display) or 4)
     SetBlipScale(blip, tonumber(blipCfg.scale) or 0.9)
@@ -414,7 +430,7 @@ local function createStationBlip(creatorKey, entryData, pointCoords, creatorConf
     end
 
     BeginTextCommandSetBlipName("STRING")
-    AddTextComponentSubstringPlayerName(labelText)
+    AddTextComponentSubstringPlayerName(tostring(labelText))
     EndTextCommandSetBlipName(blip)
 
     activeBlipsMap[creatorKey] = activeBlipsMap[creatorKey] or {}
@@ -429,7 +445,7 @@ local function findStationPositionPoint(entryData, targetType)
     local firstPoint = nil
 
     for _, pt in ipairs(entryData.points) do
-        if pt and pt.x and pt.y and pt.z then
+        if type(pt) == "table" and pt.x and pt.y and pt.z then
             if pt.type == targetType then return pt end
             if not posPoint then
                 if pt.type == "position" or pt.type == "station" or pt.type == "station_position" then
@@ -451,7 +467,7 @@ local function findEntryById(creatorData, entryId)
     if not (creatorData and type(creatorData.entries) == "table" and entryId ~= nil) then return nil end
     local strId = tostring(entryId)
     for _, e in ipairs(creatorData.entries) do
-        if e and e.id ~= nil and tostring(e.id) == strId then
+        if type(e) == "table" and e.id ~= nil and tostring(e.id) == strId then
             return e
         end
     end
@@ -462,7 +478,7 @@ local function findPointByUid(entryData, pointUid)
     if not (entryData and type(entryData.points) == "table" and pointUid) then return nil end
     local strUid = tostring(pointUid)
     for _, pt in ipairs(entryData.points) do
-        if pt and pt.uid ~= nil and tostring(pt.uid) == strUid then
+        if type(pt) == "table" and pt.uid ~= nil and tostring(pt.uid) == strUid then
             return pt
         end
     end
@@ -485,25 +501,70 @@ local function calculateDrawDistance(typeDef, interactionDist)
     return drawDist
 end
 
-local function normalizePointTypeName(typeName)
-    if type(typeName) ~= "string" then return typeName end
-    local lower = typeName:lower():gsub("%s+", "_"):gsub("-", "_"):gsub("_+", "_")
-    return lower
+local function mergeDefinition(target, source)
+    if type(source) ~= "table" then return end
+    for k, v in pairs(source) do
+        target[k] = (type(v) == "table") and deepCopyTable(v) or v
+    end
 end
 
-local function getTypeDefinition(creatorData, pointType)
-    if not (creatorData and creatorData.typeDefinitions and pointType) then return nil end
-    return creatorData.typeDefinitions[pointType] or creatorData.typeDefinitions[normalizePointTypeName(pointType)]
+-- Type definitions the job resource provides for its own point types, e.g. the stolen
+-- parts dealer NPC from sky_mechanicjob's Config.Interactions. Asked once per rebuild.
+local ownerDefinitionsCache = {}
+
+local function loadOwnerDefinitions(creatorKey, creatorData)
+    local owner = resolveCreatorOwnerResource(creatorKey, creatorData)
+    local definitions = nil
+    if owner ~= GetCurrentResourceName() and GetResourceState(owner) == "started" then
+        local ok, res = pcall(function()
+            return exports[owner]:GetCreatorTypeDefinitions(creatorKey)
+        end)
+        if ok and type(res) == "table" then
+            definitions = res
+        end
+    end
+    ownerDefinitionsCache[creatorKey] = definitions or {}
 end
 
-local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef, isNpcOnly, preservedPedsMap, creatorConfig)
-    if not (pointData and pointData.x and pointData.y and pointData.z) then return nil end
+-- Definition of a point type: built-in default, then Config.Interactions, then the job
+-- resource's definitions, then definitions sent with the creator data.
+local function getTypeDefinition(creatorData, pointType, creatorKey)
+    if not pointType then return nil end
+    local normalized = normalizePointTypeName(pointType)
+    local canonical = getNormalizedTypeKey(pointType)
 
-    if typeDef and typeDef.interaction == false and not isNpcOnly then
-        return nil
+    local definition = {}
+    local found = false
+    local function apply(source)
+        if type(source) == "table" then
+            mergeDefinition(definition, source)
+            found = true
+        end
     end
 
-    local coordsVec = vector3(pointData.x, pointData.y, pointData.z)
+    apply(BUILTIN_TYPE_DEFINITIONS[canonical] or BUILTIN_TYPE_DEFINITIONS[normalized])
+    local interactions = Config and Config.Interactions or {}
+    apply(interactions[canonical])
+    if normalized ~= canonical then apply(interactions[normalized]) end
+
+    local ownerDefinitions = creatorKey and ownerDefinitionsCache[creatorKey] or nil
+    if type(ownerDefinitions) == "table" then
+        apply(ownerDefinitions[pointType] or ownerDefinitions[normalized] or ownerDefinitions[canonical])
+    end
+
+    local sent = type(creatorData) == "table" and type(creatorData.typeDefinitions) == "table" and creatorData.typeDefinitions or nil
+    if sent then
+        apply(sent[pointType] or sent[normalized] or sent[canonical])
+    end
+
+    return found and definition or nil
+end
+
+local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef, isNpcOnly, preservedPedsMap)
+    local px, py, pz = tonumber(pointData and pointData.x), tonumber(pointData and pointData.y), tonumber(pointData and pointData.z)
+    if not (px and py and pz) then return nil end
+
+    local coordsVec = vector3(px, py, pz)
     local pointIdKey = getPointIdKey(creatorKey, entryData.id, pointData.uid)
 
     if isNpcOnly then
@@ -513,8 +574,7 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
         local existingPed = preservedPedsMap and preservedPedsMap[pointIdKey]
         if existingPed and DoesEntityExist(existingPed) then
             local heading = tonumber(pointData.heading) or npcCfg.heading or 0.0
-            local pedObj = Sky.Ped:new()
-            pedObj.entity = existingPed
+            local pedObj = Sky.Ped.new(existingPed)
             pedObj:SetCoords(coordsVec, heading)
             pedObj:Freeze()
 
@@ -526,16 +586,12 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
                 TaskStartScenarioInPlace(existingPed, npcCfg.scenario, 0, true)
             end
 
-            if type(npcCfg.onSpawn) == "function" then
-                npcCfg.onSpawn(existingPed)
-            end
-
             triggerPedSpawnedHook(creatorKey, pointData.type, pointIdKey, existingPed)
             return pointIdKey
         end
 
         local heading = tonumber(pointData.heading) or npcCfg.heading or 0.0
-        local pedObj = Sky.Ped:new()
+        local pedObj = Sky.Ped.new()
         pedObj:Spawn(npcCfg.pedHash, coordsVec, heading, {
             scenario = npcCfg.scenario,
             onSpawn = npcCfg.onSpawn,
@@ -551,44 +607,45 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
     end
 
     local normalizedType = normalizePointTypeName(pointData.type)
-    local label = typeDef and typeDef.label or pointData.label
-    local labelKey = typeDef and typeDef.labelKey or pointData.labelKey
+    -- The configurator's label for this location ("Car Lift 1") comes first.
+    local label = pointData.label or (typeDef and typeDef.label)
+    local labelKey = (typeDef and typeDef.labelKey) or pointData.labelKey
     local labelFallback = typeDef and typeDef.labelFallback
 
     local systemLabels = Locales and Locales[localeKey] and Locales[localeKey].InteractionLabels or {}
     local fallbackLabels = Locales and Locales.en and Locales.en.InteractionLabels or {}
 
-    local resolvedLabel = label or getNestedProperty(Locales[localeKey], labelKey) or getNestedProperty(Locales.en, labelKey)
+    local resolvedLabel = label or getNestedProperty(Locales and Locales[localeKey], labelKey) or getNestedProperty(Locales and Locales.en, labelKey)
         or systemLabels[pointData.type] or systemLabels[normalizedType]
         or fallbackLabels[pointData.type] or fallbackLabels[normalizedType]
         or labelFallback or pointData.type
 
-    local stationName = entryData.name or ""
+    local stationName = tostring(entryData.name or "")
     local interactionName = stationName
     if resolvedLabel and resolvedLabel ~= "" then
-        interactionName = string.format("%s - %s", stationName, resolvedLabel)
+        interactionName = stationName ~= "" and string.format("%s - %s", stationName, tostring(resolvedLabel)) or tostring(resolvedLabel)
     end
 
-    local markerCfg = ensureTableOrEmpty(typeDef and typeDef.marker)
-    local npcCfg = ensureTableOrEmpty(typeDef and typeDef.npc)
+    -- A type that sets marker.enabled = false keeps no marker; only a type without any
+    -- marker config gets the default one.
+    local hasMarkerConfig = typeDef and typeDef.marker ~= nil
+    local markerCfg = hasMarkerConfig and deepCopyTable(ensureTableOrEmpty(typeDef.marker)) or {}
+    local npcCfg = deepCopyTable(ensureTableOrEmpty(typeDef and typeDef.npc))
 
     if next(npcCfg) ~= nil and not npcCfg.pedHash then
         print(string.format("[sky_jobs_base][creator] %s/%s: npc enabled but pedHash missing, skipping ped", tostring(creatorKey), tostring(pointData.type)))
         npcCfg = {}
     end
 
-    if next(npcCfg) ~= nil and pointData then
-        if pointData.heading ~= nil then
-            npcCfg.heading = tonumber(pointData.heading)
-        end
+    if next(npcCfg) ~= nil and pointData.heading ~= nil then
+        npcCfg.heading = tonumber(pointData.heading)
     end
 
-    local blipCfg = ensureTableOrEmpty(typeDef and typeDef.blip)
+    local blipCfg = deepCopyTable(ensureTableOrEmpty(typeDef and typeDef.blip))
     if type(pointData.blip) == "table" then
         if next(pointData.blip) == nil then
             blipCfg = {}
         else
-            blipCfg = deepCopyTable(blipCfg)
             for k, v in pairs(pointData.blip) do blipCfg[k] = v end
             blipCfg = ensureTableOrEmpty(blipCfg)
         end
@@ -598,15 +655,16 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
         Sky.DeleteInteractionPoint(pointIdKey)
     end
 
-    if markerCfg and next(markerCfg) ~= nil then
+    if next(markerCfg) ~= nil then
         if typeDef and typeDef.markerSize ~= nil then
             markerCfg.markerSize = tonumber(typeDef.markerSize)
         end
-    elseif pointData.type ~= "lift" and pointData.type ~= "engine_swap" then
+    elseif not hasMarkerConfig and next(npcCfg) == nil then
         markerCfg = { type = 1, scaleX = 1.0, scaleY = 1.0, scaleZ = 0.5, alpha = 100 }
     end
 
-    if markerCfg and next(markerCfg) ~= nil then
+    if next(markerCfg) ~= nil then
+        markerCfg.enabled = nil
         markerCfg.type = tonumber(markerCfg.type) or 1
         markerCfg.scaleX = tonumber(markerCfg.scaleX) or tonumber(markerCfg.markerSize) or tonumber(markerCfg.size) or tonumber(markerCfg.scale) or (Config and Config.defaultMarkerSize) or 1.0
         markerCfg.scaleY = tonumber(markerCfg.scaleY) or tonumber(markerCfg.markerSize) or tonumber(markerCfg.size) or tonumber(markerCfg.scale) or (Config and Config.defaultMarkerSize) or 1.0
@@ -618,16 +676,18 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
         if markerCfg.scaleZ <= 0.0 then markerCfg.scaleZ = 0.5 end
         if markerCfg.alpha <= 0 then markerCfg.alpha = 100 end
     end
+    npcCfg.enabled = nil
+    blipCfg.enabled = nil
 
     local parkRadius = (Config and Config.JobGarage and Config.JobGarage.parkRadius) or 4.0
     local isParkZone = pointData.type == "garage_vehicle_park"
 
-    if isParkZone then
+    if isParkZone and next(markerCfg) ~= nil then
         markerCfg.scaleX = tonumber(markerCfg.scaleX) or parkRadius
         markerCfg.scaleY = tonumber(markerCfg.scaleY) or parkRadius
     end
 
-    local interactionDist = typeDef and typeDef.interactionDistance
+    local interactionDist = typeDef and tonumber(typeDef.interactionDistance) or nil
     if isParkZone then interactionDist = parkRadius end
 
     local drawDist = calculateDrawDistance(typeDef, interactionDist)
@@ -652,7 +712,9 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
         existingPed = nil
     end
 
-    local ownerResource = creatorConfig or GetCurrentResourceName()
+    -- Owned by this resource, which handles the point's event; sky_base removes the
+    -- point when this resource stops. (This was the whole creator data table before.)
+    local ownerResource = GetCurrentResourceName()
 
     Sky.CreateInteractionPoint(
         targetCoords,
@@ -692,27 +754,32 @@ local function rebuildCreatorInteractions(creatorKey)
         return
     end
 
+    loadOwnerDefinitions(creatorKey, creatorData)
     local posPointType = (creatorData.creator and creatorData.creator.positionPointType) or "position"
-    cacheLocationDefinitions(creatorData)
 
     for _, entry in ipairs(creatorData.entries) do
-        local posPt = findStationPositionPoint(entry, posPointType)
-        if posPt then
-            createStationBlip(creatorKey, entry, posPt, creatorData.creator)
-        end
+        if type(entry) == "table" and entry.id ~= nil then
+            local posPt = findStationPositionPoint(entry, posPointType)
+            if posPt then
+                local ok, err = pcall(createStationBlip, creatorKey, entry, posPt, creatorData.creator)
+                if not ok then
+                    print(string.format("[sky_jobs_base][creator] station blip failed for %s/%s: %s", tostring(creatorKey), tostring(entry.id), tostring(err)))
+                end
+            end
 
-        if type(entry.points) == "table" then
-            for _, pt in ipairs(entry.points) do
-                if pt and pt.x and pt.y and pt.z then
-                    local typeDef = getTypeDefinition(creatorData, pt.type)
-                    if pt.stationBlipOnly ~= true then
-                        if canShowInteractionPoint(entry, pt, typeDef, pt.type) then
-                            local ok, err = pcall(spawnSingleInteraction, creatorKey, entry, pt, typeDef, false, preservedPeds, creatorData)
+            if type(entry.points) == "table" then
+                for _, pt in ipairs(entry.points) do
+                    if type(pt) == "table" and pt.x and pt.y and pt.z and pt.stationBlipOnly ~= true then
+                        local typeDef = getTypeDefinition(creatorData, pt.type, creatorKey)
+                        local pointType = getNormalizedTypeKey(pt.type)
+                        if canUseInteractionPoint(entry, pt, typeDef, pointType) then
+                            local ok, err = pcall(spawnSingleInteraction, creatorKey, entry, pt, typeDef, false, preservedPeds)
                             if not ok then
                                 print(string.format("[sky_jobs_base][creator] spawnInteraction failed for %s/%s/%s: %s", tostring(creatorKey), tostring(entry.id), tostring(pt.type), tostring(err)))
                             end
-                        elseif checkInteractionNPCConfig(pt.type, typeDef) then
-                            pcall(spawnSingleInteraction, creatorKey, entry, pt, typeDef, true, preservedPeds, creatorData)
+                        elseif hasNpcConfig(typeDef) and not (typeDef.interaction == false) then
+                            -- The NPC stays visible for players who cannot use the point.
+                            pcall(spawnSingleInteraction, creatorKey, entry, pt, typeDef, true, preservedPeds)
                         end
                     end
                 end
@@ -730,7 +797,10 @@ end
 
 function rebuildAllInteractions()
     for creatorKey in pairs(cachedCreatorsData) do
-        rebuildCreatorInteractions(creatorKey)
+        local ok, err = pcall(rebuildCreatorInteractions, creatorKey)
+        if not ok then
+            print(string.format("[sky_jobs_base][creator] rebuild of %s failed: %s", tostring(creatorKey), tostring(err)))
+        end
     end
 end
 
@@ -744,7 +814,7 @@ local function openCreatorUI(creatorKey, entryId, creatorData)
         if res and res.success and res.data then
             creatorData = res.data
             cachedCreatorsData[creatorKey] = creatorData
-            rebuildCreatorInteractions(creatorKey)
+            triggerDebouncedRebuild()
         end
     end
 
@@ -806,7 +876,7 @@ local function resolvePointContext(param)
         pointIdKey = param
     end
 
-    if pointIdKey and ((not creatorKey or not entryId) or not pointUid) then
+    if type(pointIdKey) == "string" and ((not creatorKey or not entryId) or not pointUid) then
         local cKey, eId, pUid = parsePointIdKey(pointIdKey)
         creatorKey = creatorKey or cKey
         entryId = entryId or eId
@@ -823,7 +893,7 @@ local function resolvePointContext(param)
         pointType = pointData.type
     end
 
-    local typeDef = getTypeDefinition(creatorData, pointType)
+    local typeDef = getTypeDefinition(creatorData, pointType, creatorKey)
     return {
         creatorKey = creatorKey,
         entryId = entryId,
@@ -833,13 +903,6 @@ local function resolvePointContext(param)
         point = pointData,
         definition = typeDef
     }
-end
-
-local function getNormalizedTypeKey(pointType)
-    local norm = normalizePointTypeName(pointType)
-    if norm == "bossmenu" or norm == "management" then return "boss_menu" end
-    if norm == "tuning" then return "self_service_tuning" end
-    return norm
 end
 
 local function getInteractionJobKey(ctx)
@@ -878,37 +941,29 @@ local function triggerGenericInteractionEvent(ctx)
     })
 end
 
+local function openDynoTablet()
+    if GetResourceState("sky_mechanicjob") ~= "started" then return end
+    if Sky_Jobs.Tablet and Sky_Jobs.Tablet.Open then
+        Sky_Jobs.Tablet.Open("dyno", "/tablet/mechanic-dyno")
+    end
+end
+
 local function handleInteractionPointTrigger(...)
-    local rawArg = extractFirstNonNilParam(...)
+    -- sky_base raises (pointId, pointData); the id string identifies the point.
+    local firstArg = ...
+    local rawArg = (type(firstArg) == "string" and parsePointIdKey(firstArg)) and firstArg or extractFirstNonNilParam(...)
     local ctx = resolvePointContext(rawArg)
 
-    if not (ctx and ctx.pointType) then return end
-
-    local jobKey = ctx.entry and sanitizeStringKey(ctx.entry.jobKey)
-    if jobKey then
-        if not isTable(ctx.definition) then
-            if not isJobActiveForCreator(jobKey) then return end
-        end
-    end
+    if not (ctx and ctx.pointType and ctx.entry) then return end
 
     local normalizedPointType = getNormalizedTypeKey(ctx.pointType)
-    if normalizedPointType ~= ctx.pointType then
-        ctx.pointType = normalizedPointType
-        local cData = cachedCreatorsData[ctx.creatorKey]
-        if cData and cData.typeDefinitions then
-            ctx.definition = cData.typeDefinitions[normalizedPointType] or ctx.definition
-        end
+    -- Same rules as for showing the point; job or duty may have changed since.
+    if not canUseInteractionPoint(ctx.entry, ctx.point, ctx.definition, normalizedPointType) then
+        return
     end
-
-    if jobKey then
-        if not isTable(ctx.definition) then
-            if not isDutyInteractionAllowed(ctx.point, ctx.pointType) then return end
-        end
-    end
+    ctx.pointType = normalizedPointType
 
     if ctx.pointType == "duty_terminal" then
-        if not IS_DUTY_SYSTEM_ENABLED then return end
-
         local terminalLabel = (ctx.entry and ctx.entry.name)
             or (ctx.definition and (ctx.definition.label or ctx.definition.labelFallback))
             or "Duty Terminal"
@@ -977,6 +1032,9 @@ local function handleInteractionPointTrigger(...)
             label = ctx.entry and ctx.entry.name,
             jobKey = ctx.entry and ctx.entry.jobKey
         })
+
+    elseif ctx.pointType == "dyno" then
+        openDynoTablet()
     end
 
     triggerGenericInteractionEvent(ctx)
@@ -1018,8 +1076,12 @@ local function processRepeatableKey(controlKey, actionName, repeatKey)
     end
 end
 
+local function requestCreatorSync(creatorKey)
+    TriggerServerEvent("sky_jobs_base:creator:requestSync", creatorKey)
+end
+
 RegisterNetEvent("sky_jobs_base:creatorUpdated", function(creatorKey, creatorData)
-    if type(creatorKey) ~= "string" or not creatorData then return end
+    if type(creatorKey) ~= "string" or type(creatorData) ~= "table" then return end
     cachedCreatorsData[creatorKey] = creatorData
     triggerDebouncedRebuild()
 end)
@@ -1028,7 +1090,8 @@ RegisterNetEvent("sky_jobs_base:creator:open", function(creatorKey, entryId)
     openCreatorUI(creatorKey, entryId)
 end)
 
-RegisterNetEvent("sky_jobs_base:creator:point", function(...)
+-- Only raised locally by sky_base's interaction points.
+AddEventHandler("sky_jobs_base:creator:point", function(...)
     handleInteractionPointTrigger(...)
 end)
 
@@ -1036,17 +1099,27 @@ RegisterNetEvent("sky_jobs_base:managementAccessChanged", function()
     triggerDebouncedRebuild()
 end)
 
-RegisterNetEvent("sky_jobs_base:creator:updatePlayerJob", function(jobKey)
-    updatePlayerJob(jobKey)
+RegisterNetEvent("sky_jobs_base:creator:updatePlayerJob", function(jobData)
+    updatePlayerJob(jobData)
 end)
 
 RegisterNetEvent("sky_jobs_base:creator:updatePlayerDuty", function(onDutyState)
     updatePlayerDuty(onDutyState)
 end)
 
+-- Framework job changes (sky_base forwards QBCore:Client:OnJobUpdate / esx:setJob).
+RegisterNetEvent("sky_base:updateJob", function(jobData)
+    updatePlayerJob(jobData)
+end)
+
+-- Framework duty changes (sky_base forwards QBCore:Client:SetDuty).
+RegisterNetEvent("sky_base:updateDuty", function(onDutyState)
+    updatePlayerDuty(onDutyState)
+end)
+
 RegisterNetEvent("sky_jobs_base:jobs:registered", function()
-    if playerDutyLoaded then
-        updatePlayerJob(playerJobKey)
+    if playerJobLoaded then
+        triggerDebouncedRebuild()
     end
 end)
 
@@ -1505,44 +1578,76 @@ CreateThread(function()
     end
 end)
 
-CreateThread(function()
-    while true do
-        local ok, res = pcall(function()
-            return Sky.Cb.TriggerWithTimeout("sky_jobs_base:creator:getPlayerJob", 10000, {})
-        end)
+-- Loads the player's job and duty. The server answers ready = false until the character
+-- is loaded, so this keeps retrying; it runs again whenever a character is loaded.
+local jobRefreshRunning = false
 
-        if ok and res and res.success and res.data and res.data.ready == true then
-            updatePlayerJob(res.data.jobKey)
-            break
-        end
-        Wait(2000)
+local function refreshPlayerJobAndDuty()
+    local ok, res = pcall(function()
+        return Sky.Cb.TriggerWithTimeout("sky_jobs_base:creator:getPlayerJob", 10000, {})
+    end)
+    if not (ok and type(res) == "table" and res.success and type(res.data) == "table" and res.data.ready == true) then
+        return false
     end
+
+    local dutyOk, dutyRes = pcall(function()
+        return Sky.Cb.TriggerWithTimeout("sky_jobs_base:creator:getPlayerDuty", 10000, {})
+    end)
+    if dutyOk and type(dutyRes) == "table" and dutyRes.success and type(dutyRes.data) == "table" and dutyRes.data.ready == true then
+        updatePlayerDuty(dutyRes.data.onDuty == true)
+    end
+
+    updatePlayerJob(res.data.jobKey)
+    return true
+end
+
+local function startJobRefresh()
+    if jobRefreshRunning then return end
+    jobRefreshRunning = true
+    CreateThread(function()
+        while not refreshPlayerJobAndDuty() do
+            Wait(2000)
+        end
+        jobRefreshRunning = false
+    end)
+end
+
+startJobRefresh()
+
+RegisterNetEvent("sky_base:playerLoaded", function()
+    startJobRefresh()
 end)
 
-CreateThread(function()
-    while true do
-        local ok, res = pcall(function()
-            return Sky.Cb.TriggerWithTimeout("sky_jobs_base:creator:getPlayerDuty", 10000, {})
-        end)
-
-        if ok and res and res.success and res.data and res.data.ready == true then
-            updatePlayerDuty(res.data.onDuty == true)
-            break
-        end
-        Wait(2000)
-    end
+RegisterNetEvent("sky_base:playerUnloaded", function()
+    updatePlayerJob(nil)
 end)
 
+-- Ask the server for every creator's locations once this resource runs. Requested again
+-- for a job resource when it (re)starts, since its locations are dropped when it stops.
 CreateThread(function()
     Wait(1500)
-    TriggerServerEvent("sky_jobs_base:creator:requestSync")
+    requestCreatorSync()
 end)
 
 AddEventHandler("onClientResourceStart", function(resName)
-    if resName ~= GetCurrentResourceName() then return end
-    SetTimeout(500, function()
-        TriggerServerEvent("sky_jobs_base:creator:requestSync")
-    end)
+    if resName == GetCurrentResourceName() then return end
+
+    if resName == "sky_base" then
+        -- sky_base dropped every interaction point when it stopped; create them again.
+        for creatorKey in pairs(activeInteractionPoints) do
+            activeInteractionPoints[creatorKey] = nil
+        end
+        triggerDebouncedRebuild()
+        return
+    end
+
+    for creatorKey, owner in pairs(DEFAULT_OWNER_RESOURCES) do
+        if owner == resName then
+            SetTimeout(1000, function()
+                requestCreatorSync(creatorKey)
+            end)
+        end
+    end
 end)
 
 AddEventHandler("onClientResourceStop", function(resName)
@@ -1550,16 +1655,16 @@ AddEventHandler("onClientResourceStop", function(resName)
 
     if resName == curRes then
         for _, cKey in ipairs(getTableKeys(activeInteractionPoints)) do
-            cleanupCreatorPoints(cKey)
+            pcall(cleanupCreatorPoints, cKey)
         end
         for _, cKey in ipairs(getTableKeys(activeSpawnedPedsMap)) do
-            cleanupCreatorPoints(cKey)
+            pcall(cleanupCreatorPoints, cKey)
         end
     else
         for _, cKey in ipairs(getTableKeys(cachedCreatorsData)) do
             local cData = cachedCreatorsData[cKey]
             if resolveCreatorOwnerResource(cKey, cData) == resName then
-                cleanupCreatorPoints(cKey)
+                pcall(cleanupCreatorPoints, cKey)
                 cachedCreatorsData[cKey] = nil
             end
         end

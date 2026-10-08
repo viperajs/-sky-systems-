@@ -6,14 +6,42 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server
 
 TuningDB = TuningDB or {}
 
-local tuningCache = {}
-local stanceDefaultsCache = {}
+-- Plates come from clients (any NPC or made-up plate), so both caches expire and are capped.
+local CACHE_TTL_SECONDS = 600
+local CACHE_MAX_ENTRIES = 2000
+local tuningCache = { entries = {}, size = 0 }
+local stanceDefaultsCache = { entries = {}, size = 0 }
+
+local function cacheGet(cache, key)
+    local entry = cache.entries[key]
+    if not entry then return nil end
+    if os.time() - entry.at > CACHE_TTL_SECONDS then
+        cache.entries[key] = nil
+        cache.size = cache.size - 1
+        return nil
+    end
+    return entry.value
+end
+
+local function cacheSet(cache, key, value)
+    if not cache.entries[key] then
+        if cache.size >= CACHE_MAX_ENTRIES then
+            cache.entries, cache.size = {}, 0
+        end
+        cache.size = cache.size + 1
+    end
+    cache.entries[key] = { value = value, at = os.time() }
+end
 
 local function sanitizePlate(plate)
     if type(plate) ~= "string" then return "" end
     local trimmed = Sky and Sky.Math and Sky.Math.Trim and Sky.Math.Trim(plate)
-    if not trimmed or trimmed == "" then return "" end
+    if not trimmed or trimmed == "" or #trimmed > 12 then return "" end
     return string.upper(trimmed)
+end
+
+local function isEsx()
+    return Functions.GetFramework() == "esx"
 end
 
 --- Get vehicle persistence requireOwned setting
@@ -32,15 +60,37 @@ function TuningDB.IsVehicleOwned(plate)
     local cleanPlate = sanitizePlate(plate)
     if cleanPlate == "" then return false end
 
-    local framework = Sky and Sky.Config and Sky.Config.framework or "qb"
-
     local query = "SELECT plate FROM player_vehicles WHERE plate = @plate LIMIT 1"
-    if framework == "esx" then
+    if isEsx() then
         query = "SELECT plate FROM owned_vehicles WHERE plate = @plate LIMIT 1"
     end
 
     local result = MySQL.query.await(query, { ["@plate"] = cleanPlate })
     return result and result[1] ~= nil
+end
+
+--- Identifier of the owning character (citizenid / ESX owner), or nil for unowned plates
+---@param plate string
+---@return string|nil
+function TuningDB.GetVehicleOwner(plate)
+    local cleanPlate = sanitizePlate(plate)
+    if cleanPlate == "" then return nil end
+
+    local query = "SELECT citizenid AS owner FROM player_vehicles WHERE plate = ? LIMIT 1"
+    if isEsx() then
+        query = "SELECT owner FROM owned_vehicles WHERE plate = ? LIMIT 1"
+    end
+
+    local row = MySQL.single.await(query, { cleanPlate })
+    return row and row.owner and tostring(row.owner) or nil
+end
+
+--- Whether tuning for this plate is stored at all (Config.VehiclePersistence.requireOwnedVehicle)
+---@param plate string
+---@return boolean
+function TuningDB.CanPersistPlate(plate)
+    if not requireOwnedVehicle() then return sanitizePlate(plate) ~= "" end
+    return TuningDB.IsVehicleOwned(plate)
 end
 
 --- Get saved tuning record for vehicle plate
@@ -50,8 +100,9 @@ function TuningDB.GetVehicleTuning(plate)
     local cleanPlate = sanitizePlate(plate)
     if cleanPlate == "" then return nil end
 
-    if tuningCache[cleanPlate] ~= nil then
-        return tuningCache[cleanPlate]
+    local cached = cacheGet(tuningCache, cleanPlate)
+    if cached ~= nil then
+        return cached or nil
     end
 
     local row = MySQL.single.await([[
@@ -61,7 +112,7 @@ function TuningDB.GetVehicleTuning(plate)
     ]], { ["@plate"] = cleanPlate })
 
     if not row then
-        tuningCache[cleanPlate] = false
+        cacheSet(tuningCache, cleanPlate, false)
         return nil
     end
 
@@ -74,7 +125,7 @@ function TuningDB.GetVehicleTuning(plate)
         custom_handling = row.custom_handling and json.decode(row.custom_handling) or nil
     }
 
-    tuningCache[cleanPlate] = record
+    cacheSet(tuningCache, cleanPlate, record)
     return record
 end
 
@@ -116,14 +167,14 @@ function TuningDB.SaveVehicleTuning(plate, data)
         ["@custom_handling"] = customHandlingJson
     })
 
-    tuningCache[cleanPlate] = {
+    cacheSet(tuningCache, cleanPlate, {
         plate = cleanPlate,
         tuning = data.tuning or current.tuning,
         stance = data.stance or current.stance,
         rgb = data.rgb or current.rgb,
         nitro = data.nitro or current.nitro,
         custom_handling = data.custom_handling or current.custom_handling
-    }
+    })
 
     return true
 end
@@ -135,8 +186,9 @@ function TuningDB.GetStanceDefault(plate)
     local cleanPlate = sanitizePlate(plate)
     if cleanPlate == "" then return nil end
 
-    if stanceDefaultsCache[cleanPlate] ~= nil then
-        return stanceDefaultsCache[cleanPlate]
+    local cached = cacheGet(stanceDefaultsCache, cleanPlate)
+    if cached ~= nil then
+        return cached or nil
     end
 
     local row = MySQL.single.await([[
@@ -145,12 +197,13 @@ function TuningDB.GetStanceDefault(plate)
     ]], { ["@plate"] = cleanPlate })
 
     if not row or not row.stance then
-        stanceDefaultsCache[cleanPlate] = false
+        cacheSet(stanceDefaultsCache, cleanPlate, false)
         return nil
     end
 
-    local stance = json.decode(row.stance)
-    stanceDefaultsCache[cleanPlate] = stance
+    local ok, stance = pcall(json.decode, row.stance)
+    stance = ok and type(stance) == "table" and stance or nil
+    cacheSet(stanceDefaultsCache, cleanPlate, stance or false)
     return stance
 end
 
@@ -178,7 +231,7 @@ function TuningDB.SaveStanceDefault(plate, stance, autoCapture)
         ["@stance"] = stanceJson
     })
 
-    stanceDefaultsCache[cleanPlate] = stance
+    cacheSet(stanceDefaultsCache, cleanPlate, stance)
     return true
 end
 
@@ -189,9 +242,8 @@ function TuningDB.GetVehicleProperties(plate)
     local cleanPlate = sanitizePlate(plate)
     if cleanPlate == "" then return nil end
 
-    local framework = Sky and Sky.Config and Sky.Config.framework or "qb"
     local query = "SELECT mods, vehicle FROM player_vehicles WHERE plate = @plate LIMIT 1"
-    if framework == "esx" then
+    if isEsx() then
         query = "SELECT vehicle FROM owned_vehicles WHERE plate = @plate LIMIT 1"
     end
 
@@ -224,7 +276,64 @@ function TuningDB.GetVehicleProperties(plate)
     return properties
 end
 
---- Save vehicle properties into framework table and sky tuning table
+-- Keys that belong to the stored row, not to a mechanic's snapshot.
+local SKIPPED_PROPERTY_KEYS = { mods = true, toggleMods = true, _skyMechanicTuning = true, plate = true, model = true }
+
+local function decodeTable(value)
+    if type(value) ~= "string" or value == "" then return {} end
+    local ok, decoded = pcall(json.decode, value)
+    return ok and type(decoded) == "table" and decoded or {}
+end
+
+-- Merges a snapshot into the stored properties and adds the standard qb/ox keys
+-- (modEngine, modTurbo, ...) that garages restore from.
+local function mergeProperties(stored, properties)
+    for key, value in pairs(properties) do
+        if not SKIPPED_PROPERTY_KEYS[key] then
+            stored[key] = value
+        end
+    end
+
+    local keys = Sky.VehiclePropertyKeys or { mods = {}, toggles = {} }
+    if type(properties.mods) == "table" then
+        stored.mods = type(stored.mods) == "table" and stored.mods or {}
+        for modId, modValue in pairs(properties.mods) do
+            local modType, val = tonumber(modId), tonumber(modValue)
+            if modType and val then
+                stored.mods[tostring(modType)] = val
+                local key = keys.mods[modType]
+                if key and properties[key] == nil and not (modType == 48 and properties.modLivery ~= nil) then
+                    stored[key] = val
+                end
+            end
+        end
+    end
+    if type(properties.toggleMods) == "table" then
+        stored.toggleMods = type(stored.toggleMods) == "table" and stored.toggleMods or {}
+        for modId, state in pairs(properties.toggleMods) do
+            local modType = tonumber(modId)
+            if modType then
+                stored.toggleMods[tostring(modType)] = state == true
+                local key = keys.toggles[modType]
+                if key and properties[key] == nil then
+                    stored[key] = state == true
+                end
+            end
+        end
+    end
+
+    -- qb-core / ox_lib keep a custom paint in color1/color2 as { r, g, b }.
+    if type(properties.customPrimaryColor) == "table" then
+        stored.color1 = properties.customPrimaryColor
+    end
+    if type(properties.customSecondaryColor) == "table" then
+        stored.color2 = properties.customSecondaryColor
+    end
+    return stored
+end
+
+--- Save vehicle properties into framework table and sky tuning table. Merges into the
+--- stored properties; keys missing from the snapshot are kept.
 ---@param plate string
 ---@param properties table
 ---@return boolean
@@ -232,33 +341,36 @@ function TuningDB.SaveVehicleProperties(plate, properties)
     local cleanPlate = sanitizePlate(plate)
     if cleanPlate == "" or type(properties) ~= "table" then return false end
 
-    local framework = Sky and Sky.Config and Sky.Config.framework or "qb"
-    local propsJson = json.encode(properties)
-
-    if framework == "qb" or framework == "qbox" then
-        MySQL.query.await([[
-            UPDATE player_vehicles
-            SET mods = @mods
-            WHERE plate = @plate
-        ]], {
-            ["@plate"] = cleanPlate,
-            ["@mods"] = propsJson
-        })
-    elseif framework == "esx" then
-        MySQL.query.await([[
-            UPDATE owned_vehicles
-            SET vehicle = @vehicle
-            WHERE plate = @plate
-        ]], {
-            ["@plate"] = cleanPlate,
-            ["@vehicle"] = propsJson
-        })
+    if isEsx() then
+        local row = MySQL.single.await("SELECT vehicle FROM owned_vehicles WHERE plate = ? LIMIT 1", { cleanPlate })
+        if row then
+            MySQL.update.await("UPDATE owned_vehicles SET vehicle = ? WHERE plate = ?", {
+                json.encode(mergeProperties(decodeTable(row.vehicle), properties)), cleanPlate
+            })
+        end
+    else
+        local row = MySQL.single.await("SELECT mods FROM player_vehicles WHERE plate = ? LIMIT 1", { cleanPlate })
+        if row then
+            MySQL.update.await("UPDATE player_vehicles SET mods = ? WHERE plate = ?", {
+                json.encode(mergeProperties(decodeTable(row.mods), properties)), cleanPlate
+            })
+        end
     end
 
     if type(properties._skyMechanicTuning) == "table" then
         local st = properties._skyMechanicTuning
+        -- The tuning JSON also holds anti-lag / two-step state; only the paint is replaced.
+        local tuning = nil
+        if st.paint ~= nil then
+            local current = TuningDB.GetVehicleTuning(cleanPlate)
+            tuning = {}
+            if current and type(current.tuning) == "table" then
+                for key, value in pairs(current.tuning) do tuning[key] = value end
+            end
+            tuning.paint = st.paint
+        end
         TuningDB.SaveVehicleTuning(cleanPlate, {
-            tuning = { paint = st.paint },
+            tuning = tuning,
             stance = st.stance,
             rgb = st.rgb,
             nitro = st.nitro,

@@ -47,13 +47,14 @@ RegisterNetEvent("sky_jobs_base:wholesaleInteraction", function(data)
         return
     end
 
+    local shopData = type(res.data) == "table" and res.data or res
     SetNuiFocus(true, true)
     SendNUIMessage({
         type = "shop",
         stationId = stationId,
-        items = res.items or {},
-        balance = res.balance or 0,
-        jobColor = getJobColor(res)
+        items = shopData.items or {},
+        balance = tonumber(shopData.balance) or 0,
+        jobColor = getJobColor(shopData)
     })
 end)
 

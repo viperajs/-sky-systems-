@@ -18,6 +18,20 @@ local function normalizePlate(plate)
     return string.upper(trimmed)
 end
 
+local function getTheftErrorMessage(res)
+    local err = type(res) == "table" and res.error or nil
+    if err == "missing_item" then
+        return tuningLocales.WheelTheftMissingItem or "You need a lug wrench."
+    elseif err == "already_missing" then
+        return tuningLocales.WheelTheftAlreadyMissing or "This wheel has already been stolen."
+    elseif err == "vehicle_too_far" then
+        return tuningLocales.WheelTheftTooFar or "Move closer to the vehicle."
+    elseif err == "inventory_full" then
+        return tuningLocales.WheelTheftInventoryFull or "You cannot carry another wheel."
+    end
+    return tuningLocales.WheelTheftControlFailed or "Unable to steal wheel right now."
+end
+
 local function isWheelDetached(vehicle, wheelIndexes)
     local stateBag = Entity(vehicle).state[STATE_BAG_KEY]
     local wheelsData = (type(stateBag) == "table" and type(stateBag.wheels) == "table") and stateBag.wheels or {}
@@ -57,24 +71,14 @@ local function completeSteal(vehicle, wheelIndexes)
     }) or {}
 
     if not (type(res) == "table" and res.success == true) then
-        local msg = tuningLocales.WheelTheftMissingItem or "You need a lug wrench."
-        if type(res) == "table" then
-            if res.error == "already_missing" then
-                msg = tuningLocales.WheelTheftAlreadyMissing or "This wheel has already been stolen."
-            elseif res.error == "vehicle_too_far" then
-                msg = tuningLocales.WheelTheftTooFar or "Move closer to the vehicle."
-            elseif res.error == "inventory_full" then
-                msg = tuningLocales.WheelTheftInventoryFull or "You cannot carry another wheel."
-            end
-        end
-        notify(msg, "error")
+        notify(getTheftErrorMessage(res), "error")
         return false
     end
 
     if res.allWheelsMissing == true then
         notify(tuningLocales.WheelTheftAllWheelsStolen or "All wheels stolen. The vehicle is resting on bricks.", "success")
     else
-        local currentDetached = math.max(countDetachedWheels(vehicle), math.floor(tonumber(res.detachedCount) or 0))
+        local currentDetached = math.floor(tonumber(res.detachedCount) or countDetachedWheels(vehicle))
         local totalCount = math.floor(tonumber(res.totalCount) or 4)
         local fmt = tuningLocales.WheelTheftSuccess or "Wheel stolen (%s/%s)."
         notify(string.format(fmt, currentDetached, totalCount), "success")
@@ -202,7 +206,12 @@ local function processWheelTheftStep()
             return false
         end
 
-        if not completeSteal(vehicle, wheelIndexes) then return false end
+        if not completeSteal(vehicle, wheelIndexes) then
+            -- The server dropped the started theft; the jack still has to come off.
+            WheelTheftState.step = "lower"
+            updateWheelTheftChecklist()
+            return false
+        end
 
         Wait(150)
         ensureWheelTheftBricksForVehicle(vehicle)
@@ -274,7 +283,7 @@ local function startWheelTheftProcess()
         return
     end
 
-    local wheelIndexes = expandWheelIndexes(targetWheel.index)
+    local wheelIndexes = filterVehicleWheelIndexes(vehicle, expandWheelIndexes(targetWheel.index))
     if isWheelDetached(vehicle, wheelIndexes) then
         notify(tuningLocales.WheelTheftAlreadyMissing or "This wheel has already been stolen.", "error")
         return
@@ -290,15 +299,7 @@ local function startWheelTheftProcess()
     }) or {}
 
     if not (type(res) == "table" and res.success == true) then
-        local msg = tuningLocales.WheelTheftMissingItem or "You need a lug wrench."
-        if type(res) == "table" then
-            if res.error == "already_missing" then
-                msg = tuningLocales.WheelTheftAlreadyMissing or "This wheel has already been stolen."
-            elseif res.error == "vehicle_too_far" then
-                msg = tuningLocales.WheelTheftTooFar or "Move closer to the vehicle."
-            end
-        end
-        notify(msg, "error")
+        notify(getTheftErrorMessage(res), "error")
         return
     end
 

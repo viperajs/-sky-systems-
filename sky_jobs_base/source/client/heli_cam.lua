@@ -316,8 +316,17 @@ local camState = {
     tracking_spotlight = false,
     forward_spotlight = false,
     brightness = SPOT_BRIGHTNESS,
-    radius = SPOT_RADIUS
+    radius = SPOT_RADIUS,
+    forward_vehicle = nil,
+    last_toggle = 0
 }
+
+-- The seat loop and the cam loop both read the toggle key; one press must not toggle twice.
+local TOGGLE_DEBOUNCE_MS = 250
+
+local function canToggleCam()
+    return GetGameTimer() - camState.last_toggle >= TOGGLE_DEBOUNCE_MS
+end
 
 local function toggleVisionMode()
     if camState.vision == 0 then
@@ -343,6 +352,11 @@ end
 
 local function setForwardSpotlight(enabled)
     camState.forward_spotlight = enabled == true
+    local veh = camState.forward_spotlight and GetVehiclePedIsIn(PlayerPedId(), false) or camState.forward_vehicle
+    if veh and veh ~= 0 and DoesEntityExist(veh) then
+        SetVehicleSearchlight(veh, camState.forward_spotlight, false)
+    end
+    camState.forward_vehicle = camState.forward_spotlight and veh or nil
     TriggerServerEvent("sky_jobs_base:heli:spotlight:forward", camState.forward_spotlight)
     local title = heliLocales.Title or "Heli Cam"
     if camState.forward_spotlight then
@@ -491,7 +505,7 @@ local function takeHeliPhoto()
     local metadata = buildCaptureMetadata(target)
 
     CreateThread(function()
-        local res = Sky.Cb.Trigger("sky_jobs_base:camera:takePhoto", {
+        local res = Sky.Cb.TriggerWithTimeout("sky_jobs_base:camera:takePhoto", 15000, {
             metadata = metadata,
             folder = CAPTURE_FOLDER
         })
@@ -525,6 +539,7 @@ end
 
 local function disableHeliCam()
     camState.active = false
+    camState.last_toggle = GetGameTimer()
     TriggerEvent("sky_jobs_base:helicam", false)
 
     if camState.manual_spotlight then
@@ -551,7 +566,7 @@ local function disableHeliCam()
 end
 
 local function enableHeliCam()
-    if camState.active then return end
+    if camState.active or not canToggleCam() then return end
 
     if camState.forward_spotlight then setForwardSpotlight(false) end
     if camState.tracking_spotlight then stopTrackingSpotlight() end
@@ -569,6 +584,7 @@ local function enableHeliCam()
     if not checkAuthorization() then return end
 
     camState.active = true
+    camState.last_toggle = GetGameTimer()
     TriggerEvent("sky_jobs_base:helicam", true)
     camState.vision = 0
     camState.fov = (FOV_MIN + FOV_MAX) * 0.5
@@ -609,7 +625,7 @@ local function enableHeliCam()
                 break
             end
 
-            if IsControlJustPressed(0, getKey("toggle_cam")) then break end
+            if IsControlJustPressed(0, getKey("toggle_cam")) and canToggleCam() then break end
             if IsControlJustPressed(0, getKey("toggle_vision")) then toggleVisionMode() end
             if IsControlJustPressed(0, getKey("toggle_spotlight")) then toggleSpotlightAction(playerPed, veh) end
             if IsControlJustPressed(0, getKey("toggle_display")) then toggleDisplayMode() end
@@ -721,9 +737,12 @@ local function getTargetPlayerPedAndVehicle(serverId)
     return ped, veh
 end
 
-RegisterNetEvent("sky_jobs_base:heli:spotlight:forward", function(serverId, enabled)
-    local _, veh = getTargetPlayerPedAndVehicle(serverId)
-    if veh then
+RegisterNetEvent("sky_jobs_base:heli:spotlight:forward", function(serverId, enabled, netId)
+    local veh = netId and NetworkDoesNetworkIdExist(netId) and NetToVeh(netId) or nil
+    if not veh or veh == 0 then
+        veh = select(2, getTargetPlayerPedAndVehicle(serverId))
+    end
+    if veh and veh ~= 0 then
         SetVehicleSearchlight(veh, enabled == true, false)
     end
 end)

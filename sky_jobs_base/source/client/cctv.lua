@@ -32,9 +32,6 @@ local waypointState = {
 }
 
 local currentBodycamScopeTarget = nil
-local lastDamageReportTime = 0
-local lastPlayerHealth = nil
-local isPlayerDeadState = false
 
 local function clearWaypointOutline()
     if waypointState.entity and waypointState.entity ~= 0 and DoesEntityExist(waypointState.entity) then
@@ -212,7 +209,7 @@ local function destroyCctvCam()
     cctvState.viewPitchOffset = 0.0
 
     ClearTimecycleModifier()
-    if IsScreenFadedOut() then
+    if IsScreenFadedOut() or IsScreenFadingOut() then
         DoScreenFadeIn(0)
     end
 
@@ -405,7 +402,10 @@ local function startCctvEffects()
                 if math.random() < (0.08 + (0.22 * dmgRatio)) then
                     DoScreenFadeOut(120)
                     Wait(math.random(220, 520))
-                    if not cctvState.active then break end
+                    if not cctvState.active then
+                        DoScreenFadeIn(0)
+                        break
+                    end
                     DoScreenFadeIn(200)
                 end
                 nextFadeTime = now + math.random(2000, 4500)
@@ -615,45 +615,6 @@ RegisterNetEvent("sky_jobs_base:cctv:saveResult", function(data)
         type = "cctv:saveResult",
         data = data
     })
-end)
-
-AddEventHandler("gameEventTriggered", function(eventName, eventData)
-    if eventName ~= "CEventNetworkEntityDamage" then return end
-    local victim = eventData and eventData[1]
-    local ped = PlayerPedId()
-    if victim ~= ped then return end
-
-    local now = GetGameTimer()
-    if (now - lastDamageReportTime) < 300 then return end
-    lastDamageReportTime = now
-
-    TriggerServerEvent("sky_jobs_base:cctv:reportDamage")
-end)
-
-CreateThread(function()
-    while true do
-        local ped = PlayerPedId()
-        if ped and ped ~= 0 then
-            local hp = GetEntityHealth(ped)
-            if lastPlayerHealth == nil then
-                lastPlayerHealth = hp
-            elseif hp ~= lastPlayerHealth then
-                local now = GetGameTimer()
-                if (now - lastDamageReportTime) >= 500 then
-                    lastDamageReportTime = now
-                    TriggerServerEvent("sky_jobs_base:cctv:reportDamage")
-                end
-                lastPlayerHealth = hp
-            end
-
-            local isDead = IsEntityDead(ped) == true
-            if isDead ~= isPlayerDeadState then
-                isPlayerDeadState = isDead
-                TriggerServerEvent("sky_jobs_base:cctv:reportDamage")
-            end
-        end
-        Wait(500)
-    end
 end)
 
 AddEventHandler("onResourceStop", function(resName)

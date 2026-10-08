@@ -31,6 +31,10 @@ local WEAR_HANDLING_FIELDS = {
     "fBrakeForce", "fSuspensionForce", "fSuspensionReboundDamp", "fSuspensionCompDamp"
 }
 
+local SAVE_INTERVAL_MS = 60000
+local REAR_TYRE_INDEXES = { 0, 1, 4, 5 }
+local SIX_WHEEL_TYRE_INDEXES = { 0, 1, 2, 3, 4, 5 }
+
 local partWearPerKmMap = {}
 
 WearState = {
@@ -60,7 +64,10 @@ WearState = {
     lastMileageHudSent = nil,
     lastMileageHudSyncMs = 0,
     lastVehicleExitCheckMs = 0,
-    enteredAtMs = 0
+    enteredAtMs = 0,
+    sessionId = 0,
+    rev = nil,
+    lastSaveAtMs = 0
 }
 
 local cachedCdnBase = nil
@@ -225,16 +232,30 @@ local function applySuspensionDegradation(vehicle, band)
     end
 end
 
+-- Tyre indexes: 0/1 front, 2/3 middle axle (six-wheelers), 4/5 rear.
+-- Puts back the handling this client degraded, so the next session does not capture worn values
+-- as its base. Untouched fields are left alone (custom tuning may have changed them).
+local function restoreDegradedHandling(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or not WearState.baseHandling.fBrakeForce then return end
+    local applied = WearState.appliedBands or {}
+    if applied.brake_pads == 0 then
+        applyBrakeDegradation(vehicle, 3)
+    end
+    if applied.suspension ~= nil and applied.suspension < 3 then
+        applySuspensionDegradation(vehicle, 3)
+    end
+end
+
 local function popVehicleTyres(vehicle)
-    for i = 0, 3 do
+    local indexes = (tonumber(GetVehicleNumberOfWheels(vehicle)) or 0) >= 6 and SIX_WHEEL_TYRE_INDEXES or REAR_TYRE_INDEXES
+    for _, i in ipairs(indexes) do
         SetVehicleTyreBurst(vehicle, i, true, 1000.0)
     end
     WearState.tyresPopped = true
 end
 
 local function fixVehicleTyres(vehicle)
-    local wheelCount = math.max(0, math.floor(tonumber(GetVehicleNumberOfWheels(vehicle)) or 0))
-    for i = 0, wheelCount - 1 do
+    for _, i in ipairs(SIX_WHEEL_TYRE_INDEXES) do
         SetVehicleTyreFixed(vehicle, i)
     end
     WearState.tyresPopped = false
@@ -463,18 +484,37 @@ function WearSystem_OnVehicleReady(vehicle, plateStr)
     applyWearEffectsToVehicle(vehicle)
 end
 
-local function saveWearToServer()
-    if not WearState.plate or WearState.plate == "" then return end
-
-    local res = Sky.Cb.Trigger("sky_mechanicjob:wear:save", {
+local function buildSavePayload()
+    local wearCopy = {}
+    for k, v in pairs(WearState.wear or {}) do wearCopy[k] = v end
+    return {
         plate = WearState.plate,
-        wear = WearState.wear,
-        mileage = WearState.mileage
-    })
+        wear = wearCopy,
+        mileage = WearState.mileage,
+        rev = WearState.rev
+    }
+end
 
+--- Blocking; run from a thread. The server answers with its revision and, when this client's
+--- wear was based on an older revision (repair/theft meanwhile), with the current wear map.
+local function saveWearToServer(payload, sessionId)
+    if type(payload) ~= "table" or not payload.plate or payload.plate == "" then return end
+
+    local res = Sky.Cb.Trigger("sky_mechanicjob:wear:save", payload)
     if type(res) ~= "table" or res.success ~= true then
         local errReason = (type(res) == "table" and res.error) or "unknown_error"
-        print(("[sky_mechanicjob][wear] Save failed for plate %s: %s"):format(tostring(WearState.plate), tostring(errReason)))
+        print(("[sky_mechanicjob][wear] Save failed for plate %s: %s"):format(tostring(payload.plate), tostring(errReason)))
+        return
+    end
+
+    local rev = tonumber(res.rev)
+    if WearState.active and WearState.sessionId == sessionId and rev and rev >= (tonumber(WearState.rev) or 0) then
+        WearState.rev = rev
+        if type(res.wear) == "table" then
+            WearState.wear = res.wear
+            WearState.appliedBands = {}
+            WearState.tyresPopped = false
+        end
     end
 end
 
@@ -541,10 +581,12 @@ function refreshMileageHudVisibility()
     SendNUIMessage({ action = "mileageHud:hide", payload = {} })
 end
 
-local function startVehicleTrackingLoop(ped, vehicle)
+local onVehicleExit
+
+local function startVehicleTrackingLoop(vehicle, sessionId)
     CreateThread(function()
         local lastTime = GetGameTimer()
-        while WearState.active do
+        while WearState.active and WearState.sessionId == sessionId do
             if not DoesEntityExist(vehicle) then break end
 
             local currentSpeed = GetEntitySpeed(vehicle) or 0.0
@@ -559,7 +601,7 @@ local function startVehicleTrackingLoop(ped, vehicle)
             end
 
             Wait(pollInterval)
-            if not WearState.active then break end
+            if not WearState.active or WearState.sessionId ~= sessionId then break end
 
             local now = GetGameTimer()
             local deltaMs = math.max(0, now - lastTime)
@@ -567,7 +609,8 @@ local function startVehicleTrackingLoop(ped, vehicle)
 
             if (now - (WearState.lastVehicleExitCheckMs or 0)) >= 1000 then
                 WearState.lastVehicleExitCheckMs = now
-                if not DoesEntityExist(vehicle) or not IsPedInAnyVehicle(ped, false) or GetVehiclePedIsIn(ped, false) ~= vehicle or GetPedInVehicleSeat(vehicle, -1) ~= ped then
+                local ped = PlayerPedId()
+                if not DoesEntityExist(vehicle) or GetVehiclePedIsIn(ped, false) ~= vehicle or GetPedInVehicleSeat(vehicle, -1) ~= ped then
                     break
                 end
             end
@@ -617,12 +660,21 @@ local function startVehicleTrackingLoop(ped, vehicle)
                 end
             end
 
-            if WearState.hasCriticalWear then
-                evaluateWearEffects(vehicle, deltaMs)
+            evaluateWearEffects(vehicle, deltaMs)
+
+            if WearState.mileageSinceLastSave > 0.0 and now - (WearState.lastSaveAtMs or 0) >= SAVE_INTERVAL_MS then
+                WearState.lastSaveAtMs = now
+                WearState.mileageSinceLastSave = 0.0
+                local payload = buildSavePayload()
+                CreateThread(function()
+                    saveWearToServer(payload, sessionId)
+                end)
             end
         end
 
-        refreshMileageHudVisibility()
+        if WearState.sessionId == sessionId then
+            onVehicleExit()
+        end
     end)
 end
 
@@ -633,12 +685,19 @@ local function onVehicleEnter(vehicle)
     local plateStr = sanitizePlate(GetVehicleNumberPlateText(vehicle))
     if plateStr == "" then return end
 
+    stopEngineSmokeFx()
+    WearState.sessionId = (WearState.sessionId or 0) + 1
+    local sessionId = WearState.sessionId
+
     WearState.active = false
     WearState.isFetching = true
     WearState.vehicle = vehicle
     WearState.plate = plateStr
     WearState.lastCoords = GetEntityCoords(vehicle)
     WearState.mileageSinceLastSave = 0.0
+    WearState.lastSaveAtMs = GetGameTimer()
+    WearState.rev = nil
+    WearState.baseHandling = {}
     WearState.appliedBands = {}
     WearState.tyresPopped = false
     WearState.engineDamageActive = false
@@ -646,7 +705,6 @@ local function onVehicleEnter(vehicle)
     WearState.transmissionLimpActive = false
     WearState.transmissionBaseHighGear = nil
     WearState.transmissionBaseMaxSpeed = nil
-    WearState.engineSmokeFx = nil
     WearState.electricLimpActive = false
     WearState.electricBaseHighGear = nil
     WearState.electricBaseMaxSpeed = nil
@@ -665,9 +723,11 @@ local function onVehicleEnter(vehicle)
     end
 
     local res = Sky.Cb.Trigger("sky_mechanicjob:wear:get", { plate = plateStr })
+    if WearState.sessionId ~= sessionId then return end
     if type(res) == "table" and res.success then
         WearState.wear = res.wear or WearState.wear
-        WearState.mileage = res.mileage or 0
+        WearState.mileage = tonumber(res.mileage) or 0
+        WearState.rev = tonumber(res.rev)
     end
 
     updateCriticalWearState()
@@ -675,7 +735,7 @@ local function onVehicleEnter(vehicle)
     WearState.isFetching = false
 
     refreshMileageHudVisibility()
-    startVehicleTrackingLoop(ped, vehicle)
+    startVehicleTrackingLoop(vehicle, sessionId)
 end
 
 AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
@@ -693,12 +753,18 @@ AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
     refreshMileageHudVisibility()
 end)
 
-local function onVehicleExit()
+onVehicleExit = function()
     if not WearState.active then return end
 
-    saveWearToServer()
+    local payload = buildSavePayload()
+    local sessionId = WearState.sessionId
     local oldVeh = WearState.vehicle
 
+    restoreDegradedHandling(oldVeh)
+    WearState.baseHandling = {}
+    WearState.appliedBands = {}
+
+    WearState.sessionId = sessionId + 1
     WearState.active = false
     WearState.isFetching = false
     WearState.vehicle = 0
@@ -714,32 +780,47 @@ local function onVehicleExit()
 
     WearState.isElectric = false
     WearState.activeWearParts = ICE_WEAR_PARTS
+    WearState.rev = nil
 
     SendNUIMessage({ action = "mileageHud:hide", payload = {} })
+    saveWearToServer(payload, sessionId)
 end
 
 AddEventHandler("gameEventTriggered", function(eventName, eventArgs)
-    if eventName == "CEventNetworkPlayerEnteredVehicle" then
-        if not WearState.active then
-            local veh = eventArgs and eventArgs[2]
-            if not veh then
-                veh = GetVehiclePedIsIn(PlayerPedId(), false)
-            end
-            if veh == 0 or not DoesEntityExist(veh) then return end
-            if GetPedInVehicleSeat(veh, -1) ~= PlayerPedId() then return end
-            onVehicleEnter(veh)
-        end
-    end
+    if eventName ~= "CEventNetworkPlayerEnteredVehicle" then return end
+    if WearState.active or WearState.isFetching then return end
 
-    if eventName == "CEventNetworkPlayerExitedVehicle" then
-        if WearState.active then
-            onVehicleExit()
+    local veh = eventArgs and eventArgs[2]
+    if not veh then
+        veh = GetVehiclePedIsIn(PlayerPedId(), false)
+    end
+    if veh == 0 or not DoesEntityExist(veh) then return end
+    if GetPedInVehicleSeat(veh, -1) ~= PlayerPedId() then return end
+    onVehicleEnter(veh)
+end)
+
+-- Leaving is detected by the tracking loop (GTA has no exit game event); this catches drivers the
+-- enter event missed (seat shuffle, resource restart while driving, a vehicle swap).
+CreateThread(function()
+    while true do
+        Wait(1500)
+        if not WearState.active and not WearState.isFetching then
+            local ped = PlayerPedId()
+            local veh = GetVehiclePedIsIn(ped, false)
+            if veh ~= 0 and DoesEntityExist(veh) and GetPedInVehicleSeat(veh, -1) == ped then
+                onVehicleEnter(veh)
+            end
         end
     end
 end)
 
 AddEventHandler("onResourceStop", function(resourceName)
     if resourceName ~= GetCurrentResourceName() then return end
+    local veh = WearState.vehicle
+    resetEngineDamage()
+    resetTransmissionLimp(veh)
+    resetElectricLimp(veh)
+    restoreDegradedHandling(veh)
     SendNUIMessage({ action = "mileageHud:hide", payload = {} })
 end)
 
@@ -774,6 +855,10 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
     if sanitizePlate(WearState.plate) == plateStr then
         if WearState.vehicle ~= 0 and DoesEntityExist(WearState.vehicle) then
             WearState.wear = payload.wear
+            local rev = tonumber(payload.rev)
+            if rev and rev >= (tonumber(WearState.rev) or 0) then
+                WearState.rev = rev
+            end
             targetVeh = WearState.vehicle
         end
     else

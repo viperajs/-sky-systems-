@@ -117,7 +117,7 @@ local function parkVehicleInGarage(garageId, garageType)
     end
 
     local netId = NetworkGetNetworkIdFromEntity(veh)
-    local vehObj = Sky.Vehicle:new(veh)
+    local vehObj = Sky.Vehicle.new(veh)
     local props = vehObj:GetVehicleProperties()
 
     if type(props) ~= "table" then
@@ -126,8 +126,8 @@ local function parkVehicleInGarage(garageId, garageType)
         return
     end
 
-    if Sky.Functions and Sky.Functions.GetVehicleFuel then
-        local rawFuel = Sky.Functions.GetVehicleFuel(veh)
+    local rawFuel = Sky.Functions.GetVehicleFuel and Sky.Functions.GetVehicleFuel(veh)
+    if type(rawFuel) == "number" then
         props.fuelLevel = Sky.Math.Round(rawFuel, 1)
     end
 
@@ -274,8 +274,8 @@ RegisterNUICallback("getVehicleStats", function(data, cb)
         return
     end
 
-    local stats = Sky.Info.GetVehicleStats(model)
-    if stats then
+    local ok, stats = pcall(function() return Sky.Info.GetVehicleStats(model) end)
+    if ok and type(stats) == "table" then
         cb({ success = true, data = stats })
     else
         cb({
@@ -357,9 +357,9 @@ end)
 
 RegisterNUICallback("openStretcherEditor", function(data, cb)
     local item = ensureTable(data)
-    if exports and exports.sky_ambulancejob and exports.sky_ambulancejob.openStretcherEditor then
-        local res = exports.sky_ambulancejob:openStretcherEditor(item)
-        if not res then
+    if GetResourceState("sky_ambulancejob") == "started" then
+        local ok, res = pcall(function() return exports.sky_ambulancejob:openStretcherEditor(item) end)
+        if not ok or not res then
             cb({
                 success = false,
                 error = errorLocales.stretcherEditor or "Failed to open stretcher editor."
@@ -422,37 +422,36 @@ RegisterNetEvent("sky_jobs_base:spawnGarageVehicle", function(data)
         end
     end
 
-    local vehObj = Sky.Vehicle:new()
+    local vehObj = Sky.Vehicle.new()
     local spawnedVeh = vehObj:Spawn(data.model, spawnCoords, heading)
 
-    if not (spawnedVeh and DoesEntityExist(spawnedVeh)) then return end
+    if not (spawnedVeh and DoesEntityExist(spawnedVeh)) then
+        TriggerServerEvent("sky_jobs_base:garageVehicleSpawnFailed", { plate = data.plate })
+        return
+    end
 
     local ped = PlayerPedId()
     SetVehicleOnGroundProperly(spawnedVeh)
 
-    local plateText = tostring(data.plate or "EMS")
-    SetVehicleNumberPlateText(spawnedVeh, plateText)
-
-    if data.vehicleMods then
-        if Sky.Vehicle and type(Sky.Vehicle.setvehiclemods) == "function" then
-            Sky.Vehicle.setvehiclemods(spawnedVeh, data.vehicleMods)
-        else
-            vehObj:SetVehicleProperties(data.vehicleMods)
-        end
+    if type(data.vehicleMods) == "table" then
+        vehObj:SetVehicleProperties(data.vehicleMods)
     end
+
+    -- After the stored properties: the server identifies fleet vehicles by this plate.
+    SetVehicleNumberPlateText(spawnedVeh, tostring(data.plate or ""))
 
     applyVehicleLivery(spawnedVeh, data.livery)
     applyVehicleExtras(spawnedVeh, data.extras)
 
     if data.fuel then
-        if Sky.Functions and Sky.Functions.SetVehicleFuel then
+        if Sky.Functions.SetVehicleFuel then
             Sky.Functions.SetVehicleFuel(spawnedVeh, data.fuel)
         else
             SetVehicleFuelLevel(spawnedVeh, (data.fuel or 100.0) + 0.0)
         end
     end
 
-    if data.fuelType and Sky.Functions and Sky.Functions.SetVehicleFuelType then
+    if data.fuelType and Sky.Functions.SetVehicleFuelType then
         Sky.Functions.SetVehicleFuelType(spawnedVeh, data.fuelType)
     end
 

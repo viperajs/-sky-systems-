@@ -4,6 +4,9 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server
 --  Vehicle Care, Cleaning, Waxing & Admin Full Repair
 -- =====================================================
 
+local CARE_VEHICLE_RANGE = 10.0
+local DEFAULT_CARE_ITEMS = { wash = "wash_sponge", wax = "vehicle_wax" }
+
 local function sanitizePlate(plate)
     if type(plate) ~= "string" then return "" end
     local trimmed = Sky and Sky.Math and Sky.Math.Trim and Sky.Math.Trim(plate)
@@ -22,68 +25,70 @@ Sky.Cb.Register("sky_mechanicjob:wear:adminRepairVehicle", function(source, data
     end
 
     local plate = sanitizePlate(data and data.plate)
-    local netId = tonumber(data and data.vehicleNetId) or 0
+    local netId = math.floor(tonumber(data and data.vehicleNetId) or 0)
+    local entity = netId > 0 and NetworkGetEntityFromNetworkId(netId) or 0
+    if entity ~= 0 and DoesEntityExist(entity) and GetEntityType(entity) == 2 then
+        plate = sanitizePlate(GetVehicleNumberPlateText(entity))
+    else
+        entity = nil
+    end
 
     if plate == "" then
         return { success = false, error = "invalid_plate" }
     end
 
-    local fullWear = {
-        tyres = 100.0,
-        brake_pads = 100.0,
-        suspension = 100.0,
-        spark_plugs = 100.0,
-        engine_oil = 100.0,
-        coolant = 100.0,
-        brake_fluid = 100.0,
-        transmission_fluid = 100.0,
-        clutch = 100.0,
-        air_filter = 100.0,
-        catalytic_converter = 100.0,
-        traction_battery = 100.0,
-        inverter = 100.0
-    }
-
-    -- Reset wear in DB
-    MySQL.query.await([[
-        INSERT INTO sky_mechanic_vehicle_wear (plate, mileage, wear)
-        VALUES (@plate, 0, @wear)
-        ON DUPLICATE KEY UPDATE wear = @wear
-    ]], {
-        ["@plate"] = plate,
-        ["@wear"] = json.encode(fullWear)
-    })
-
-    -- Remove stolen catalytic flag if present
-    MySQL.query.await("DELETE FROM sky_mechanic_stolen_catalytics WHERE plate = @plate", { ["@plate"] = plate })
-
-    -- Reset entity state bags if entity exists
-    if netId > 0 then
-        local entity = NetworkGetEntityFromNetworkId(netId)
-        if entity and entity ~= 0 and DoesEntityExist(entity) then
-            Entity(entity).state:set("sky_mechanic_catalytic_missing", nil, true)
-            Entity(entity).state:set("sky_mechanic_wheel_damage", nil, true)
-        end
+    -- Goes through the wear cache so a later part repair cannot write stale values back.
+    local entry = MechanicWear.Load(plate)
+    if not entry then
+        return { success = false, error = "invalid_plate" }
     end
 
-    -- Broadcast part repaired to sync clients
-    TriggerClientEvent("sky_mechanicjob:wear:partRepaired", -1, {
-        plate = plate,
-        fullRepair = true,
+    local wearMap = MechanicWear.ApplyRepair(src, entry, entity, MechanicWear.AllParts, {
         part = "admin_full_repair",
-        wear = fullWear
+        fullRepair = true,
+        resetWheels = true,
+        historyAction = "admin_repair",
+        historyText = "Admin full vehicle repair & component restoration"
     })
-
-    VehicleHistory.Add(
-        plate,
-        "admin_repair",
-        "Admin full vehicle repair & component restoration",
-        src,
-        0
-    )
 
     return {
         success = true,
-        wear = fullWear
+        wear = wearMap
+    }
+end)
+
+-- ── Wash / Wax Item Consumption ──────────────────────
+
+-- Called by the client after a successful wash or wax minigame, before the result is kept.
+Sky.Cb.Register("sky_mechanicjob:vehicleCare:consume", function(source, data)
+    local src = tonumber(source)
+    if not src then return { success = false, error = "invalid_source" } end
+
+    local action = tostring(data and data.action or "")
+    local defaultItem = DEFAULT_CARE_ITEMS[action]
+    if not defaultItem then
+        return { success = false, error = "invalid_action" }
+    end
+
+    local cfg = Config.VehicleCare and Config.VehicleCare[action]
+    cfg = type(cfg) == "table" and cfg or {}
+    local item = (type(cfg.item) == "string" and cfg.item ~= "") and cfg.item or defaultItem
+
+    local netId = math.floor(tonumber(data and data.vehicleNetId) or 0)
+    if netId <= 0 or not Functions.GetVehicleByNetId(src, netId, CARE_VEHICLE_RANGE) then
+        return { success = false, error = "vehicle_too_far" }
+    end
+
+    if cfg.removeAfterUse ~= false then
+        if not Functions.RemoveItem(src, item, 1) then
+            return { success = false, error = "missing_item", requiredItem = item }
+        end
+    elseif not Functions.HasItem(src, item, 1) then
+        return { success = false, error = "missing_item", requiredItem = item }
+    end
+
+    return {
+        success = true,
+        cleanKilometers = action == "wax" and math.max(1, tonumber(cfg.cleanKilometers) or 35) or nil
     }
 end)

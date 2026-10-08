@@ -113,12 +113,24 @@ local function updatePingsNUI(data) sendNuiMapMessage("map:updatePings", data) e
 local function updateTrackersNUI(data) sendNuiMapMessage("map:updateTrackers", data) end
 local function updateExclusionZonesNUI(data) sendNuiMapMessage("map:updateExclusionZones", data) end
 
+local function getNuiLocale(path)
+    local localeKey = (Sky and Sky.Config and Sky.Config.locale) or "en"
+    local node = ((Locales and (Locales[localeKey] or Locales.en)) or {}).Nui
+    for part in tostring(path):gmatch("[^%.]+") do
+        if type(node) ~= "table" then return nil end
+        node = node[part]
+    end
+    return type(node) == "string" and node or nil
+end
+
+-- The NUI has no handler for map announcements, so they are shown as a notification.
 local function announceMapMessage(payload)
     if type(payload) ~= "table" then return end
-    SendNUIMessage({
-        type = "map:announce",
-        data = payload
-    })
+    local text = getNuiLocale(payload.key) or tostring(payload.fallback or "")
+    for key, value in pairs(type(payload.params) == "table" and payload.params or {}) do
+        text = text:gsub("{" .. key .. "}", function() return tostring(value) end)
+    end
+    Sky.Show.Notification(getNuiLocale("map.zones.title") or "Exclusion Zones", text, payload.variant or "info")
 end
 
 local function getZoneLabel(zoneId)
@@ -202,12 +214,10 @@ local function isPointInsideAnyExclusionZone(pointVec2)
     if not pointVec2 then return false end
 
     for _, data in pairs(activePolygonsBBox) do
-        if data and data.polygon and #data.polygon >= 3 then
-            if data.bbox and Sky.Poly.IsPointInBoundingBox(pointVec2, data.bbox) then
-                -- inside bbox
-            elseif Sky.Poly.IsPointInZone(pointVec2, data.polygon) then
-                return true
-            end
+        if data and data.polygon and #data.polygon >= 3
+            and (not data.bbox or Sky.Poly.IsPointInBoundingBox(pointVec2, data.bbox))
+            and Sky.Poly.IsPointInZone(pointVec2, data.polygon) then
+            return true
         end
     end
     return false
@@ -267,6 +277,15 @@ local function hasVehicleBeenPlayerUsed(vehicle)
     return isVehicleOccupiedByPlayer(vehicle) or HasVehicleBeenOwnedByPlayer(vehicle)
 end
 
+-- Only ambient population (random parked/patrol/scenario/ambient) is cleared: player cars and job NPCs
+-- are mission entities. Every client runs this, so each one clears only the entities it controls.
+local AMBIENT_POPULATION_TYPES = { [2] = true, [3] = true, [4] = true, [5] = true }
+
+local function canClearEntity(entity)
+    if NetworkGetEntityIsNetworked(entity) and not NetworkHasControlOfEntity(entity) then return false end
+    return AMBIENT_POPULATION_TYPES[GetEntityPopulationType(entity)] == true
+end
+
 local function deleteUnusedVehicle(vehicle)
     if not DoesEntityExist(vehicle) then return end
     SetVehicleHasBeenOwnedByPlayer(vehicle, false)
@@ -285,13 +304,13 @@ CreateThread(function()
         Wait(1500)
         if next(activePolygonsBBox) ~= nil then
             iterateVehicles(function(veh)
-                if isEntityInsideExclusionZone(veh) and not hasVehicleBeenPlayerUsed(veh) then
+                if canClearEntity(veh) and isEntityInsideExclusionZone(veh) and not hasVehicleBeenPlayerUsed(veh) then
                     deleteUnusedVehicle(veh)
                 end
             end)
 
             iteratePeds(function(ped)
-                if not IsPedAPlayer(ped) and isEntityInsideExclusionZone(ped) then
+                if not IsPedAPlayer(ped) and canClearEntity(ped) and isEntityInsideExclusionZone(ped) then
                     deleteUnusedPed(ped)
                 end
             end)

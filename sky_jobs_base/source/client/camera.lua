@@ -322,7 +322,8 @@ RegisterNUICallback("camera:takePhoto", function(data, cb)
         timeout = data.timeout
     }
 
-    local res = Sky.Cb.Trigger("sky_jobs_base:camera:takePhoto", payload)
+    -- The capture and upload can take longer than the default callback timeout; the NUI waits 15s.
+    local res = Sky.Cb.TriggerWithTimeout("sky_jobs_base:camera:takePhoto", 15000, payload)
     if res and res.success then
         cb(res)
         return

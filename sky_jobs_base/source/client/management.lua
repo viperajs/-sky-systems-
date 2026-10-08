@@ -138,11 +138,31 @@ local function updateNuiImageConfig()
 end
 
 local function hasNonEmptySections(sections)
-    if type(sections) ~= "table" then return true end
+    if type(sections) ~= "table" then return false end
     for _, sec in pairs(sections) do
         if sec then return true end
     end
     return false
+end
+
+-- Server replies are { success, data, error }; older ones were the bare data.
+local function unwrap(res)
+    if type(res) ~= "table" then
+        return false, nil, nil
+    end
+    if res.success == nil then
+        return true, res, nil
+    end
+    return res.success == true, res.data, res.error
+end
+
+local function fetchManagementData()
+    local ok, data = unwrap(Sky.Cb.Trigger("sky_jobs_base:getJobData"))
+    if not ok or type(data) ~= "table" or not hasNonEmptySections(data.sections) then
+        return nil
+    end
+    data.storageContainsWeapons = Sky.Cb.Trigger("sky_jobs_base:getJobStorageContainsWeapons") == true
+    return data
 end
 
 local function sendJobDataToNUI(data)
@@ -215,8 +235,8 @@ RegisterNetEvent("sky_jobs_base:inviteResult", function()
 end)
 
 function Job.OpenMenu()
-    local jobData = Sky.Cb.Trigger("sky_jobs_base:getJobData")
-    if type(jobData) ~= "table" or not hasNonEmptySections(jobData.sections) then
+    local jobData = fetchManagementData()
+    if not jobData then
         Sky.Show.Notification(bossMenuNotify, noAccessMsg, "error")
         return
     end
@@ -255,9 +275,9 @@ RegisterNetEvent("sky_jobs_base:management:close", function()
 end)
 
 RegisterNUICallback("getLogs", function(data, cb)
-    local logs = Sky.Cb.Trigger("sky_jobs_base:getJobLogs", data.from, data.to)
-    if type(logs) ~= "table" then
-        cb({ success = false, error = "Failed to load logs." })
+    local ok, logs, err = unwrap(Sky.Cb.Trigger("sky_jobs_base:getJobLogs", data.from, data.to))
+    if not ok or type(logs) ~= "table" then
+        cb({ success = false, error = err or "Failed to load logs." })
         return
     end
     cb({ success = true, data = logs })
@@ -276,7 +296,7 @@ RegisterNUICallback("performTransaction", function(data, cb)
     cb({
         success = res.success == true,
         error = res.error or nil,
-        data = res.log,
+        data = res.data or res.log,
         balance = res.balance,
         currency = res.currency
     })
@@ -286,13 +306,19 @@ RegisterNUICallback("getLastTransactions", function(data, cb)
     local limit = tonumber(data and data.limit) or 100
     local offset = tonumber(data and data.offset) or 0
 
-    local logs = Sky.Cb.Trigger("sky_jobs_base:transactionLogs", limit, offset)
-    if type(logs) ~= "table" then logs = {} end
+    local res = Sky.Cb.Trigger("sky_jobs_base:transactionLogs", limit, offset)
+    local ok, logs, err = unwrap(res)
+    if not ok or type(logs) ~= "table" then
+        cb({ success = false, error = err or "Unable to load transactions." })
+        return
+    end
 
+    local hasMore = type(res) == "table" and res.hasMore
+    if hasMore == nil then hasMore = #logs >= limit end
     cb({
         success = true,
         data = logs,
-        hasMore = #logs >= limit
+        hasMore = hasMore == true
     })
 end)
 
@@ -313,15 +339,21 @@ RegisterNUICallback("getFinanceSnapshot", function(data, cb)
 end)
 
 RegisterNUICallback("getMembers", function(data, cb)
-    local members = Sky.Cb.Trigger("sky_jobs_base:getJobMembers")
-    cb({
-        success = true,
-        data = members
-    })
+    local ok, members, err = unwrap(Sky.Cb.Trigger("sky_jobs_base:getJobMembers"))
+    if not ok or type(members) ~= "table" then
+        cb({ success = false, error = err })
+        return
+    end
+    -- The UI keys rows by online_source, then identifier.
+    for _, m in ipairs(members) do
+        if type(m) == "table" and m.online_source == nil then m.online_source = m.source end
+    end
+    cb({ success = true, data = members })
 end)
 
 RegisterNUICallback("billingSpecs:list", function(data, cb)
-    local specs = Sky.Cb.Trigger("sky_jobs_base:getBillingSpecs") or {}
+    local _, specs = unwrap(Sky.Cb.Trigger("sky_jobs_base:getBillingSpecs"))
+    specs = type(specs) == "table" and specs or {}
     cb({
         success = true,
         data = { specs = specs }
@@ -361,22 +393,27 @@ RegisterNUICallback("respondInvite", function(data, cb)
     if type(res) ~= "table" then
         res = { success = false, error = "Unknown Error" }
     end
+    if inviteId == activeInviteId then
+        closeJobInviteUI()
+    end
     cb(res)
 end)
 
+local function setMember(action, data, cb)
+    local res = Sky.Cb.Trigger("sky_jobs_base:setMember", action, data and data.identifier)
+    cb(type(res) == "table" and res or { success = false, error = "Unknown Error" })
+end
+
 RegisterNUICallback("promoteMember", function(data, cb)
-    local res = Sky.Cb.Trigger("sky_jobs_base:setMember", "promote", data.identifier)
-    cb(res)
+    setMember("promote", data, cb)
 end)
 
 RegisterNUICallback("demoteMember", function(data, cb)
-    local res = Sky.Cb.Trigger("sky_jobs_base:setMember", "demote", data.identifier)
-    cb(res)
+    setMember("demote", data, cb)
 end)
 
 RegisterNUICallback("fireMember", function(data, cb)
-    local res = Sky.Cb.Trigger("sky_jobs_base:setMember", "fire", data.identifier)
-    cb(res)
+    setMember("fire", data, cb)
 end)
 
 RegisterNUICallback("giveBonus", function(data, cb)
@@ -404,8 +441,8 @@ RegisterNUICallback("uiReady", function(data, cb)
 end)
 
 RegisterNUICallback("management:getData", function(data, cb)
-    local jobData = Sky.Cb.Trigger("sky_jobs_base:getJobData")
-    if type(jobData) ~= "table" or not hasNonEmptySections(jobData.sections) then
+    local jobData = fetchManagementData()
+    if not jobData then
         cb({ success = false, error = noAccessMsg })
         return
     end
@@ -420,7 +457,8 @@ RegisterNUICallback("getPermissions", function(data, cb)
         return
     end
 
-    local permsMap = Sky.Cb.Trigger("sky_jobs_base:getJobPlayerPermissions", grade) or {}
+    local permsMap = Sky.Cb.Trigger("sky_jobs_base:getJobPlayerPermissions", grade)
+    if type(permsMap) ~= "table" then permsMap = {} end
     local containsWeapons = Sky.Cb.Trigger("sky_jobs_base:getJobStorageContainsWeapons") == true
 
     local resultList = {}
@@ -465,17 +503,17 @@ end)
 
 RegisterNUICallback("moveRoleUp", function(data, cb)
     local res = Sky.Cb.Trigger("sky_jobs_base:editGrade", "moveRoleUp", data.grade)
-    cb(res)
+    cb(type(res) == "table" and res or { success = false, error = "Unknown Error" })
 end)
 
 RegisterNUICallback("moveRoleDown", function(data, cb)
     local res = Sky.Cb.Trigger("sky_jobs_base:editGrade", "moveRoleDown", data.grade)
-    cb(res)
+    cb(type(res) == "table" and res or { success = false, error = "Unknown Error" })
 end)
 
 RegisterNUICallback("deleteRole", function(data, cb)
     local res = Sky.Cb.Trigger("sky_jobs_base:editGrade", "delete", data.grade)
-    cb(res)
+    cb(type(res) == "table" and res or { success = false, error = "Unknown Error" })
 end)
 
 RegisterNUICallback("saveRole", function(data, cb)

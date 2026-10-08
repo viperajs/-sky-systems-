@@ -357,6 +357,8 @@ end
 local function isColorSignificantlyDifferent(r1, g1, b1, r2, g2, b2)
     if r2 < 0 or g2 < 0 or b2 < 0 then return true end
     return math.abs(r1 - r2) >= COLOR_CHANGE_THRESHOLD
+        or math.abs(g1 - g2) >= COLOR_CHANGE_THRESHOLD
+        or math.abs(b1 - b2) >= COLOR_CHANGE_THRESHOLD
 end
 
 local function hslToRgb(hue)

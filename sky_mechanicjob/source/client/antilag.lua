@@ -12,10 +12,14 @@ local antilagState = {
     activePlate = "",
     active = false,
     activeEffectAt = 0,
+    nextSyncAt = 0,
     runtimeVehicle = 0,
     runtimePlate = "",
     runtimeRecord = nil
 }
+
+-- Remote players get at most one burst per interval; the server drops anything faster.
+local SYNC_INTERVAL_MS = 150
 
 local DEFAULT_CONFIG = {
     enabled = true,
@@ -122,9 +126,12 @@ local function sanitizeRecord(rec)
     local flameLevel = math.max(1, math.min(10, math.floor(tonumber(rec.flameScaleLevel) or getDefaultFlameScaleLevel())))
     local volLevel = math.max(0, math.min(10, math.floor(tonumber(rec.volumeLevel) or getDefaultVolumeLevel())))
 
+    local enabled = rec.enabled
+    if enabled == nil then enabled = isDefaultEnabled() end
+
     return {
         installed = rec.installed == true,
-        enabled = (rec.enabled ~= nil) and (rec.enabled == true) or isDefaultEnabled(),
+        enabled = enabled == true,
         flameScaleLevel = flameLevel,
         volumeLevel = volLevel,
         installedAt = tostring(rec.installedAt or "")
@@ -245,6 +252,7 @@ local function resetActiveState()
     antilagState.activeVehicle = 0
     antilagState.activePlate = ""
     antilagState.activeEffectAt = 0
+    antilagState.nextSyncAt = 0
 end
 
 local function shouldTriggerAntilag(vehicle, record, state)
@@ -265,13 +273,13 @@ function AntiLag.AddOptions(vehicle, addOptionCb)
     if type(addOptionCb) ~= "function" or not config.enabled then return end
 
     local record = getRecordByPlate(getVehiclePlate(vehicle))
-    local isInstalled = type(record) == "table"
+    local isOn = type(record) == "table" and record.installed == true and record.enabled ~= false
 
     addOptionCb(
         "performance",
         "antilag_enabled",
         getNuiLocale("option.label.antilag_enabled", "Anti-Lag"),
-        isInstalled,
+        isOn,
         "rear"
     )
 end
@@ -365,14 +373,20 @@ function AntiLag.TickVehicle(vehicle, now, state, plate, record)
 
         if now >= antilagState.activeEffectAt then
             local intensity = math.max(0.35, math.min(1.0, state.rpm))
+            local burstRecord = {
+                volumeLevel = math.max(0, math.min(10, math.floor(tonumber(record.volumeLevel) or getDefaultVolumeLevel()))),
+                flameScaleLevel = math.max(1, math.min(10, math.floor(tonumber(record.flameScaleLevel) or getDefaultFlameScaleLevel())))
+            }
 
-            TriggerServerEvent("sky_mechanicjob:antilag:syncBurst", VehToNet(vehicle), {
-                intensity = intensity,
-                record = {
-                    volumeLevel = math.max(0, math.min(10, math.floor(tonumber(record.volumeLevel) or getDefaultVolumeLevel()))),
-                    flameScaleLevel = math.max(1, math.min(10, math.floor(tonumber(record.flameScaleLevel) or getDefaultFlameScaleLevel())))
-                }
-            })
+            playAntilagBurst(vehicle, burstRecord, intensity)
+
+            if now >= antilagState.nextSyncAt then
+                TriggerServerEvent("sky_mechanicjob:antilag:syncBurst", VehToNet(vehicle), {
+                    intensity = intensity,
+                    record = burstRecord
+                })
+                antilagState.nextSyncAt = now + SYNC_INTERVAL_MS
+            end
 
             antilagState.activeEffectAt = now + getRandomBurstInterval()
         end
@@ -400,15 +414,18 @@ function AntiLag.ApplyPersistedStateToVehicle(vehicle, plate, recordData)
 
     setRecordByPlate(cleanPlate, recordData)
 
-    local rec = antilagState.recordsByPlate[cleanPlate]
-    if rec and rec.installed then
-        VehicleEffects.SyncRuntimeForCurrentVehicle()
-    end
+    -- Also when the record was removed, so a running loop drops it.
+    VehicleEffects.SyncRuntimeForCurrentVehicle()
 end
 
 -- ── Net Events & Resource Lifecycle ─────────────────
 
 RegisterNetEvent("sky_mechanicjob:antilag:burst", function(netId, payload)
+    -- The driver already played this burst locally.
+    if type(payload) == "table" and payload.source == GetPlayerServerId(PlayerId()) then
+        return
+    end
+
     local vehicle = NetToVeh(netId)
     if vehicle == 0 or not DoesEntityExist(vehicle) then return end
 

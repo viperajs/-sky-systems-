@@ -224,9 +224,10 @@ RegisterNUICallback("chat:getUnreadMessages", function(data, cb)
 end)
 
 RegisterNUICallback("chat:getAllMembers", function(data, cb)
-    local res = Sky.Cb.Trigger("sky_jobs_base:getAllJobMembers") or {}
-    cb({
-        success = true,
-        data = res
-    })
+    local res = Sky.Cb.Trigger("sky_jobs_base:getAllJobMembers")
+    if type(res) == "table" and res.success ~= nil then
+        cb({ success = res.success == true, data = res.data or {}, error = res.error })
+        return
+    end
+    cb({ success = type(res) == "table", data = type(res) == "table" and res or {} })
 end)

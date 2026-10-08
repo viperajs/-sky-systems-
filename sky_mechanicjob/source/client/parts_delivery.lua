@@ -6,15 +6,15 @@ local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 
 local CREATOR_KEY = "workshopcreator"
-local POINT_TYPE = "part_delivery"
+local POINT_TYPE = "parts_drop"
 local DEFAULT_BOX_MODEL = "prop_cs_cardbox_01"
+local DEFAULT_PALLET_MODEL = "prop_boxpile_06a"
 
 local State = {}
 State.creatorCache = nil
 State.deliveries = {}
 State.entities = {}
 State.entityModels = {}
-State.entityServerOwned = {}
 State.notifiedDeliveries = {}
 State.readyNotificationInitialized = false
 State.boxModel = DEFAULT_BOX_MODEL
@@ -45,6 +45,21 @@ local function getLocale(key, fallback)
         return val
     end
     return fallback
+end
+
+local function isPartsDeliveryEnabled()
+    return not (Config.ToggleFeatures and Config.ToggleFeatures.partsDelivery == false)
+end
+
+local function getPlayerJobKey()
+    local access = type(Sky_Jobs) == "table" and Sky_Jobs.Access or nil
+    if type(access) ~= "table" or type(access.GetJobKey) ~= "function" then return nil end
+    return access.GetJobKey()
+end
+
+local function isPlayerOnDuty()
+    local access = type(Sky_Jobs) == "table" and Sky_Jobs.Access or nil
+    return type(access) == "table" and type(access.IsOnDuty) == "function" and access.IsOnDuty() == true
 end
 
 -- ─── Get Creator Data ──────────────────────────────
@@ -83,69 +98,35 @@ local function isDeliveryPointType(pType)
     if type(pType) ~= "string" then return false end
     local lower = pType:lower()
     return lower == "parts_drop" or lower == "part_delivery" or lower == "parts_delivery"
-        or lower == "delivery" or lower == "delivery_bay" or lower == "storage" or lower == "shop"
+        or lower == "delivery" or lower == "delivery_bay"
 end
 
--- ─── Get All Delivery Points From Creator ──────────
+-- ─── Get Delivery Points Of The Player's Workshop ──
+-- Without a delivery bay the tablet shows that none is configured instead of dropping the
+-- parts at some other point.
 local function getAllDeliveryPoints()
     local creatorData = getCreatorData()
+    local jobKey = getPlayerJobKey()
     local points = {}
 
-    if type(creatorData) == "table" and type(creatorData.entries) == "table" then
-        for _, entry in ipairs(creatorData.entries) do
-            if type(entry) == "table" and type(entry.points) == "table" then
-                for _, point in ipairs(entry.points) do
-                    if type(point) == "table" and isDeliveryPointType(point.type) then
-                        if point.x and point.y and point.z then
-                            local key = buildPointKey(entry.id, point.uid, point.type)
-                            local label = tostring(point.label or entry.label or entry.name or getLocale("PartsDeliveryPointLabel", "Parts Delivery"))
-                            local coords = vector3(
-                                tonumber(point.x) or 0.0,
-                                tonumber(point.y) or 0.0,
-                                tonumber(point.z) or 0.0
-                            )
-                            local heading = tonumber(point.heading) or 0.0
-                            points[#points + 1] = {
-                                key = key,
-                                label = label,
-                                coords = coords,
-                                heading = heading,
-                            }
-                        end
-                    end
+    if not jobKey or type(creatorData) ~= "table" or type(creatorData.entries) ~= "table" then
+        return points
+    end
+
+    for _, entry in ipairs(creatorData.entries) do
+        local entryJob = type(entry) == "table" and (entry.jobKey or entry.job) or nil
+        if type(entry) == "table" and type(entry.points) == "table" and (entryJob == nil or entryJob == jobKey) then
+            for _, point in ipairs(entry.points) do
+                if type(point) == "table" and isDeliveryPointType(point.type) and point.x and point.y and point.z then
+                    points[#points + 1] = {
+                        key = buildPointKey(entry.id, point.uid, point.type),
+                        label = tostring(point.label or entry.label or entry.name or getLocale("PartsDeliveryPointLabel", "Parts Delivery")),
+                        coords = vector3(tonumber(point.x) or 0.0, tonumber(point.y) or 0.0, tonumber(point.z) or 0.0),
+                        heading = tonumber(point.heading) or 0.0,
+                    }
                 end
             end
         end
-    end
-
-    if #points == 0 and type(creatorData) == "table" and type(creatorData.entries) == "table" then
-        for _, entry in ipairs(creatorData.entries) do
-            if type(entry) == "table" and type(entry.points) == "table" then
-                for _, point in ipairs(entry.points) do
-                    if point.x and point.y and point.z then
-                        local key = buildPointKey(entry.id, point.uid or "fallback", "parts_drop")
-                        local label = tostring(point.label or entry.name or "Workshop Delivery")
-                        points[#points + 1] = {
-                            key = key,
-                            label = label,
-                            coords = vector3(tonumber(point.x) or 0.0, tonumber(point.y) or 0.0, tonumber(point.z) or 0.0),
-                            heading = tonumber(point.heading) or 0.0
-                        }
-                        break
-                    end
-                end
-            end
-        end
-    end
-
-    if #points == 0 then
-        local pCoords = GetEntityCoords(PlayerPedId())
-        points[#points + 1] = {
-            key = "default:fallback:parts_drop",
-            label = "Workshop Delivery Bay",
-            coords = pCoords,
-            heading = GetEntityHeading(PlayerPedId())
-        }
     end
 
     return points
@@ -154,13 +135,11 @@ end
 -- ─── Find Nearest Delivery Point ───────────────────
 local function findNearestDeliveryPoint()
     local playerCoords = GetEntityCoords(PlayerPedId())
-    local allPoints = getAllDeliveryPoints()
-    local nearest = allPoints[1] or nil
-    local nearestDist = nearest and #(playerCoords - nearest.coords) or 0.0
+    local nearest, nearestDist = nil, nil
 
-    for _, point in ipairs(allPoints) do
+    for _, point in ipairs(getAllDeliveryPoints()) do
         local dist = #(playerCoords - point.coords)
-        if dist < nearestDist then
+        if not nearestDist or dist < nearestDist then
             nearest = point
             nearestDist = dist
         end
@@ -180,16 +159,11 @@ end
 -- ─── Delete Entity By Delivery ID ──────────────────
 local function deleteDeliveryEntity(deliveryId)
     local entity = State.entities[deliveryId]
-    if entity and entity ~= 0 then
-        if DoesEntityExist(entity) then
-            if State.entityServerOwned[deliveryId] ~= true then
-                DeleteEntity(entity)
-            end
-        end
+    if entity and entity ~= 0 and DoesEntityExist(entity) then
+        DeleteEntity(entity)
     end
     State.entities[deliveryId] = nil
     State.entityModels[deliveryId] = nil
-    State.entityServerOwned[deliveryId] = nil
 end
 
 -- ─── Cleanup Orphaned Entities ─────────────────────
@@ -199,11 +173,6 @@ local function cleanupOrphanedEntities(activeIds)
             deleteDeliveryEntity(deliveryId)
         end
     end
-end
-
--- ─── Get Box Model Name ────────────────────────────
-local function getBoxModel()
-    return tostring(State.boxModel or DEFAULT_BOX_MODEL)
 end
 
 -- ─── Get Delivery Pallet Config ────────────────────
@@ -218,6 +187,15 @@ local function getDeliveryPalletConfig()
         end
     end
     return nil
+end
+
+-- ─── Get Box Model Name ────────────────────────────
+local function getBoxModel()
+    local palletCfg = getDeliveryPalletConfig()
+    if palletCfg then
+        return tostring(palletCfg.prop or DEFAULT_PALLET_MODEL)
+    end
+    return tostring(State.boxModel or DEFAULT_BOX_MODEL)
 end
 
 -- ─── Is Entity a Forklift ──────────────────────────
@@ -418,100 +396,26 @@ local function placeEntityAt(entity, coords, heading)
     end
 end
 
--- ─── Clean Duplicate Objects Near Location ─────────
-local function cleanDuplicatesNearLocation(modelName, coords, excludeEntity)
-    local palletCfg = getDeliveryPalletConfig()
-    if not palletCfg then return end
-
-    local modelHash = GetHashKey(modelName)
-    local cleanupDist = tonumber(palletCfg.duplicateCleanupDistance) or 2.25
-
-    for _, obj in ipairs(GetGamePool("CObject")) do
-        if obj ~= excludeEntity and DoesEntityExist(obj) then
-            if GetEntityModel(obj) == modelHash then
-                local dist = #(GetEntityCoords(obj) - coords)
-                if dist <= cleanupDist then
-                    DeleteEntity(obj)
-                end
-            end
-        end
-    end
+-- ─── Spawn / Update Delivery Entity ────────────────
+-- Each client spawns its own local box (or pallet); networked ones from every client
+-- stacked one copy per player on each delivery.
+local function hasDeliveryEntity(deliveryId)
+    local entity = State.entities[deliveryId]
+    return entity ~= nil and entity ~= 0 and DoesEntityExist(entity)
 end
 
--- ─── Spawn / Update Delivery Entity ────────────────
-local function spawnOrUpdateDeliveryEntity(delivery, amount, pointLookup)
+local function spawnOrUpdateDeliveryEntity(delivery, pointLookup)
     local deliveryId = tonumber(delivery.id) or 0
     if deliveryId <= 0 then return end
 
-    local existingEntity = State.entities[deliveryId]
     local modelName = getBoxModel()
-    local coords, heading = resolveDeliveryCoords(delivery, pointLookup)
-
-    -- Handle existing entity
-    if existingEntity and existingEntity ~= 0 and DoesEntityExist(existingEntity) then
-        if getDeliveryPalletConfig() then
-            if State.entityServerOwned[deliveryId] ~= true then
-                deleteDeliveryEntity(deliveryId)
-                existingEntity = 0
-            end
-        else
-            if State.entityModels[deliveryId] ~= modelName then
-                deleteDeliveryEntity(deliveryId)
-            else
-                return -- Same model, no update needed
-            end
-        end
-    end
-
-    -- Re-check after potential delete
-    if existingEntity and existingEntity ~= 0 and DoesEntityExist(existingEntity) then
-        return
-    end
-
-    -- Handle server-owned entity (pallet mode)
-    local netId = 0
-    if getDeliveryPalletConfig() then
-        netId = tonumber(delivery.entityNetId) or 0
-    end
-
-    if getDeliveryPalletConfig() then
-        if netId <= 0 or not NetworkDoesNetworkIdExist(netId) then
-            cleanDuplicatesNearLocation(modelName, coords, 0)
+    if hasDeliveryEntity(deliveryId) then
+        if State.entityModels[deliveryId] == modelName then
             return
         end
-
-        local serverEntity = NetToObj(netId)
-        if serverEntity ~= 0 and DoesEntityExist(serverEntity) then
-            cleanDuplicatesNearLocation(modelName, coords, serverEntity)
-            SetEntityAsMissionEntity(serverEntity, true, false)
-            SetEntityCanBeDamaged(serverEntity, false)
-            placeEntityAt(serverEntity, coords, heading)
-            NetworkUseHighPrecisionBlending(netId, true)
-            NetworkSetObjectForceStaticBlend(serverEntity, false)
-            State.entities[deliveryId] = serverEntity
-            State.entityModels[deliveryId] = modelName
-            State.entityServerOwned[deliveryId] = true
-        end
-        return
+        deleteDeliveryEntity(deliveryId)
     end
 
-    -- Non-pallet: check if model changed
-    existingEntity = State.entities[deliveryId]
-    if existingEntity and existingEntity ~= 0 and DoesEntityExist(existingEntity) then
-        if State.entityModels[deliveryId] ~= modelName then
-            deleteDeliveryEntity(deliveryId)
-        else
-            return
-        end
-    end
-
-    -- Double-check after cleanup
-    existingEntity = State.entities[deliveryId]
-    if existingEntity and existingEntity ~= 0 and DoesEntityExist(existingEntity) then
-        return
-    end
-
-    -- Spawn new object
     local modelHash = GetHashKey(modelName)
     if not IsModelValid(modelHash) then
         print(string.format("[sky_mechanicjob][parts_delivery] spawn failed: invalid model '%s'", modelName))
@@ -519,7 +423,13 @@ local function spawnOrUpdateDeliveryEntity(delivery, amount, pointLookup)
     end
 
     Sky.Load.Model(modelHash)
-    local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, true, true, false)
+    -- Loading waits, so another refresh may have spawned this delivery meanwhile.
+    if hasDeliveryEntity(deliveryId) then
+        return
+    end
+
+    local coords, heading = resolveDeliveryCoords(delivery, pointLookup)
+    local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, false, false, false)
 
     if obj == 0 or not DoesEntityExist(obj) then
         print(string.format("[sky_mechanicjob][parts_delivery] spawn failed: object creation failed for delivery %s", deliveryId))
@@ -530,21 +440,9 @@ local function spawnOrUpdateDeliveryEntity(delivery, amount, pointLookup)
     SetEntityCanBeDamaged(obj, false)
     placeEntityAt(obj, coords, heading)
 
-    local objNetId = ObjToNet(obj)
-    if objNetId ~= 0 then
-        SetNetworkIdExistsOnAllMachines(objNetId, true)
-        NetworkSetNetworkIdDynamic(objNetId, getDeliveryPalletConfig() ~= nil)
-        SetNetworkIdCanMigrate(objNetId, false)
-        if getDeliveryPalletConfig() then
-            NetworkUseHighPrecisionBlending(objNetId, true)
-            NetworkSetObjectForceStaticBlend(obj, false)
-        end
-    end
-
     SetModelAsNoLongerNeeded(modelHash)
     State.entities[deliveryId] = obj
     State.entityModels[deliveryId] = modelName
-    State.entityServerOwned[deliveryId] = false
 end
 
 -- ─── Refresh All Delivery Entities ─────────────────
@@ -579,7 +477,7 @@ local function refreshDeliveryEntities()
     cleanupOrphanedEntities(activeIds)
 
     for _, entry in ipairs(spawnQueue) do
-        spawnOrUpdateDeliveryEntity(entry.delivery, entry.amount, pointLookup)
+        spawnOrUpdateDeliveryEntity(entry.delivery, pointLookup)
     end
 end
 
@@ -624,7 +522,7 @@ local function notifyNewDeliveries(deliveries)
         pushId = string.format("push-parts-delivery-%s", tostring(first.id or GetGameTimer()))
     end
 
-    if Sky_Jobs and Sky_Jobs.Tablet and Sky_Jobs.Tablet.PushNotification then
+    if isPlayerOnDuty() and Sky_Jobs and Sky_Jobs.Tablet and Sky_Jobs.Tablet.PushNotification then
         Sky_Jobs.Tablet.PushNotification({
             id = pushId,
             appKey = "mechanic_parts_shop",
@@ -641,8 +539,19 @@ end
 
 -- ─── Fetch Ready Deliveries From Server ────────────
 local function fetchReadyDeliveries()
+    if not isPartsDeliveryEnabled() then
+        State.deliveries = {}
+        refreshDeliveryEntities()
+        return
+    end
+
     local result = Sky.Cb.Trigger("sky_mechanicjob:partsDelivery:getReadyDeliveries", { pageSize = 100 })
     if type(result) ~= "table" or result.success ~= true then
+        -- Not (or no longer) a mechanic: drop the boxes of the previous job.
+        if type(result) == "table" and result.error == "not_authorized" then
+            State.deliveries = {}
+            refreshDeliveryEntities()
+        end
         return
     end
 
@@ -826,6 +735,9 @@ end
 
 -- ─── Can Player Interact With Delivery ─────────────
 local function canInteractWithDelivery()
+    if not isPartsDeliveryEnabled() or not isPlayerOnDuty() then
+        return false
+    end
     if IsPedInAnyVehicle(PlayerPedId(), false) then
         return false
     end
@@ -862,12 +774,17 @@ local function openDelivery(delivery)
     if type(result) == "table" and result.success == true then
         local data = result.data or {}
 
-        -- Try to hold carry item if available
-        if type(data.carryItem) == "table" then
-            local held = holdCarryItemProp(data.carryItem.name, data.carryItem.metadata)
-            if held ~= true then
-                Sky.Cb.Trigger("sky_mechanicjob:carryItem:drop", {})
-            end
+        -- Carry items mode: the delivery has to be carried to the workshop storage.
+        if type(data.carryItem) == "table" and holdCarryItemProp(data.carryItem.name, data.carryItem.metadata) ~= true then
+            Sky.Cb.Trigger("sky_mechanicjob:carryItem:drop", {})
+            Sky.Show.Notification(
+                getLocale("PartsDeliveryTitle", "Parts Delivery"),
+                getLocale("PartsDeliveryClaimFailed", "Failed to unpack this delivery."),
+                "error"
+            )
+            fetchReadyDeliveries()
+            State.opening = false
+            return
         end
 
         Sky.Show.Notification(
@@ -888,6 +805,8 @@ local function openDelivery(delivery)
             errorMsg = getLocale("PartsDeliveryNotOnDuty", "You must be on duty to open deliveries.")
         elseif errorCode == "inventory_full" then
             errorMsg = getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery.")
+        elseif errorCode == "too_far" then
+            errorMsg = getLocale("PartsDeliveryTooFar", "Move closer to the delivery bay.")
         end
 
         Sky.Show.Notification(
@@ -895,17 +814,27 @@ local function openDelivery(delivery)
             errorMsg,
             "error"
         )
+        fetchReadyDeliveries()
     end
 
     State.opening = false
 end
 
+local function clearHeldDeliveryCarry()
+    releaseOrderHeldProp()
+    OrderInstallState.heldCarryItem = nil
+    OrderInstallState.heldCarryTransportMode = "hand"
+    ClearPedTasks(PlayerPedId())
+end
+
 -- ─── Export: Deposit Carry Item To Storage ──────────
 registerExport("TryDepositCarryItemToStorage", function(stationId)
-    -- Check if player is holding a carry item
+    -- Only a part carried out of a delivery goes to storage; parts held for an order
+    -- install keep the normal storage interaction.
     local heldItem = OrderInstallState and OrderInstallState.heldCarryItem or nil
+    local isDeliveryCarry = type(heldItem) == "table" and type(heldItem.metadata) == "table" and heldItem.metadata.deliveryId ~= nil
 
-    if type(heldItem) == "table" then
+    if isDeliveryCarry then
         local itemName = tostring(heldItem.name or "")
         if itemName ~= "" then
             -- Check if transport vehicle is required
@@ -932,14 +861,14 @@ registerExport("TryDepositCarryItemToStorage", function(stationId)
             end
 
             -- Deposit carry item
+            -- The server knows which delivery is carried; nothing about it is sent.
             local depositResult = Sky.Cb.Trigger("sky_mechanicjob:carryItem:depositToStorage", {
                 stationId = tostring(stationId or ""),
-                name = heldItem.name,
-                metadata = heldItem.metadata,
             }) or {}
+            local depositError = type(depositResult) == "table" and depositResult.error or nil
 
             if type(depositResult) == "table" and depositResult.success == true then
-                releaseOrderHeldProp()
+                clearHeldDeliveryCarry()
                 Sky.Show.Notification(
                     getLocale("PartsDeliveryTitle", "Parts Delivery"),
                     getLocale("CarryItemStored", "Part placed in workshop storage."),
@@ -948,11 +877,16 @@ registerExport("TryDepositCarryItemToStorage", function(stationId)
                 return true
             end
 
-            Sky.Show.Notification(
-                getLocale("PartsDeliveryTitle", "Parts Delivery"),
-                getLocale("CarryItemStoreFailed", "Unable to place this part in storage."),
-                "error"
-            )
+            local failMsg = getLocale("CarryItemStoreFailed", "Unable to place this part in storage.")
+            if depositError == "inventory_full" then
+                failMsg = getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery.")
+            elseif depositError == "too_far" then
+                failMsg = getLocale("CarryItemTransportRequired", "Bring the part transport closer to storage.")
+            else
+                -- The server no longer has this delivery as carried by the player.
+                clearHeldDeliveryCarry()
+            end
+            Sky.Show.Notification(getLocale("PartsDeliveryTitle", "Parts Delivery"), failMsg, "error")
             return true
         end
     end
@@ -978,6 +912,14 @@ registerExport("TryDepositCarryItemToStorage", function(stationId)
         )
         return true
     end
+    if type(result) == "table" and result.error == "inventory_full" then
+        Sky.Show.Notification(
+            getLocale("PartsDeliveryTitle", "Parts Delivery"),
+            getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery."),
+            "error"
+        )
+        return true
+    end
 
     Sky.Show.Notification(
         getLocale("PartsDeliveryTitle", "Parts Delivery"),
@@ -998,6 +940,11 @@ end)
 
 -- ─── NUI Callback: Get Parts Shop Config ───────────
 RegisterNUICallback("partsShop:getConfig", function(payload, cb)
+    if not isPartsDeliveryEnabled() then
+        cb({ success = false, error = "feature_disabled" })
+        return
+    end
+
     local result = Sky.Cb.Trigger("sky_mechanicjob:partsDelivery:getCatalog", {}) or {}
 
     local nearestPoint, nearestDist = findNearestDeliveryPoint()
@@ -1029,11 +976,15 @@ end)
 
 -- ─── NUI Callback: Place Order ─────────────────────
 RegisterNUICallback("partsShop:placeOrder", function(payload, cb)
+    if not isPartsDeliveryEnabled() then
+        cb({ success = false, error = "feature_disabled" })
+        return
+    end
+
     local deliveryPointKey = tostring(payload and payload.deliveryPointKey or "")
-    local allPoints = getAllDeliveryPoints()
     local matchedPoint = nil
 
-    for _, point in ipairs(allPoints) do
+    for _, point in ipairs(getAllDeliveryPoints()) do
         if point.key == deliveryPointKey then
             matchedPoint = point
             break
@@ -1041,7 +992,7 @@ RegisterNUICallback("partsShop:placeOrder", function(payload, cb)
     end
 
     if not matchedPoint then
-        matchedPoint = allPoints[1]
+        matchedPoint = findNearestDeliveryPoint()
     end
 
     if not matchedPoint then
@@ -1082,6 +1033,11 @@ end)
 
 -- ─── Net Event: Deliveries Changed ─────────────────
 RegisterNetEvent("sky_mechanicjob:partsDelivery:readyDeliveriesChanged", function()
+    fetchReadyDeliveries()
+end)
+
+-- Job or duty changed: the deliveries are those of the player's workshop.
+AddEventHandler("sky_jobs_base:access:stateChanged", function()
     fetchReadyDeliveries()
 end)
 
@@ -1143,19 +1099,6 @@ CreateThread(function()
     end
 end)
 
-RegisterCommand("claimdelivery", function()
-    fetchReadyDeliveries()
-    local delivery = findNearestReadyDelivery()
-    if not delivery and #State.deliveries > 0 then
-        delivery = State.deliveries[1]
-    end
-    if delivery then
-        openDelivery(delivery)
-    else
-        Sky.Show.Notification("Parts Delivery", "No ready deliveries found to claim.", "error")
-    end
-end, false)
-
 -- ─── Register Interaction Events Per Job ───────────
 local registeredJobs = {}
 
@@ -1186,19 +1129,19 @@ local function registerJobInteraction(jobName)
     end)
 end
 
--- Register for default "mechanic" job
-registerJobInteraction("mechanic")
-
--- Register for all configured jobs
-for _, job in ipairs(Config.Jobs or {}) do
-    registerJobInteraction(job and job.name)
+-- Register for "mechanic" and every configured job (its jobKey is the framework job
+-- sky_jobs_base raises the interaction for).
+for _, jobName in ipairs(GetMechanicJobNames()) do
+    registerJobInteraction(jobName)
 end
 
 -- Re-register when job config updates
 AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
-    for _, job in ipairs(Config.Jobs or {}) do
-        registerJobInteraction(job and job.name)
+    for _, jobName in ipairs(GetMechanicJobNames()) do
+        registerJobInteraction(jobName)
     end
+    -- The parts delivery toggle may have changed.
+    fetchReadyDeliveries()
 end)
 
 -- ─── Game Event: Vehicle Enter/Exit ────────────────

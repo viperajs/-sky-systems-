@@ -263,8 +263,7 @@ local function clearAllInstalledSystems()
 end
 
 local function isDriverOfVehicle(vehicle)
-    local _ped = PlayerPedId()
-    return vehicle ~= 0
+    return vehicle ~= 0 and DoesEntityExist(vehicle) and GetPedInVehicleSeat(vehicle, -1) == PlayerPedId()
 end
 
 local function stopEffectsRuntime()
@@ -437,18 +436,16 @@ CreateThread(function()
     VehicleEffects.SyncRuntimeForCurrentVehicle()
 end)
 
+-- Leaving the seat ends the driver loops through isDriverOfVehicle; GTA has no exit game event.
+-- Seat changes are also picked up by the driver poll in vehicle_persistence.lua.
 AddEventHandler("gameEventTriggered", function(eventName, eventData)
-    if eventName == "CEventNetworkPlayerEnteredVehicle" then
-        local vehicle = (eventData and eventData[2]) or GetVehiclePedIsIn(PlayerPedId(), false)
-        if vehicle == 0 or not DoesEntityExist(vehicle) then return end
-        if GetPedInVehicleSeat(vehicle, -1) ~= PlayerPedId() then return end
+    if eventName ~= "CEventNetworkPlayerEnteredVehicle" then return end
 
-        VehicleEffects.SyncRuntimeForCurrentVehicle()
-    elseif eventName == "CEventNetworkPlayerExitedVehicle" then
-        if IsPedInAnyVehicle(PlayerPedId(), false) then return end
-        stopEffectsRuntime()
-        stopRgbRuntime()
-    end
+    local vehicle = (eventData and eventData[2]) or GetVehiclePedIsIn(PlayerPedId(), false)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return end
+    if GetPedInVehicleSeat(vehicle, -1) ~= PlayerPedId() then return end
+
+    VehicleEffects.SyncRuntimeForCurrentVehicle()
 end)
 
 AddEventHandler("onResourceStop", function(resName)

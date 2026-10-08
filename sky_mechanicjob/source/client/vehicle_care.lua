@@ -13,6 +13,8 @@ local SEARCH_RADIUS = 6.0
 
 local ANIM_WASH_DICT = "amb@world_human_maid_clean@"
 local ANIM_WASH_NAME = "base"
+local ANIM_REPAIR_DICT = "mini@repair"
+local ANIM_REPAIR_NAME = "fixing_a_ped"
 local PROP_SPONGE_MODEL = "prop_sponge_01"
 local PROP_SPONGE_ATTACH = { bone = 28422, x = 0.0, y = 0.0, z = -0.01, rx = 90.0, ry = 0.0, rz = 0.0 }
 
@@ -320,6 +322,31 @@ local function applyWaxToVehicle(vehicle, addedKm)
     SetVehicleDirtLevel(vehicle, 0.0)
 end
 
+-- A waxed vehicle stays clean while it is driven, until its mileage passes the waxed distance.
+CreateThread(function()
+    while true do
+        Wait(2000)
+        if next(VehicleCareWaxState.activeByPlate) and WearState and WearState.active and DoesEntityExist(WearState.vehicle) then
+            local plate = normalizePlate(WearState.plate)
+            local waxedUntil = VehicleCareWaxState.activeByPlate[plate]
+            if waxedUntil then
+                if (tonumber(WearState.mileage) or 0) >= waxedUntil then
+                    VehicleCareWaxState.activeByPlate[plate] = nil
+                else
+                    SetVehicleDirtLevel(WearState.vehicle, 0.0)
+                end
+            end
+        end
+    end
+end)
+
+local function getCareErrorMessage(res)
+    if type(res) == "table" and res.error == "missing_item" then
+        return tuningLocales.VehicleCareMissingItem or "Required vehicle care item is missing."
+    end
+    return tuningLocales.VehicleCareFailed or "Vehicle care failed."
+end
+
 -- ── Non-Minigame Repair Action ───────────────────────
 
 local function getRepairDuration()
@@ -340,8 +367,8 @@ local function runRepairCareAction(vehicle)
     local heading = GetHeadingFromVector_2d(vehCoords.x - pedCoords.x, vehCoords.y - pedCoords.y)
     SetEntityHeading(ped, heading)
 
-    if requestAnimDictLoaded(ANIM_WASH_DICT, 2500) then
-        TaskPlayAnim(ped, ANIM_WASH_DICT, "fixing_a_ped", 4.0, -4.0, -1, 1, 0.0, false, false, false)
+    if requestAnimDictLoaded(ANIM_REPAIR_DICT, 2500) then
+        TaskPlayAnim(ped, ANIM_REPAIR_DICT, ANIM_REPAIR_NAME, 4.0, -4.0, -1, 1, 0.0, false, false, false)
     else
         TaskStartScenarioInPlace(ped, "WORLD_HUMAN_VEHICLE_MECHANIC", 0, true)
     end
@@ -397,7 +424,8 @@ local function applyFullVehicleFix(vehicle)
     end
 
     if cfg.fixRealisticWheelDamage == true then
-        local ok = exports[GetCurrentResourceName()]:FixWheelDamage(vehicle)
+        -- The server already cleared the wheel state when it accepted the repair.
+        local ok = exports[GetCurrentResourceName()]:FixWheelDamage(vehicle, true)
         if not ok then
             print("[sky_mechanicjob][vehicle_care] repair failed: realistic wheel damage reset failed")
         end
@@ -444,7 +472,7 @@ local function fullAdminVehicleRepair(vehicle)
         SetVehicleDoorShut(vehicle, i, false)
     end
 
-    exports[GetCurrentResourceName()]:FixWheelDamage(vehicle)
+    exports[GetCurrentResourceName()]:FixWheelDamage(vehicle, true)
 
     local netId = NetworkGetNetworkIdFromEntity(vehicle)
     SetTimeout(500, function()
@@ -530,8 +558,17 @@ RegisterNetEvent("sky_mechanicjob:admin:repairVehicle", function()
     )
 end)
 
-RegisterNetEvent("sky_mechanicjob:vehicleCare:start", function(actionType)
+-- itemName (optional) is the item that was used; the server validates it and decides what is consumed.
+RegisterNetEvent("sky_mechanicjob:vehicleCare:start", function(actionType, itemName)
     local action = tostring(actionType or "")
+    if action == "spray_paint" then
+        Sky.Show.Notification(
+            tuningLocales.Title or "Tuning",
+            tuningLocales.SprayCanUseHint or "Spray cans are used by mechanics for repaint orders from the tablet.",
+            "info"
+        )
+        return
+    end
     if action ~= "wash" and action ~= "wax" and action ~= "repair" then
         print(string.format("[sky_mechanicjob][vehicle_care] failed: invalid action %s", action))
         return
@@ -578,6 +615,7 @@ RegisterNetEvent("sky_mechanicjob:vehicleCare:start", function(actionType)
         local res = Sky.Cb.Trigger("sky_mechanicjob:wear:completeRepairInstall", {
             plate = plate,
             part = "repair_kit",
+            requiredItem = type(itemName) == "string" and itemName or nil,
             vehicleNetId = netId
         })
 
@@ -589,33 +627,41 @@ RegisterNetEvent("sky_mechanicjob:vehicleCare:start", function(actionType)
                 "success"
             )
         else
-            Sky.Show.Notification(
-                tuningLocales.Title or "Tuning",
-                tuningLocales.VehicleCareFailed or "Vehicle care failed.",
-                "error"
-            )
+            Sky.Show.Notification(tuningLocales.Title or "Tuning", getCareErrorMessage(res), "error")
         end
         return
     end
 
-    local ok, err = runCareMinigame(action, vehicle)
+    local ok, err, dirtLevel = runCareMinigame(action, vehicle)
     if not ok then
         Sky.Show.Notification(tuningLocales.Title or "Tuning", err, "error")
         return
     end
 
+    local res = Sky.Cb.Trigger("sky_mechanicjob:vehicleCare:consume", {
+        action = action,
+        vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle)
+    })
+    if not (type(res) == "table" and res.success) then
+        if action == "wash" and DoesEntityExist(vehicle) then
+            SetVehicleDirtLevel(vehicle, tonumber(dirtLevel) or GetVehicleDirtLevel(vehicle))
+        end
+        Sky.Show.Notification(tuningLocales.Title or "Tuning", getCareErrorMessage(res), "error")
+        return
+    end
+
     if action == "wax" then
-        applyWaxToVehicle(vehicle, 35)
+        applyWaxToVehicle(vehicle, res.cleanKilometers)
         Sky.Show.Notification(
             tuningLocales.Title or "Tuning",
-            tuningLocales.VehicleCareWaxSuccess or "Vehicle waxed.",
+            tuningLocales.VehicleWaxSuccess or "Vehicle wax applied.",
             "success"
         )
     else
         SetVehicleDirtLevel(vehicle, 0.0)
         Sky.Show.Notification(
             tuningLocales.Title or "Tuning",
-            tuningLocales.VehicleCareWashSuccess or "Vehicle washed.",
+            tuningLocales.VehicleWashSuccess or "Vehicle washed.",
             "success"
         )
     end

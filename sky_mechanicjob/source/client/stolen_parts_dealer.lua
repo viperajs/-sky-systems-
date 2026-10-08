@@ -112,7 +112,7 @@ local function setupDialogCam(interactionData)
     local coords = GetEntityCoords(npcEntity)
     local heading = GetEntityHeading(npcEntity)
 
-    dealerState.dialogCam = Sky.Cam:new(coords, { 0.0, 0.0, heading }, true)
+    dealerState.dialogCam = Sky.Cam.new(coords, { 0.0, 0.0, heading }, true)
     dealerState.dialogCam:PointCamAtEntity(npcEntity)
 end
 
@@ -195,15 +195,15 @@ local function registerDealerInteraction(jobName)
     end)
 end
 
-registerDealerInteraction("mechanic")
-
-for _, job in ipairs(Config.Jobs or {}) do
-    registerDealerInteraction(job and job.name)
+-- The dealer point belongs to a workshop; its jobKey is the job the interaction is
+-- raised for.
+for _, jobName in ipairs(GetMechanicJobNames()) do
+    registerDealerInteraction(jobName)
 end
 
 AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
-    for _, job in ipairs(Config.Jobs or {}) do
-        registerDealerInteraction(job and job.name)
+    for _, jobName in ipairs(GetMechanicJobNames()) do
+        registerDealerInteraction(jobName)
     end
 end)
 

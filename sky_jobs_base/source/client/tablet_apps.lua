@@ -88,6 +88,59 @@ local function getTabletApps()
     return cachedApps or {}
 end
 
+-- The home view shows only the list it receives once it is not empty, so the built-in apps
+-- (filtered by Config.Tablet.apps) are listed together with the registered ones.
+local BUILTIN_APPS = {
+    { key = "forms", labelKey = "tabletForms.title", label = "Forms", icon = "ClipboardList", tone = "tone-amber" },
+    { key = "management", labelKey = "tablet.apps.management", label = "Boss Menu", icon = "Crown", tone = "tone-graphite" },
+    { key = "cctv", labelKey = "cctv.title", label = "CCTV", icon = "Video", tone = "tone-mint" },
+    { key = "camera", labelKey = "tablet.apps.camera", label = "Camera", icon = "Camera", tone = "tone-black" },
+    { key = "gallery", labelKey = "tablet.apps.gallery", label = "Gallery", icon = "Images", tone = "tone-silver" },
+    { key = "map", labelKey = "tablet.apps.map", label = "Map", icon = "Map", tone = "tone-ice" },
+    { key = "chat", labelKey = "tablet.apps.chat", label = "Chat", icon = "MessagesSquare", tone = "tone-indigo" },
+    { key = "calendar", labelKey = "tablet.apps.calendar", label = "Calendar", icon = "CalendarDays", tone = "tone-amber" },
+    { key = "calculator", labelKey = "tablet.apps.calculator", label = "Calculator", icon = "Calculator", tone = "tone-silver" },
+    { key = "settings", labelKey = "tablet.apps.settings", label = "Settings", icon = "Settings", tone = "tone-ash" }
+}
+
+local function getHomeScreenApps()
+    local list = {}
+    for _, builtin in ipairs(BUILTIN_APPS) do
+        if isAppEnabled(builtin.key) then
+            local setting = type(appConfigMap) == "table" and appConfigMap[builtin.key] or nil
+            local entry = { route = "/tablet/" .. builtin.key }
+            for k, v in pairs(builtin) do entry[k] = v end
+            entry.isNew = type(setting) == "table" and setting.isNew == true or nil
+            list[#list + 1] = entry
+        end
+    end
+
+    for _, app in ipairs(getTabletApps()) do
+        local entry = {}
+        for k, v in pairs(app) do entry[k] = v end
+        -- A route is pushed straight into the jobs-base router; event apps must go through tablet:launchApp.
+        if entry.clientEvent or entry.serverEvent then
+            entry.route = nil
+        end
+        list[#list + 1] = entry
+    end
+    return list
+end
+
+--- Resources that registered tablet apps for the player's job (used for radial actions).
+---@return table
+function Sky_Jobs.TabletApps.GetProviderResources()
+    local list, seen = {}, {}
+    for _, app in ipairs(getTabletApps()) do
+        local res = type(app) == "table" and app.resource
+        if type(res) == "string" and res ~= "" and not seen[res] then
+            seen[res] = true
+            list[#list + 1] = res
+        end
+    end
+    return list
+end
+
 local function getAppByKey(key)
     local normKey = normalizeAppKey(key)
     if not normKey then return nil end
@@ -204,7 +257,7 @@ end
 RegisterNUICallback("tablet:getApps", function(_, cb)
     cb({
         success = true,
-        data = getTabletApps()
+        data = getHomeScreenApps()
     })
 end)
 

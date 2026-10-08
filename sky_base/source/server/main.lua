@@ -35,6 +35,34 @@ registerExport("GetDefaultCurrency", function()
     return "USD"
 end)
 
+-- Framework bridge: resources that do not load config/framework (sky_jobs_base) call
+-- Sky.FW.<method> through these exports instead of having no framework at all.
+local function getFrameworkFunction(method)
+    if type(method) ~= "string" or type(Sky.FW) ~= "table" then
+        return nil
+    end
+    local fn = Sky.FW[method]
+    return type(fn) == "function" and fn or nil
+end
+
+registerExport("HasFrameworkFunction", function(method)
+    return getFrameworkFunction(method) ~= nil
+end)
+
+registerExport("CallFramework", function(method, ...)
+    local fn = getFrameworkFunction(method)
+    if not fn then
+        return nil
+    end
+
+    local results = table.pack(pcall(fn, ...))
+    if not results[1] then
+        Sky.Debug("error", ("Sky.FW.%s failed: %s"):format(tostring(method), tostring(results[2])))
+        return nil
+    end
+    return table.unpack(results, 2, results.n)
+end)
+
 -- -----------------------------------------------------
 --  SERVER EVENTS & LIFECYCLE
 -- -----------------------------------------------------

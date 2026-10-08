@@ -4,10 +4,7 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client
 --  Deobfuscated & Cleaned
 -- =====================================================
 
-local activeAppliedVehicles = {}
-local pendingHandlingClaims = {}
-local saveTimestampsByPlate = {}
-local saveSignaturesByPlate = { byPlate = {} }
+VehiclePersistence = VehiclePersistence or {}
 
 -- ── Debug Logging ────────────────────────────────────
 
@@ -71,6 +68,8 @@ if type(StanceKit) ~= "table" then
         EnsureRuntimeForVehicle = function() end,
         ReadVehicleStance = function() return nil end,
         LoadPersistedForVehicle = function() return false end,
+        BuildPersistedState = function() return nil end,
+        HasPendingPersist = function() return false end,
         StopRuntimeLoop = function() end
     }
     if Sky and Sky.Debug then
@@ -361,93 +360,254 @@ function buildTuningJson(vehicle)
     return ok and encoded or nil
 end
 
--- ── Vehicle Spawn & Event Handlers ───────────────────
+-- ── Load & Save Persisted Tuning ─────────────────────
 
-RegisterNetEvent("sky_mechanicjob:tuning:vehicleSpawned", function(netIdRaw)
-    local netId = math.floor(tonumber(netIdRaw) or 0)
-    if netId > 0 then
-        local vehicle = NetworkGetEntityFromNetworkId(netId)
-        if vehicle ~= 0 and DoesEntityExist(vehicle) and IsEntityAVehicle(vehicle) then
-            local plate = Sky.Math.Trim(GetVehicleNumberPlateText(vehicle))
-            -- trigger stance sync if needed
+local function getVehiclePlate(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return "" end
+    return string.upper(Sky.Math.Trim(GetVehicleNumberPlateText(vehicle)) or "")
+end
+
+local function isOpenInTuningMenu(vehicle)
+    return type(TuningState) == "table" and TuningState.active == true and TuningState.vehicle == vehicle
+end
+
+--- Stance, custom handling, anti-lag and two-step as stored in _skyMechanicTuning.
+--- Nitro is saved by its own install/update callbacks.
+function VehiclePersistence.BuildTuningState(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return nil end
+
+    return {
+        stance = StanceKit.BuildPersistedState(vehicle),
+        customHandling = CustomTuning.BuildPersistedState(vehicle),
+        antiLag = AntiLag.GetPersistedState(vehicle),
+        twoStep = TwoStep.GetPersistedState(vehicle)
+    }
+end
+
+--- Sends the current extended tuning of a vehicle; the server only accepts it from
+--- admins and on-duty mechanics standing next to the vehicle.
+function VehiclePersistence.SaveTuningState(vehicle)
+    local plate = getVehiclePlate(vehicle)
+    local state = VehiclePersistence.BuildTuningState(vehicle)
+    if plate == "" or type(state) ~= "table" or next(state) == nil then return false end
+
+    -- The state is captured now; callers (tuning close, order install) go on changing the vehicle.
+    CreateThread(function()
+        Sky.Cb.Trigger("sky_mechanicjob:tuning:saveProperties", {
+            plate = plate,
+            properties = { _skyMechanicTuning = state }
+        })
+    end)
+    return true
+end
+
+-- saveTuningForVehicle (import.lua) calls StanceKit.PersistCurrent after saving the vehicle properties.
+StanceKit.PersistCurrent = VehiclePersistence.SaveTuningState
+
+-- ── RGB Controller Lights ────────────────────────────
+
+local function colorRecord(color)
+    if type(color) ~= "table" then return nil end
+    local r, g, b = tonumber(color.r or color[1]), tonumber(color.g or color[2]), tonumber(color.b or color[3])
+    if not r or not g or not b then return nil end
+    return {
+        r = math.floor(math.max(0, math.min(255, r))),
+        g = math.floor(math.max(0, math.min(255, g))),
+        b = math.floor(math.max(0, math.min(255, b)))
+    }
+end
+
+--- Xenon, neon and the RGB effect modes of a vehicle, in the shape sky_mechanicjob:rgb:saveLights takes.
+function VehiclePersistence.BuildLightsState(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return nil end
+
+    local neonData, xenonData = RgbController.GetVehicleEffectState(vehicle)
+    local nr, ng, nb = GetVehicleNeonLightsColour(vehicle)
+    local neonColor = (neonData and colorRecord(neonData.baseColor)) or colorRecord({ nr, ng, nb })
+
+    local xenonIndex = math.floor(tonumber(GetVehicleXenonLightsColor(vehicle)) or -1)
+    local customXenon = colorRecord(Entity(vehicle).state["sky_mechanicjob:xenonCustomColor"])
+    if not customXenon and xenonIndex == 255 then
+        local _ok, xr, xg, xb = GetVehicleXenonLightsCustomColor(vehicle)
+        customXenon = colorRecord({ xr, xg, xb })
+    end
+    if customXenon then xenonIndex = 255 end
+    local xenonColor = (xenonData and colorRecord(xenonData.baseColor)) or customXenon or RgbController.CaptureVehicleXenonColor(vehicle)
+
+    local neonSides = {}
+    for i = 0, 3 do
+        neonSides[i + 1] = IsVehicleNeonLightEnabled(vehicle, i) == true
+    end
+
+    return {
+        plate = getVehiclePlate(vehicle),
+        xenon = IsToggleModOn(vehicle, 22) == true,
+        xenonColor = xenonIndex,
+        customXenonColor = customXenon,
+        neonEnabled = neonSides,
+        neonColor = neonColor,
+        neonEffect = {
+            mode = neonData and neonData.mode or RgbController.NEON_EFFECT_MODES.off,
+            speed = neonData and neonData.speed or 5,
+            color = neonColor
+        },
+        xenonEffect = {
+            mode = xenonData and xenonData.mode or RgbController.XENON_EFFECT_MODES.off,
+            speed = xenonData and xenonData.speed or 5,
+            color = xenonColor,
+            custom = customXenon ~= nil
+        }
+    }
+end
+
+--- Saves the lights through the RGB controller endpoint (driver with the item, admins, mechanics on duty).
+function VehiclePersistence.SaveLights(vehicle)
+    local payload = VehiclePersistence.BuildLightsState(vehicle)
+    if type(payload) ~= "table" or payload.plate == "" then return false end
+
+    CreateThread(function()
+        local res = Sky.Cb.Trigger("sky_mechanicjob:rgb:saveLights", payload)
+        if type(res) == "table" and res.success == true then return end
+
+        local err = type(res) == "table" and res.error or "save_failed"
+        logDebug(("[sky_mechanicjob][rgb] lights save refused: plate=%s error=%s"):format(payload.plate, tostring(err)))
+        if err == "not_driver" then
+            notify(getNuiLocale("tablet.rgb.driver_required", "Sit in the driver seat to save the lights."), "error")
+        elseif err == "missing_item" then
+            notify(("%s: %s"):format(
+                getNuiLocale("tablet.orders.missing_item", "Missing required item"),
+                getNuiLocale("tablet.orders.items.rgb_controller", "rgb_controller")
+            ), "error")
         end
+    end)
+    return true
+end
+
+local function applyPersistedRgb(vehicle, rgb)
+    if type(rgb) ~= "table" then return end
+
+    local neon = type(rgb.neon) == "table" and rgb.neon or nil
+    if neon then
+        local color = colorRecord(neon.color)
+        RgbController.BindNeonEffectVehicle(vehicle)
+        if color then RgbController.SetNeonBaseColor(color) end
+        RgbController.SetNeonSpeed(vehicle, neon.speed)
+        RgbController.SetNeonMode(vehicle, math.floor(math.max(0, math.min(3, tonumber(neon.mode) or 0))))
     end
-end)
 
-AddEventHandler("gameEventTriggered", function(eventName, eventData)
-    if eventName == "CEventNetworkPlayerEnteredVehicle" then
-        local ped = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(ped, false)
+    local xenon = type(rgb.xenon) == "table" and rgb.xenon or nil
+    if xenon then
+        local color = colorRecord(xenon.color)
+        RgbController.BindXenonEffectVehicle(vehicle)
+        if color then
+            RgbController.SetXenonBaseColor(color)
+            if xenon.custom == true and IsToggleModOn(vehicle, 22)
+                and colorRecord(Entity(vehicle).state["sky_mechanicjob:xenonCustomColor"]) == nil then
+                XenonSync.SetCustomColor(vehicle, color)
+            end
+        end
+        RgbController.SetXenonSpeed(vehicle, xenon.speed)
+        RgbController.SetXenonMode(vehicle, math.floor(math.max(0, math.min(3, tonumber(xenon.mode) or 0))))
+    end
+end
 
-        if vehicle == 0 or not DoesEntityExist(vehicle) then return end
-        if GetPedInVehicleSeat(vehicle, -1) ~= ped then return end
+--- Fills missing local anti-lag/two-step records from server data without touching ones the menu changed.
+function VehiclePersistence.SeedEffectRecords(vehicle, state)
+    if type(state) ~= "table" then return end
 
-        if activeAppliedVehicles[vehicle] then return end
-        activeAppliedVehicles[vehicle] = true
+    local plate = getVehiclePlate(vehicle)
+    if plate == "" then return end
 
-        local plate = Sky.Math.Trim(GetVehicleNumberPlateText(vehicle))
+    if type(state.antiLag) == "table" and AntiLag.GetPersistedState(vehicle) == nil then
+        AntiLag.ApplyPersistedStateToVehicle(vehicle, plate, state.antiLag)
+    end
+    if type(state.twoStep) == "table" and TwoStep.GetPersistedState(vehicle) == nil then
+        TwoStep.ApplyPersistedStateToVehicle(vehicle, plate, state.twoStep)
+    end
+end
 
+--- Applies the server's stance, nitro, custom handling, anti-lag, two-step and RGB effects to a vehicle.
+--- Plates without a stored record keep their local state.
+function VehiclePersistence.LoadForVehicle(vehicle)
+    local plate = getVehiclePlate(vehicle)
+    if plate == "" then return false end
+
+    local res = Sky.Cb.Trigger("sky_mechanicjob:tuning:getProperties", { plate = plate })
+    if getVehiclePlate(vehicle) ~= plate or isOpenInTuningMenu(vehicle) then return false end
+
+    local state = type(res) == "table" and res.success == true and type(res.properties) == "table"
+        and res.properties._skyMechanicTuning or nil
+    if type(state) ~= "table" then return false end
+
+    local stance = state.stance
+    if type(stance) == "table" and not StanceKit.HasPendingPersist(vehicle)
+        and (stance.enabled ~= false or StanceKit.BuildPersistedState(vehicle) ~= nil) then
+        StanceKit.ApplyPersistedState(vehicle, stance)
+    end
+
+    NitroSystem_ApplyPersistedStateToVehicle(vehicle, plate, state.nitro)
+    AntiLag.ApplyPersistedStateToVehicle(vehicle, plate, state.antiLag)
+    TwoStep.ApplyPersistedStateToVehicle(vehicle, plate, state.twoStep)
+
+    if type(state.customHandling) == "table" then
+        CustomTuning.ApplyPersistedState(vehicle, state.customHandling)
+    end
+
+    applyPersistedRgb(vehicle, state.rgb)
+
+    return true
+end
+
+-- ── Driver Tracking ──────────────────────────────────
+
+local driverVehicle = 0
+
+local function getDrivenVehicle()
+    local ped = PlayerPedId()
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or GetPedInVehicleSeat(vehicle, -1) ~= ped then
+        return 0
+    end
+    return vehicle
+end
+
+local function checkDriverVehicle()
+    local vehicle = getDrivenVehicle()
+    if vehicle == driverVehicle then return end
+
+    driverVehicle = vehicle
+    if vehicle == 0 then return end
+
+    CreateThread(function()
         StanceKit.EnsureRuntimeForVehicle(vehicle)
-    elseif eventName == "CEventNetworkPlayerExitedVehicle" then
-        if IsPedInAnyVehicle(PlayerPedId(), false) then return end
+        VehiclePersistence.LoadForVehicle(vehicle)
+        VehicleEffects.SyncRuntimeForCurrentVehicle()
+    end)
+end
 
-        local lastVeh = activeAppliedVehicles[1]
-        activeAppliedVehicles = {}
-        StanceKit.StopRuntimeLoop()
+-- GTA has no exit game event; the poll also catches seat changes and resource restarts.
+AddEventHandler("gameEventTriggered", function(eventName)
+    if eventName == "CEventNetworkPlayerEnteredVehicle" then
+        checkDriverVehicle()
     end
 end)
-
--- ── Auto-Save Loop ───────────────────────────────────
 
 CreateThread(function()
     while true do
-        Wait(3000)
-
-        local ped = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(ped, false)
-
-        if vehicle ~= 0 and DoesEntityExist(vehicle) and GetPedInVehicleSeat(vehicle, -1) == ped then
-            if not (type(TuningState) == "table" and TuningState.active == true) then
-                local plate = Sky.Math.Trim(GetVehicleNumberPlateText(vehicle))
-                if plate and plate ~= "" then
-                    local jsonStr = buildTuningJson(vehicle)
-                    if jsonStr then
-                        local now = GetGameTimer()
-                        local lastSaveAt = saveTimestampsByPlate[plate] or 0
-
-                        if lastSaveAt == 0 or (now - lastSaveAt >= 15000) then
-                            saveTimestampsByPlate[plate] = now
-                            -- trigger save
-                        end
-                    end
-                end
-            end
-        end
+        checkDriverVehicle()
+        Wait(500)
     end
 end)
 
-AddEventHandler("onResourceStop", function(resName)
-    if resName ~= GetCurrentResourceName() then return end
+-- For garage scripts: TriggerClientEvent("sky_mechanicjob:tuning:vehicleSpawned", src, netId)
+RegisterNetEvent("sky_mechanicjob:tuning:vehicleSpawned", function(netIdRaw)
+    local netId = math.floor(tonumber(netIdRaw) or 0)
+    if netId <= 0 then return end
 
-    local ped = PlayerPedId()
-    local vehicle = GetVehiclePedIsIn(ped, false)
-    if vehicle ~= 0 and DoesEntityExist(vehicle) and GetPedInVehicleSeat(vehicle, -1) == ped then
-        -- save tuning on resource stop
-    end
-end)
-
-AddEventHandler("onResourceStart", function(resName)
-    if resName ~= GetCurrentResourceName() then return end
+    local vehicle = NetworkGetEntityFromNetworkId(netId)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or not IsEntityAVehicle(vehicle) then return end
 
     CreateThread(function()
-        Wait(1500)
-
-        local ped = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(ped, false)
-        if vehicle ~= 0 and DoesEntityExist(vehicle) and IsEntityAVehicle(vehicle) then
-            if GetPedInVehicleSeat(vehicle, -1) == ped then
-                StanceKit.EnsureRuntimeForVehicle(vehicle)
-            end
-        end
+        VehiclePersistence.LoadForVehicle(vehicle)
     end)
 end)

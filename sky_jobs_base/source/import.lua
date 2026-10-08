@@ -374,6 +374,16 @@ if IsDuplicityVersion() then
         end
     end
 
+    -- sky_base keeps registered callbacks in memory; after `restart sky_base` they are sent again.
+    AddEventHandler("onResourceStart", function(resourceName)
+        if resourceName ~= "sky_base" or GetCurrentResourceName() == "sky_base" then return end
+        for name, callbackFunction in pairs(localServerCallbacks) do
+            pcall(function()
+                exports.sky_base:RegisterServerCallback(name, callbackFunction)
+            end)
+        end
+    end)
+
     function Sky.Cb.TriggerClient(source, name, ...)
         if GetResourceState("sky_base") == "started" then
             local success, res = pcall(function(...)
@@ -384,6 +394,42 @@ if IsDuplicityVersion() then
             end
         end
         return nil
+    end
+
+    -- sky_base's framework adapters (config/framework) are not loaded in this resource,
+    -- so Sky.FW never existed here and every job, grade, duty and money lookup silently
+    -- fell back to defaults: every player was "unemployed" with grade 0, and money was
+    -- never added or removed. Sky.FW.<method> is forwarded to sky_base instead.
+    if type(Sky.FW) ~= "table" then
+        Sky.FW = setmetatable({}, {
+            __index = function(fw, method)
+                if type(method) ~= "string" or GetResourceState("sky_base") ~= "started" then
+                    return nil
+                end
+
+                local ok, exists = pcall(function()
+                    return exports.sky_base:HasFrameworkFunction(method)
+                end)
+                if not ok or exists ~= true then
+                    return nil
+                end
+
+                local function forward(...)
+                    local args = table.pack(...)
+                    local callOk, result = pcall(function()
+                        return exports.sky_base:CallFramework(method, table.unpack(args, 1, args.n))
+                    end)
+                    if callOk then
+                        return result
+                    end
+                    print(("^1[%s] Sky.FW.%s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+                    return nil
+                end
+
+                rawset(fw, method, forward)
+                return forward
+            end
+        })
     end
 
     -- Sky_Jobs Server Bridge
@@ -490,6 +536,43 @@ if IsDuplicityVersion() then
 else
     Sky.Cb = Sky.Cb or {}
 
+    -- sky_base's client Sky (Config, Functions with the fuel / vehicle key / notification hooks).
+    -- This shared script loads before config.lua, so Sky.Config and Sky.Functions were empty here.
+    local skyBaseShared = nil
+    local function getSkyBaseShared()
+        if skyBaseShared == nil then
+            if GetResourceState("sky_base") ~= "started" then return nil end
+            local ok, shared = pcall(function() return exports.sky_base:Get() end)
+            skyBaseShared = (ok and type(shared) == "table") and shared or false
+        end
+        return skyBaseShared or nil
+    end
+
+    AddEventHandler("onClientResourceStart", function(resourceName)
+        if resourceName == "sky_base" then skyBaseShared = nil end
+    end)
+
+    do
+        local shared = getSkyBaseShared()
+        if shared and type(shared.Config) == "table" then
+            for key, value in pairs(shared.Config) do
+                if Sky.Config[key] == nil then Sky.Config[key] = value end
+            end
+        end
+    end
+
+    setmetatable(Sky.Functions, {
+        __index = function(_, name)
+            local shared = getSkyBaseShared()
+            local fn = shared and type(shared.Functions) == "table" and shared.Functions[name] or nil
+            if fn == nil then return nil end
+            return function(...)
+                local result = table.pack(pcall(fn, ...))
+                if result[1] then return table.unpack(result, 2, result.n) end
+            end
+        end
+    })
+
     local clientCallbacks = {}
     local clientCallbackResponses = {}
     local currentRequestId = 0
@@ -511,9 +594,11 @@ else
         assert(name ~= nil, 'Parameter "name" must be a string!')
         assert(timeout ~= nil, 'Parameter "timeout" must be a number!')
 
-        local requestId = currentRequestId
+        -- Every resource's transport receives the shared sky_base:scResponse event, so the
+        -- id carries the resource name; plain counters let resources take each other's replies.
+        local requestId = ("%s:%d"):format(GetCurrentResourceName(), currentRequestId)
         currentRequestId = (currentRequestId + 1) % 65536
-        local requestKey = name .. tostring(requestId)
+        local requestKey = name .. requestId
 
         TriggerServerEvent("sky_base:sc", name, requestId, { ... })
         clientCallbackResponses[requestKey] = true
@@ -528,17 +613,14 @@ else
             end
         end
 
-        if clientCallbackResponses[requestKey] == "ERROR" then
-            return nil
-        end
-
+        -- Read and clear the slot on every path; a late reply then finds nothing pending.
         local resultData = clientCallbackResponses[requestKey]
         clientCallbackResponses[requestKey] = nil
 
         if type(resultData) == "table" then
             return table.unpack(resultData)
         end
-        return resultData
+        return nil
     end
 
     function Sky.Cb.TriggerAsync(name, callbackFunction, ...)
@@ -568,18 +650,18 @@ else
         _SKY_CB_CLIENT_NET_INITIALIZED = true
 
         RegisterNetEvent("sky_base:scResponse", function(requestKey, data)
-            if clientCallbackResponses[requestKey] == nil then return end
+            if clientCallbackResponses[requestKey] ~= true then return end
             clientCallbackResponses[requestKey] = data
         end)
 
         RegisterNetEvent("sky_base:scDoesNotExist", function(requestKey, name)
-            if clientCallbackResponses[requestKey] == nil then return end
+            if clientCallbackResponses[requestKey] ~= true then return end
             clientCallbackResponses[requestKey] = "ERROR"
             print(("^3[sky_base] ServerCallback \"%s\" does not exist!^0"):format(tostring(name)))
         end)
 
         RegisterNetEvent("sky_base:scError", function(requestKey, name, err)
-            if clientCallbackResponses[requestKey] == nil then return end
+            if clientCallbackResponses[requestKey] ~= true then return end
             clientCallbackResponses[requestKey] = "ERROR"
             print(("^1[sky_base] ServerCallback \"%s\" threw error: %s^0"):format(tostring(name), tostring(err or "unknown")))
         end)
@@ -588,8 +670,8 @@ else
             local requestKey = name .. tostring(requestId)
             local cb = clientCallbacks[name]
 
+            -- Another resource's transport may own this callback; it answers.
             if not cb then
-                TriggerServerEvent("sky_base:ccDoesNotExist", requestKey, name)
                 return
             end
 
@@ -623,22 +705,32 @@ else
     -- -----------------------------------------------------
     --  INTERACTION POINT WRAPPERS
     -- -----------------------------------------------------
-    function Sky.CreateInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.CreateInteractionPoint) == "function" then
-                return sky.CreateInteractionPoint(...)
-            end
+    -- Points live in sky_base and are created through its exports. The functions inside
+    -- exports.sky_base:Get() arrive here as function references (callable tables), so the
+    -- former type(fn) == "function" check never passed and no point was ever created.
+    local function callSkyBaseInteraction(method, ...)
+        if GetResourceState("sky_base") ~= "started" then
+            return nil
         end
+
+        local args = table.pack(...)
+        local ok, result = pcall(function()
+            return exports.sky_base[method](exports.sky_base, table.unpack(args, 1, args.n))
+        end)
+        if ok then
+            return result
+        end
+
+        print(("^1[%s] sky_base %s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+        return nil
+    end
+
+    function Sky.CreateInteractionPoint(...)
+        return callSkyBaseInteraction("CreateInteractionPoint", ...)
     end
 
     function Sky.DeleteInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.DeleteInteractionPoint) == "function" then
-                return sky.DeleteInteractionPoint(...)
-            end
-        end
+        return callSkyBaseInteraction("DeleteInteractionPoint", ...)
     end
 
     -- -----------------------------------------------------
@@ -653,8 +745,8 @@ else
             exports.zenit_hud:showNotify(title, text, notifyType, duration)
         elseif GetResourceState("sky_notify") == "started" then
             exports.sky_notify:show(title, text, notifyType, duration)
-        elseif Functions and Functions.ShowNotification then
-            Functions.ShowNotification(title, text, notifyType, duration)
+        elseif Sky.Functions.ShowNotification then
+            Sky.Functions.ShowNotification(title, text, notifyType, duration)
         else
             BeginTextCommandThefeedPost("STRING")
             AddTextComponentSubstringPlayerName(tostring(text or title or ""))
@@ -667,8 +759,8 @@ else
             exports.sky_hud:pressE(text, b)
         elseif GetResourceState("zenit_hud") == "started" then
             exports.zenit_hud:showInteractionThisFrame(b, text)
-        elseif Functions and Functions.ShowHelpNotification then
-            Functions.ShowHelpNotification(text, b)
+        elseif Sky.Functions.ShowHelpNotification then
+            Sky.Functions.ShowHelpNotification(text, b)
         else
             BeginTextCommandDisplayHelp("STRING")
             AddTextComponentSubstringPlayerName(tostring(text or ""))
@@ -948,9 +1040,12 @@ else
     Sky.Vehicle = Sky.Vehicle or {}
     Sky.Vehicle.__index = Sky.Vehicle
 
-    function Sky.Vehicle.new(entity)
+    -- Works as Sky.Vehicle.new(veh) and Sky.Vehicle:new(veh); the colon form stored the
+    -- class table as the entity.
+    function Sky.Vehicle.new(a, b)
         local self = setmetatable({}, Sky.Vehicle)
-        self.entity = entity
+        if a == Sky.Vehicle then a = b end
+        self.entity = a
         return self
     end
 
@@ -980,8 +1075,10 @@ else
         local pos = vector3(coords.x, coords.y, coords.z)
         local head = heading or 0.0
 
+        if not IsModelInCdimage(hash) then return nil end
         Sky.Load.Model(hash)
         local veh = CreateVehicle(hash, pos, head, true, true)
+        if not veh or veh == 0 then return nil end
         local netId = NetworkGetNetworkIdFromEntity(veh)
         SetNetworkIdCanMigrate(netId, true)
         SetEntityAsMissionEntity(veh, true, true)
@@ -991,7 +1088,8 @@ else
         SetVehRadioStation(veh, "OFF")
 
         RequestCollisionAtCoord(pos)
-        while not HasCollisionLoadedAroundEntity(veh) do
+        local collisionExpire = GetGameTimer() + 5000
+        while not HasCollisionLoadedAroundEntity(veh) and GetGameTimer() < collisionExpire do
             Wait(0)
         end
 
@@ -1155,6 +1253,27 @@ else
             SetVehicleLivery(veh, props.modLivery)
         end
         return true
+    end
+
+    function Sky.Vehicle:GetPlate()
+        if not self.entity or not DoesEntityExist(self.entity) then return "" end
+        return Sky.Math.Trim(GetVehicleNumberPlateText(self.entity)) or ""
+    end
+
+    local function callVehicleKeys(method, vehicle)
+        if not vehicle or not DoesEntityExist(vehicle) then return end
+        local fn = Sky.Functions[method]
+        if fn then
+            fn(vehicle, GetVehicleNumberPlateText(vehicle), GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)))
+        end
+    end
+
+    function Sky.Vehicle:GiveKeys()
+        callVehicleKeys("GiveVehicleKeys", self.entity)
+    end
+
+    function Sky.Vehicle:RemoveKeys()
+        callVehicleKeys("RemoveVehicleKeys", self.entity)
     end
 
     function Sky.Vehicle:Remove()

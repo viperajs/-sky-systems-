@@ -103,6 +103,18 @@ local function isPlayerDriver(vehicle)
     return GetPedInVehicleSeat(vehicle, -1) == PlayerPedId()
 end
 
+-- expandWheelIndexes pairs rear wheels 4/5 with the middle axle 2/3; drop that pair on four-wheelers.
+function filterVehicleWheelIndexes(vehicle, indexes)
+    local hasMiddleAxle = (tonumber(GetVehicleNumberOfWheels(vehicle)) or 0) >= 6
+    local result = {}
+    for _, idx in ipairs(indexes or {}) do
+        if hasMiddleAxle or (idx ~= 2 and idx ~= 3) then
+            result[#result + 1] = idx
+        end
+    end
+    return result
+end
+
 local function getVehicleWheelIndexes(vehicle)
     local numWheels = math.max(0, math.floor(tonumber(GetVehicleNumberOfWheels(vehicle)) or 0))
     local cacheKey = string.format("%s:%s", tostring(GetEntityModel(vehicle)), tostring(numWheels))
@@ -117,7 +129,7 @@ local function getVehicleWheelIndexes(vehicle)
     for _, candidate in ipairs(WHEEL_CANDIDATE_BONES) do
         for _, boneName in ipairs(candidate.bones) do
             if GetEntityBoneIndexByName(vehicle, boneName) ~= -1 then
-                local expanded = expandWheelIndexes and expandWheelIndexes(candidate.index) or { candidate.index }
+                local expanded = filterVehicleWheelIndexes(vehicle, expandWheelIndexes and expandWheelIndexes(candidate.index) or { candidate.index })
                 for _, idx in ipairs(expanded) do
                     if idx >= 0 and idx <= 7 and not seen[idx] then
                         result[#result + 1] = idx
@@ -244,7 +256,7 @@ local function applyPhysicalWheelState(vehicle, wheelIndex, wheelData)
         local leaveTrail = isTheft or (CFG_DEBRIS.leaveDebrisTrail ~= false)
         local leavePhys = isTheft or (CFG_DEBRIS.leavePhysicalWheel == false)
 
-        BreakOffVehicleWheel(vehicle, wheelIndex, leaveTrail, leavePhys, false, not isTheft)
+        BreakOffVehicleWheel(vehicle, wheelIndex, leaveTrail, leavePhys, false, CFG_DEBRIS.putOnFire == true and not isTheft)
         WheelDamageRuntime.detachedApplied[key] = true
         return
     end
@@ -504,14 +516,18 @@ local function fixAllTyresAndRemoveKeyCache(vehicle)
     end
 end
 
-local function resetVehicleWheelStateLocally(vehicle)
+-- The server clears the state bag itself after repairs; only explicit FixWheelDamage requests
+-- ask it to (accepted for mechanics on duty next to the vehicle).
+local function resetVehicleWheelStateLocally(vehicle, notifyServer)
     local vehKey = getVehicleUniqueKey(vehicle)
     WheelDamageRuntime.localWheels = {}
     WheelDamageRuntime.appliedStateByVehicle[vehKey] = {}
 
     removeBricksForVehicle(vehicle)
     fixAllTyresAndRemoveKeyCache(vehicle)
-    TriggerServerEvent("sky_mechanicjob:wheelDamage:reset", VehToNet(vehicle))
+    if notifyServer then
+        TriggerServerEvent("sky_mechanicjob:wheelDamage:reset", VehToNet(vehicle))
+    end
     resetHandlingProperties(vehicle)
 end
 
@@ -519,6 +535,9 @@ local function areWheelEntriesEqual(a, b)
     local normA = normalizeWheelEntry(a)
     local normB = normalizeWheelEntry(b)
     return math.abs(normA.damage - normB.damage) < 0.01
+        and normA.popped == normB.popped
+        and normA.detached == normB.detached
+        and normA.source == normB.source
 end
 
 local function syncVehicleStateBagData(vehicle, stateBagVal)
@@ -569,7 +588,8 @@ local function applyDamageToWheels(vehicle, wheelIndexes, amount)
     local newDetached = false
 
     for _, idx in ipairs(wheelIndexes) do
-        local current = normalizeWheelEntry(WheelDamageRuntime.localWheels[tostring(idx)])
+        local key = tostring(idx)
+        local current = normalizeWheelEntry(WheelDamageRuntime.localWheels[key])
         if not current.detached then
             local wasPopped = current.popped
             local wasDetached = current.detached
@@ -592,19 +612,19 @@ local function applyDamageToWheels(vehicle, wheelIndexes, amount)
                 hasStateChanged = true
             end
 
+            WheelDamageRuntime.localWheels[key] = current
             applyPhysicalWheelState(vehicle, idx, current)
 
-            updates[#updates + 1] = {
+            updates[key] = {
                 index = idx,
                 damage = current.damage,
                 popped = current.popped,
-                detached = current.detached,
-                source = "damage"
+                detached = current.detached
             }
         end
     end
 
-    if #updates == 0 then return end
+    if next(updates) == nil then return end
 
     syncWheelBricksForVehicle(vehicle, WheelDamageRuntime.localWheels)
 
@@ -676,7 +696,7 @@ end
 local function processAirborneLandingDamage(vehicle, now, currentSpeedKmh)
     if CFG_AIRTIME.enabled == false then return end
     local vel = GetEntityVelocity(vehicle)
-    local inAir = IsVehicleOnAllWheels(vehicle) and IsEntityInAir(vehicle)
+    local inAir = IsEntityInAir(vehicle) and not IsVehicleOnAllWheels(vehicle)
 
     if inAir then
         WheelDamageRuntime.fastUntil = now + 120
@@ -834,20 +854,21 @@ AddStateBagChangeHandler(STATE_BAG_KEY, nil, function(bagName, key, value)
 end)
 
 RegisterNetEvent("sky_mechanicjob:wear:partRepaired", function(data)
-    if type(data) ~= "table" or tostring(data.part or "") ~= "tyres" then return end
-    local plate = Sky.Math.Trim(tostring(data.plate or ""))
+    if type(data) ~= "table" then return end
+    if tostring(data.part or "") ~= "tyres" and data.wheelsReset ~= true then return end
+    local plate = string.upper(Sky.Math.Trim(tostring(data.plate or "")))
     if plate == "" then return end
 
     local targetVeh = 0
     for _, veh in ipairs(GetGamePool("CVehicle")) do
-        if DoesEntityExist(veh) and Sky.Math.Trim(tostring(GetVehicleNumberPlateText(veh) or "")) == plate then
+        if DoesEntityExist(veh) and string.upper(Sky.Math.Trim(tostring(GetVehicleNumberPlateText(veh) or ""))) == plate then
             targetVeh = veh
             break
         end
     end
 
     if targetVeh ~= 0 and DoesEntityExist(targetVeh) then
-        resetVehicleWheelStateLocally(targetVeh)
+        resetVehicleWheelStateLocally(targetVeh, false)
     end
 end)
 
@@ -855,7 +876,7 @@ RegisterNetEvent("sky_mechanicjob:wheelDamage:fixVehicle", function(targetVehicl
     local veh = tonumber(targetVehicle) or targetVehicle
     if not veh then veh = getDrivenVehicle() end
     if veh ~= 0 and DoesEntityExist(veh) then
-        resetVehicleWheelStateLocally(veh)
+        resetVehicleWheelStateLocally(veh, true)
     end
 end)
 
@@ -883,11 +904,12 @@ AddEventHandler("onResourceStop", function(resName)
     end
 end)
 
-registerExport("FixWheelDamage", function(targetVehicle)
+-- skipServer: the caller's server-side repair already cleared the wheel state.
+registerExport("FixWheelDamage", function(targetVehicle, skipServer)
     local veh = tonumber(targetVehicle) or targetVehicle
     if not veh then veh = getDrivenVehicle() end
     if veh == 0 or not DoesEntityExist(veh) then return false end
 
-    resetVehicleWheelStateLocally(veh)
+    resetVehicleWheelStateLocally(veh, skipServer ~= true)
     return true
 end)

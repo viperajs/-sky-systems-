@@ -169,7 +169,7 @@ STANCER_OPTION_BOUNDS = STANCER_OPTION_BOUNDS or {
 
 WHEEL_TYPE_KEY_BY_INDEX = WHEEL_TYPE_KEY_BY_INDEX or {
     [0] = "sport", [1] = "muscle", [2] = "lowrider", [3] = "suv",
-    [4] = "offroad", [5] = "tuner", [6] = "bike", [7] = "highend",
+    [4] = "offroad", [5] = "tuner", [6] = "bike", [7] = "high_end",
     [8] = "benny_original", [9] = "benny_bespoke", [10] = "open_wheel",
     [11] = "street", [12] = "track"
 }

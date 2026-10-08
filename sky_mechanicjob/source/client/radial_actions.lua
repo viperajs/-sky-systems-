@@ -51,7 +51,19 @@ registerExport("getRadialActions", function()
 
     local veh = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
     if veh == 0 or not DoesEntityExist(veh) then
-        return {}
+        -- The vehicle is gone or streamed out; the install can still be cancelled.
+        local cancelId = (RepaintOrderInstallState.active and "cancel_repaint")
+            or (CatalyticInstallState and CatalyticInstallState.active and "cancel_catalytic_install")
+            or (WheelOrderInstallState.active and "cancel_wheel_change")
+            or "cancel_order_install"
+        return {
+            {
+                id = cancelId,
+                icon = "CircleX",
+                label = (tuningLocales and tuningLocales.OrderInstallCancelRadialLabel) or "Cancel Install",
+                description = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
+            }
+        }
     end
 
     -- Repaint install workflow

@@ -93,11 +93,19 @@ local function normalizeJobName(name)
     return nil
 end
 
+-- The server sends an array of job names; a map keyed by job name is accepted as well.
 local function updateRegisteredJobCache(jobsList)
     local cache = {}
     if type(jobsList) == "table" then
-        for _, j in ipairs(jobsList) do
-            local norm = normalizeJobName(j)
+        if jobsList.success ~= nil then
+            jobsList = type(jobsList.data) == "table" and jobsList.data or {}
+        end
+        for k, j in pairs(jobsList) do
+            local name = (type(j) == "string" and j)
+                or (type(j) == "table" and (j.name or j.jobKey))
+                or (type(k) == "string" and k)
+                or nil
+            local norm = normalizeJobName(name)
             if norm then cache[norm] = true end
         end
     end
@@ -454,6 +462,7 @@ local function registerAlertKeybind(alertType, defaultKey, description)
     registeredKeybinds[alertType] = true
 end
 
+-- Runs from the startup thread and access-state handlers: the job check may wait on a server callback.
 function setupKeybinds()
     if alertConfigs.panic.config.useKeybind ~= false then
         if isCurrentPlayerAllowed("panic") then
@@ -462,7 +471,6 @@ function setupKeybinds()
     end
 end
 
-setupKeybinds()
 registerAlertKeybind("ping", "l", "Trigger location ping")
 
 registerExport("triggerPanicAlert", function()

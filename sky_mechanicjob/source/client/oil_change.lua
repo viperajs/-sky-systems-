@@ -395,11 +395,8 @@ function runOilPourMinigame(vehicle, partData)
     local repairPart = tostring((OrderInstallState and OrderInstallState.repairPart) or "")
     local requiredItem = tostring((OrderInstallState and OrderInstallState.requiredItem) or "")
 
-    local fluidKey = FLUID_DRAIN_MAP[partId] or partId or repairPart
-    if not FLUID_DRAIN_MAP[fluidKey] then
-        local mapped = FLUID_ITEM_MAP[requiredItem]
-        fluidKey = mapped or fluidKey
-    end
+    -- Repair part first (e.g. coolant -> engine_coolant), then the option id, then the item.
+    local fluidType = FLUID_DRAIN_MAP[repairPart] or FLUID_DRAIN_MAP[partId] or FLUID_ITEM_MAP[requiredItem] or "engine_oil"
 
     local pourOk, pourErr = validateOilPourPreconditions(vehicle)
     if not pourOk then return false, pourErr end
@@ -429,7 +426,7 @@ function runOilPourMinigame(vehicle, partData)
             requiredRotation = 720,
             pourDurationMs = 6000,
             tiltThresholdDeg = 42,
-            fluidType = FLUID_DRAIN_MAP[fluidKey] or "engine_oil"
+            fluidType = fluidType
         }
     })
 

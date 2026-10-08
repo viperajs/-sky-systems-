@@ -33,7 +33,9 @@ local allowedTrunkVehicles = {}
 local isTrunkAllowedAll = true
 local trunkOpenVehicleNetId = { netId = nil }
 
-local pendingVehicleRegistrations = {}
+-- Trunk interaction points by point id, and vehicles waiting to stream in by net id.
+local trunkPointIds = {}
+local pendingNetIds = {}
 local isRegistrationThreadRunning = false
 
 local cachedJobProps = { job = "__init__", props = nil }
@@ -272,11 +274,12 @@ end
 
 local function loadAllWorldProps()
     local res = Sky.Cb.Trigger("sky_jobs_base:trunkProps:getAll")
-    if type(res) ~= "table" or res.success ~= true or type(res.props) ~= "table" then return end
+    local props = type(res) == "table" and res.success == true and (res.props or (type(res.data) == "table" and res.data.props)) or nil
+    if type(props) ~= "table" then return end
 
     clearAllWorldProps()
     registeredWorldProps = {}
-    for _, raw in ipairs(res.props) do
+    for _, raw in ipairs(props) do
         registerWorldProp(raw)
     end
 end
@@ -422,31 +425,41 @@ local function confirmPropPlacement()
         spawnCoords = vector3(coords.x, coords.y, coords.z + zOff)
     end
 
+    -- Trunk stock and prop items are taken by the server in this same call.
+    local ctx = placementState.placeContext or {}
+    local callback = placementState.placeCallback
+    local isBuiltinCallback = callback == "sky_jobs_base:takeVehicleTrunkProp" or callback == "sky_jobs_base:propItems:consume"
     local res = Sky.Cb.Trigger("sky_jobs_base:trunkProps:place", {
         model = modelName,
-        label = placementState.label or placementState.name,
+        name = isBuiltinCallback and ctx.name or nil,
+        plate = callback == "sky_jobs_base:takeVehicleTrunkProp" and ctx.plate or nil,
+        item = callback == "sky_jobs_base:propItems:consume" and ctx.item or nil,
         coords = { x = spawnCoords.x, y = spawnCoords.y, z = spawnCoords.z },
         heading = heading,
         streamDistance = placementState.streamDistance
     })
 
     if type(res) ~= "table" or res.success ~= true then
-        print(string.format("[sky_jobs_base][trunk_props] placement failed: server rejected prop '%s'", modelName))
+        print(string.format("[sky_jobs_base][trunk_props] placement failed: server rejected prop '%s' (%s)", modelName, tostring(type(res) == "table" and res.error or "no response")))
         stopPropPlacement()
         return
     end
 
-    if type(res.prop) == "table" then
-        registerWorldProp(res.prop)
+    local prop = (type(res.prop) == "table" and res.prop) or (type(res.data) == "table" and type(res.data.prop) == "table" and res.data.prop) or nil
+    if prop then
+        registerWorldProp(prop)
         updateWorldPropStreaming()
     end
+    if type(res.props) == "table" and ctx.plate then
+        setCachedVehicleProps(ctx.plate, res.props)
+    end
 
-    if type(placementState.placeCallback) == "string" and placementState.placeCallback ~= "" then
-        local ctx = placementState.placeContext or {}
-        ctx.propId = type(res.prop) == "table" and res.prop.id or nil
+    if type(callback) == "string" and callback ~= "" and not isBuiltinCallback then
+        ctx.propId = prop and prop.id or nil
 
-        local cbRes = Sky.Cb.Trigger(placementState.placeCallback, ctx)
-        if cbRes ~= true then
+        local cbRes = Sky.Cb.Trigger(callback, ctx)
+        local ok = cbRes == true or (type(cbRes) == "table" and cbRes.success == true)
+        if not ok then
             if ctx.propId then
                 Sky.Cb.Trigger("sky_jobs_base:trunkProps:remove", { id = ctx.propId })
             end
@@ -489,11 +502,11 @@ local function startTrunkPropPlacement(itemRaw, options)
     if optsTable and optsTable.unlimited == true then
         placementState.remainingPlaces = -1
     else
-        local count = tonumber(type(options) == "table" and options or nil) or 1
+        local count = tonumber(optsTable and optsTable.amount) or 1
         placementState.remainingPlaces = math.max(math.floor(count), 1)
     end
 
-    placementState.stopAfterPlace = type(options) == "table"
+    placementState.stopAfterPlace = optsTable ~= nil and optsTable.stopAfterPlace == true
     placementState.zOffset = item.zOffset
     placementState.streamDistance = item.streamDistance
 
@@ -723,9 +736,9 @@ local function getTrunkInteractionId(netId)
 end
 
 local function removeTrunkInteractionPoint(pointId)
-    if pointId and pendingVehicleRegistrations[pointId] then
+    if pointId and trunkPointIds[pointId] then
         Sky.DeleteInteractionPoint(pointId)
-        pendingVehicleRegistrations[pointId] = nil
+        trunkPointIds[pointId] = nil
     end
 end
 
@@ -742,7 +755,7 @@ local function createTrunkInteractionPoint(vehicle, bypassCheck)
     if not netId or netId == 0 then return end
 
     local pointId = getTrunkInteractionId(netId)
-    if pendingVehicleRegistrations[pointId] then return end
+    if trunkPointIds[pointId] then return end
 
     local canInteract = function(point, pedCoords)
         local sourceVeh = point and point.sourceEntity
@@ -767,7 +780,7 @@ local function createTrunkInteractionPoint(vehicle, bypassCheck)
         2.0
     )
 
-    pendingVehicleRegistrations[pointId] = true
+    trunkPointIds[pointId] = true
 end
 
 local function tryRegisterNetIdVehicle(netId, bypassCheck)
@@ -784,14 +797,12 @@ local function startPendingRegistrationsThread()
     isRegistrationThreadRunning = true
 
     CreateThread(function()
-        while next(pendingVehicleRegistrations) do
-            for netId, data in pairs(pendingVehicleRegistrations) do
-                if not isPlayerAuthorizedForJob(data.jobName) then
-                    pendingVehicleRegistrations[netId] = nil
-                else
-                    if tryRegisterNetIdVehicle(netId, data.bypassModelLookup) then
-                        pendingVehicleRegistrations[netId] = nil
-                    end
+        while next(pendingNetIds) do
+            local snapshot = {}
+            for netId, data in pairs(pendingNetIds) do snapshot[netId] = data end
+            for netId, data in pairs(snapshot) do
+                if not isPlayerAuthorizedForJob(data.jobName) or tryRegisterNetIdVehicle(netId, data.bypassModelLookup) then
+                    pendingNetIds[netId] = nil
                 end
             end
             Wait(1000)
@@ -806,7 +817,7 @@ local function registerTrunkVehicleNetId(netId, jobName, bypassCheck)
 
     if tryRegisterNetIdVehicle(numId, bypassCheck) then return end
 
-    pendingVehicleRegistrations[numId] = {
+    pendingNetIds[numId] = {
         jobName = jobName,
         bypassModelLookup = bypassCheck == true
     }
@@ -842,8 +853,8 @@ local function openVehicleTrunkUI(data, forceOpen)
                 jobColor = trunkData.jobColor or getJobColor(),
                 jobBackgroundPath = trunkData.jobBackgroundPath or trunkData.jobBackgroundImage or getJobBackgroundPath()
             })
-        elseif forceOpen and res then
-            local errMsg = (res and res.error) or locales.TrunkUnavailable or "Unable to access trunk."
+        elseif forceOpen then
+            local errMsg = locales.TrunkUnavailable or "Unable to access trunk."
             Sky.Show.Notification(locales.TrunkTitle or "Trunk", errMsg, "error")
         end
         isStorageOpen = false
@@ -855,12 +866,10 @@ end
 local function openVehicleTrunkByEntity(entity)
     if not (entity and entity ~= 0) then return end
 
-    local vehicleObj = Sky.Vehicle:new(entity)
-    local plate = vehicleObj:GetPlate() or ""
-    local cleanPlate = (type(plate) == "string" and plate:gsub("%s+", ""):upper()) or ""
+    local cleanPlate = (GetVehicleNumberPlateText(entity) or ""):gsub("%s+", ""):upper()
     if cleanPlate == "" then return end
 
-    local netId = NetworkGetNetworkIdFromEntity(vehicleObj.entity)
+    local netId = NetworkGetNetworkIdFromEntity(entity)
     if not netId or netId == 0 then return end
 
     openVehicleTrunkUI({
@@ -893,7 +902,7 @@ RegisterNetEvent("sky_jobs_base:trunkProps:add", function(data)
 end)
 
 RegisterNetEvent("sky_jobs_base:trunkProps:remove", function(data)
-    unregisterWorldProp(data)
+    unregisterWorldProp(type(data) == "table" and data.id or data)
 end)
 
 RegisterNetEvent("sky_jobs_base:propItems:useItem", function(data)
@@ -970,56 +979,38 @@ RegisterNetEvent("sky_jobs_base:trunk:unregisterNetId", function(netId)
     local numId = tonumber(netId)
     if not numId or numId == 0 then return end
 
-    pendingVehicleRegistrations[numId] = nil
+    pendingNetIds[numId] = nil
     removeTrunkInteractionPoint(getTrunkInteractionId(numId))
 end)
 
 local function openStorageUI(stType, stId, stLabel)
     if type(stId) ~= "string" or stId == "" then return end
 
-    local invItems = Sky.Cb.Trigger("sky_jobs_base:getPlayerInventoryItems") or {}
-    local containsWeapons = Sky.Cb.Trigger("sky_jobs_base:getJobStorageContainsWeapons") == true
+    if stType ~= "storage" and stType ~= "locker" then return end
 
-    if stType == "storage" then
-        local items = Sky.Cb.Trigger("sky_jobs_base:getStorageItems", stId) or {}
-        local capacityData = Sky.Cb.Trigger("sky_jobs_base:getStorageCapacity", { stationId = stId, slot = "storage" })
-        local cap = tonumber(type(capacityData) == "table" and capacityData.capacity or capacityData) or 0
-
-        SetNuiFocus(true, true)
-        SendNUIMessage({
-            type = "storage",
-            stationId = stId,
-            storageItems = items,
-            inventoryItems = invItems,
-            capacity = math.max(0, cap),
-            used = Sky_Jobs.CalculateItemsTotalQuantity and Sky_Jobs.CalculateItemsTotalQuantity(items) or 0,
-            storageContainsWeapons = containsWeapons,
-            label = stLabel,
-            jobColor = getJobColor(),
-            jobBackgroundPath = getJobBackgroundPath()
-        })
+    local res = Sky.Cb.Trigger("sky_jobs_base:openStorage", { stationId = stId, slot = stType })
+    local data = type(res) == "table" and res.success == true and type(res.data) == "table" and res.data or nil
+    if not data then
+        local title = stType == "locker" and (nuiLocales.locker or "Locker") or (nuiLocales.storage or "Storage")
+        local err = type(res) == "table" and res.error == "inventory_unavailable" and "Inventory system unavailable." or getErrorMessage(type(res) == "table" and res.errorKey or nil)
+        Sky.Show.Notification(title, err, "error")
         return
     end
 
-    if stType == "locker" then
-        local items = Sky.Cb.Trigger("sky_jobs_base:getLockerItems", stId) or {}
-        local capacityData = Sky.Cb.Trigger("sky_jobs_base:getStorageCapacity", { stationId = stId, slot = "locker" })
-        local cap = tonumber(type(capacityData) == "table" and capacityData.capacity or capacityData) or 0
-
-        SetNuiFocus(true, true)
-        SendNUIMessage({
-            type = "locker",
-            stationId = stId,
-            lockerItems = items,
-            inventoryItems = invItems,
-            capacity = math.max(0, cap),
-            used = Sky_Jobs.CalculateItemsTotalQuantity and Sky_Jobs.CalculateItemsTotalQuantity(items) or 0,
-            storageContainsWeapons = containsWeapons,
-            label = stLabel,
-            jobColor = getJobColor(),
-            jobBackgroundPath = getJobBackgroundPath()
-        })
-    end
+    SetNuiFocus(true, true)
+    SendNUIMessage({
+        type = stType,
+        stationId = stId,
+        storageItems = stType == "storage" and data.items or nil,
+        lockerItems = stType == "locker" and data.items or nil,
+        inventoryItems = data.inventoryItems or {},
+        capacity = math.max(0, tonumber(data.capacity) or 0),
+        used = tonumber(data.used) or 0,
+        storageContainsWeapons = data.storageContainsWeapons == true,
+        label = stLabel,
+        jobColor = getJobColor(),
+        jobBackgroundPath = getJobBackgroundPath()
+    })
 end
 
 function Sky_Jobs.OpenCustomStorage(payload)
@@ -1203,9 +1194,10 @@ RegisterNUICallback("trunkTransfer", function(data, cb)
         return
     end
 
-    local res = Sky.Cb.Trigger("sky_jobs_base:trunkTransfer", stId, data.type, data.name, data.amount, data.metadata)
+    local res = Sky.Cb.Trigger("sky_jobs_base:trunkTransfer", stId, data.type, data.name, data.amount, data.metadata, data.metadataKey)
     if type(res) == "table" then
-        cb({ success = res.success == true, error = res.error })
+        local err = (type(res.error) == "string" and res.error ~= "") and res.error or getErrorMessage(res.errorKey)
+        cb({ success = res.success == true, error = err, errorKey = res.errorKey })
     else
         cb({ success = res == true })
     end

@@ -62,6 +62,9 @@ end)
 -- ── Server Callback: Get Vehicle History ─────────────
 
 Sky.Cb.Register("sky_mechanicjob:vehicles:getHistory", function(source, data)
+    if not Functions.IsMechanicOnDuty(source) then
+        return { success = false, error = "not_authorized", data = { history = {} } }
+    end
     local plate = sanitizePlate(data and data.plate)
     if plate == "" then
         return { success = false, error = "invalid_plate", data = { history = {} } }

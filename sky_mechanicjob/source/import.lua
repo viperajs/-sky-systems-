@@ -9,7 +9,12 @@ end
 -- =====================================================
 
 Sky = Sky or {}
-Sky.Config = Sky.Config or Config or {}
+-- This shared script runs before config/init.lua, so Config is still nil here; read it lazily.
+Sky.Config = Sky.Config or Config or setmetatable({}, {
+    __index = function(_, key)
+        return type(Config) == "table" and Config[key] or nil
+    end
+})
 Sky.Functions = Sky.Functions or Functions or {}
 Sky_Jobs = Sky_Jobs or {}
 
@@ -356,6 +361,28 @@ function Sky.Table.Remove(list, value)
 end
 
 -- -----------------------------------------------------
+--  STANDARD VEHICLE PROPERTY KEYS (qb-core / ox_lib / sky_base names)
+-- -----------------------------------------------------
+-- Garages (qbx_garages, ox_lib) restore vehicles from these keys only; this resource's own
+-- mods/toggleMods maps are kept alongside them.
+Sky.VehiclePropertyKeys = Sky.VehiclePropertyKeys or {
+    mods = {
+        [0] = "modSpoilers", [1] = "modFrontBumper", [2] = "modRearBumper", [3] = "modSideSkirt",
+        [4] = "modExhaust", [5] = "modFrame", [6] = "modGrille", [7] = "modHood", [8] = "modFender",
+        [9] = "modRightFender", [10] = "modRoof", [11] = "modEngine", [12] = "modBrakes",
+        [13] = "modTransmission", [14] = "modHorns", [15] = "modSuspension", [16] = "modArmor",
+        [23] = "modFrontWheels", [24] = "modBackWheels", [25] = "modPlateHolder", [26] = "modVanityPlate",
+        [27] = "modTrimA", [28] = "modOrnaments", [29] = "modDashboard", [30] = "modDial",
+        [31] = "modDoorSpeaker", [32] = "modSeats", [33] = "modSteeringWheel", [34] = "modShifterLeavers",
+        [35] = "modAPlate", [36] = "modSpeakers", [37] = "modTrunk", [38] = "modHydrolic",
+        [39] = "modEngineBlock", [40] = "modAirFilter", [41] = "modStruts", [42] = "modArchCover",
+        [43] = "modAerials", [44] = "modTrimB", [45] = "modTank", [46] = "modWindows", [48] = "modLivery",
+        [49] = "modLightbar"
+    },
+    toggles = { [18] = "modTurbo", [20] = "modSmokeEnabled", [22] = "modXenon" }
+}
+
+-- -----------------------------------------------------
 --  SHARED CURRENCY HELPERS
 -- -----------------------------------------------------
 Sky.Currency = Sky.Currency or {}
@@ -426,6 +453,40 @@ if IsDuplicityVersion() then
         return nil
     end
 
+    -- sky_base's framework adapters are not loaded in this resource, so Sky.FW.<method> is
+    -- forwarded to sky_base (same bridge as sky_jobs_base).
+    if type(Sky.FW) ~= "table" then
+        Sky.FW = setmetatable({}, {
+            __index = function(fw, method)
+                if type(method) ~= "string" or GetResourceState("sky_base") ~= "started" then
+                    return nil
+                end
+
+                local ok, exists = pcall(function()
+                    return exports.sky_base:HasFrameworkFunction(method)
+                end)
+                if not ok or exists ~= true then
+                    return nil
+                end
+
+                local function forward(...)
+                    local args = table.pack(...)
+                    local callOk, result = pcall(function()
+                        return exports.sky_base:CallFramework(method, table.unpack(args, 1, args.n))
+                    end)
+                    if callOk then
+                        return result
+                    end
+                    print(("^1[%s] Sky.FW.%s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+                    return nil
+                end
+
+                rawset(fw, method, forward)
+                return forward
+            end
+        })
+    end
+
     -- Sky_Jobs Server Bridge
     Sky_Jobs.PlayerCache = Sky_Jobs.PlayerCache or {}
     Sky_Jobs.Access = Sky_Jobs.Access or {}
@@ -446,17 +507,18 @@ if IsDuplicityVersion() then
             local ok, duty = pcall(function()
                 return exports.sky_jobs_base:isOnDuty(src)
             end)
-            if ok and duty ~= nil then
-                return duty == true
+            if ok and type(duty) == "boolean" then
+                return duty
             end
         end
 
         if Sky and Sky.FW and Sky.FW.GetJobData then
             local duty = Sky.FW.GetJobData(src, "duty")
-            if duty ~= nil then return duty == true end
+            if type(duty) == "boolean" then return duty end
         end
 
-        return true
+        -- Unknown duty is not duty: every gate that relies on it would otherwise pass.
+        return false
     end
 
     function Sky_Jobs.PlayerCache.SetDuty(source, onDuty)
@@ -551,9 +613,11 @@ else
         assert(name ~= nil, 'Parameter "name" must be a string!')
         assert(timeout ~= nil, 'Parameter "timeout" must be a number!')
 
-        local requestId = currentRequestId
+        -- Every resource's transport receives the shared sky_base:scResponse event, so the
+        -- id carries the resource name; plain counters let resources take each other's replies.
+        local requestId = ("%s:%d"):format(GetCurrentResourceName(), currentRequestId)
         currentRequestId = (currentRequestId + 1) % 65536
-        local requestKey = name .. tostring(requestId)
+        local requestKey = name .. requestId
 
         TriggerServerEvent("sky_base:sc", name, requestId, { ... })
         clientCallbackResponses[requestKey] = true
@@ -568,19 +632,19 @@ else
             end
         end
 
-        if clientCallbackResponses[requestKey] == "ERROR" then
-            return nil
-        end
-
+        -- Read and clear the slot on every path; a late reply then finds nothing pending.
         local resultData = clientCallbackResponses[requestKey]
         clientCallbackResponses[requestKey] = nil
-        return table.unpack(resultData or {})
+        if type(resultData) ~= "table" then
+            return nil
+        end
+        return table.unpack(resultData)
     end
 
     RegisterNetEvent("sky_base:cc", function(name, requestId, args)
         local cb = clientCallbacks[name]
+        -- Another resource's transport may own this callback; it answers.
         if not cb then
-            TriggerServerEvent("sky_base:ccDoesNotExist", name .. tostring(requestId), name)
             return
         end
 
@@ -595,18 +659,18 @@ else
     end)
 
     RegisterNetEvent("sky_base:scResponse", function(requestKey, data)
-        if clientCallbackResponses[requestKey] == nil then return end
+        if clientCallbackResponses[requestKey] ~= true then return end
         clientCallbackResponses[requestKey] = data
     end)
 
     RegisterNetEvent("sky_base:scDoesNotExist", function(requestKey, name)
-        if clientCallbackResponses[requestKey] == nil then return end
+        if clientCallbackResponses[requestKey] ~= true then return end
         clientCallbackResponses[requestKey] = "ERROR"
         Sky.Debug("error", ('ServerCallback "%s" does not exist on server!'):format(tostring(name)))
     end)
 
     RegisterNetEvent("sky_base:scError", function(requestKey, name, err)
-        if clientCallbackResponses[requestKey] == nil then return end
+        if clientCallbackResponses[requestKey] ~= true then return end
         clientCallbackResponses[requestKey] = "ERROR"
         Sky.Debug("error", ('ServerCallback "%s" threw an error:\n%s'):format(tostring(name), tostring(err)))
     end)
@@ -627,22 +691,32 @@ else
     -- -----------------------------------------------------
     --  INTERACTION POINT WRAPPERS
     -- -----------------------------------------------------
-    function Sky.CreateInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.CreateInteractionPoint) == "function" then
-                return sky.CreateInteractionPoint(...)
-            end
+    -- Points live in sky_base and are created through its exports. The functions inside
+    -- exports.sky_base:Get() arrive here as function references (callable tables), so the
+    -- former type(fn) == "function" check never passed and no point was ever created.
+    local function callSkyBaseInteraction(method, ...)
+        if GetResourceState("sky_base") ~= "started" then
+            return nil
         end
+
+        local args = table.pack(...)
+        local ok, result = pcall(function()
+            return exports.sky_base[method](exports.sky_base, table.unpack(args, 1, args.n))
+        end)
+        if ok then
+            return result
+        end
+
+        print(("^1[%s] sky_base %s failed: %s^0"):format(GetCurrentResourceName(), method, tostring(result)))
+        return nil
+    end
+
+    function Sky.CreateInteractionPoint(...)
+        return callSkyBaseInteraction("CreateInteractionPoint", ...)
     end
 
     function Sky.DeleteInteractionPoint(...)
-        if GetResourceState("sky_base") == "started" then
-            local ok, sky = pcall(function() return exports.sky_base:Get() end)
-            if ok and type(sky) == "table" and type(sky.DeleteInteractionPoint) == "function" then
-                return sky.DeleteInteractionPoint(...)
-            end
-        end
+        return callSkyBaseInteraction("DeleteInteractionPoint", ...)
     end
 
     -- -----------------------------------------------------
@@ -1045,7 +1119,13 @@ else
             toggleMods[tostring(i)] = IsToggleModOn(veh, i)
         end
 
-        return {
+        local nr, ng, nb = GetVehicleNeonLightsColour(veh)
+        local smr, smg, smb = GetVehicleTyreSmokeColor(veh)
+        local paintType1 = GetVehicleModColor_1(veh)
+        local paintType2 = GetVehicleModColor_2(veh)
+        local roofLivery = GetVehicleRoofLivery(veh)
+
+        local props = {
             model = GetEntityModel(veh),
             plate = Sky.Math.Trim(GetVehicleNumberPlateText(veh)),
             plateIndex = GetVehicleNumberPlateTextIndex(veh),
@@ -1056,19 +1136,50 @@ else
             dirtLevel = Sky.Math.Round(GetVehicleDirtLevel(veh), 1),
             color1 = colorPrimary,
             color2 = colorSecondary,
+            paintType1 = paintType1,
+            paintType2 = paintType2,
             pearlescentColor = pearlescentColor,
             wheelColor = wheelColor,
             customPrimaryColor = customPrimary,
             customSecondaryColor = customSecondary,
+            dashboardColor = GetVehicleDashboardColour(veh),
+            interiorColor = GetVehicleInteriorColour(veh),
             xenonColor = GetVehicleXenonLightsColor(veh),
             customXenonColor = customXenon,
+            neonEnabled = {
+                IsVehicleNeonLightEnabled(veh, 0),
+                IsVehicleNeonLightEnabled(veh, 1),
+                IsVehicleNeonLightEnabled(veh, 2),
+                IsVehicleNeonLightEnabled(veh, 3)
+            },
+            neonColor = { nr, ng, nb },
+            tyreSmokeColor = { smr, smg, smb },
             wheels = GetVehicleWheelType(veh),
             windowTint = GetVehicleWindowTint(veh),
             extras = extras,
             mods = mods,
             toggleMods = toggleMods,
-            modLivery = modLivery
+            modLivery = modLivery,
+            livery = GetVehicleLivery(veh),
+            modRoofLivery = roofLivery,
+            liveryRoof = roofLivery,
+            modCustomFrontWheels = GetVehicleModVariation(veh, 23),
+            modCustomBackWheels = GetVehicleModVariation(veh, 24),
+            modCustomTiresF = GetVehicleModVariation(veh, 23),
+            modCustomTiresR = GetVehicleModVariation(veh, 24)
         }
+
+        -- Standard qb/ox keys (modEngine, modTurbo, ...) next to this resource's own maps.
+        for modType, key in pairs(Sky.VehiclePropertyKeys.mods) do
+            if modType ~= 48 then
+                props[key] = mods[tostring(modType)]
+            end
+        end
+        for modType, key in pairs(Sky.VehiclePropertyKeys.toggles) do
+            props[key] = toggleMods[tostring(modType)]
+        end
+
+        return props
     end
 
     function Sky.Vehicle:SetProperties(props)
@@ -1106,17 +1217,49 @@ else
         if props.dirtLevel then
             SetVehicleDirtLevel(veh, props.dirtLevel + 0.0)
         end
-        if props.color1 and props.color2 then
-            SetVehicleColours(veh, props.color1, props.color2)
+
+        -- qb/ox store a custom paint as color1/color2 = { r, g, b }; this resource uses an
+        -- index plus customPrimaryColor/customSecondaryColor. Both are accepted.
+        local currentPrimary, currentSecondary = GetVehicleColours(veh)
+        if type(props.color1) == "number" or type(props.color2) == "number" then
+            SetVehicleColours(veh,
+                type(props.color1) == "number" and props.color1 or currentPrimary,
+                type(props.color2) == "number" and props.color2 or currentSecondary)
         end
-        if props.pearlescentColor and props.wheelColor then
-            SetVehicleExtraColours(veh, props.pearlescentColor, props.wheelColor)
+
+        local customPrimary = (type(props.customPrimaryColor) == "table" and props.customPrimaryColor)
+            or (type(props.color1) == "table" and props.color1) or nil
+        if customPrimary then
+            if type(props.paintType1) == "number" then
+                local _, colorIndex, pearl = GetVehicleModColor_1(veh)
+                SetVehicleModColor_1(veh, props.paintType1, colorIndex or 0, pearl or 0)
+            end
+            SetVehicleCustomPrimaryColour(veh, tonumber(customPrimary[1]) or 0, tonumber(customPrimary[2]) or 0, tonumber(customPrimary[3]) or 0)
+        elseif type(props.color1) == "number" then
+            ClearVehicleCustomPrimaryColour(veh)
         end
-        if props.customPrimaryColor then
-            SetVehicleCustomPrimaryColour(veh, props.customPrimaryColor[1], props.customPrimaryColor[2], props.customPrimaryColor[3])
+
+        local customSecondary = (type(props.customSecondaryColor) == "table" and props.customSecondaryColor)
+            or (type(props.color2) == "table" and props.color2) or nil
+        if customSecondary then
+            if type(props.paintType2) == "number" then
+                local _, colorIndex = GetVehicleModColor_2(veh)
+                SetVehicleModColor_2(veh, props.paintType2, colorIndex or 0)
+            end
+            SetVehicleCustomSecondaryColour(veh, tonumber(customSecondary[1]) or 0, tonumber(customSecondary[2]) or 0, tonumber(customSecondary[3]) or 0)
+        elseif type(props.color2) == "number" then
+            ClearVehicleCustomSecondaryColour(veh)
         end
-        if props.customSecondaryColor then
-            SetVehicleCustomSecondaryColour(veh, props.customSecondaryColor[1], props.customSecondaryColor[2], props.customSecondaryColor[3])
+
+        if props.pearlescentColor or props.wheelColor then
+            local currentPearl, currentWheel = GetVehicleExtraColours(veh)
+            SetVehicleExtraColours(veh, tonumber(props.pearlescentColor) or currentPearl, tonumber(props.wheelColor) or currentWheel)
+        end
+        if tonumber(props.dashboardColor) then
+            SetVehicleDashboardColour(veh, tonumber(props.dashboardColor))
+        end
+        if tonumber(props.interiorColor) then
+            SetVehicleInteriorColour(veh, tonumber(props.interiorColor))
         end
         if props.xenonColor then
             SetVehicleXenonLightsColor(veh, props.xenonColor)
@@ -1154,9 +1297,46 @@ else
                 end
             end
         end
+
+        -- Standard qb/ox keys are applied last: garages keep them current.
+        for modType, key in pairs(Sky.VehiclePropertyKeys.mods) do
+            local val = tonumber(props[key])
+            if val and modType ~= 23 and modType ~= 24 and modType ~= 48 then
+                SetVehicleMod(veh, modType, val, false)
+            end
+        end
+        if tonumber(props.modFrontWheels) then
+            SetVehicleMod(veh, 23, tonumber(props.modFrontWheels), (props.modCustomTiresF or props.modCustomFrontWheels) == true)
+        end
+        if tonumber(props.modBackWheels) then
+            SetVehicleMod(veh, 24, tonumber(props.modBackWheels), (props.modCustomTiresR or props.modCustomBackWheels) == true)
+        end
+        for modType, key in pairs(Sky.VehiclePropertyKeys.toggles) do
+            if props[key] ~= nil then
+                ToggleVehicleMod(veh, modType, props[key] == true)
+            end
+        end
+        if type(props.neonEnabled) == "table" then
+            for i = 0, 3 do
+                SetVehicleNeonLightEnabled(veh, i, props.neonEnabled[i + 1] == true)
+            end
+        end
+        if type(props.neonColor) == "table" then
+            SetVehicleNeonLightsColour(veh, tonumber(props.neonColor[1]) or 255, tonumber(props.neonColor[2]) or 255, tonumber(props.neonColor[3]) or 255)
+        end
+        if type(props.tyreSmokeColor) == "table" then
+            SetVehicleTyreSmokeColor(veh, tonumber(props.tyreSmokeColor[1]) or 255, tonumber(props.tyreSmokeColor[2]) or 255, tonumber(props.tyreSmokeColor[3]) or 255)
+        end
+        local roofLivery = tonumber(props.modRoofLivery or props.liveryRoof)
+        if roofLivery then
+            SetVehicleRoofLivery(veh, roofLivery)
+        end
+
         if props.modLivery and props.modLivery ~= -1 then
             SetVehicleMod(veh, 48, props.modLivery, false)
             SetVehicleLivery(veh, props.modLivery)
+        elseif tonumber(props.livery) and tonumber(props.livery) >= 0 then
+            SetVehicleLivery(veh, tonumber(props.livery))
         end
         return true
     end
@@ -1343,11 +1523,9 @@ else
         return Sky_Jobs.Access.HasJob(), true
     end
 
+    -- The mechanic NUI has no tablet notification view; sky_jobs_base's tablet shows it.
     function Sky_Jobs.Tablet.PushNotification(data)
-        SendNUIMessage({
-            type = "tablet:pushNotification",
-            data = data
-        })
+        TriggerEvent("sky_jobs_base:tablet:pushNotification", data)
     end
 
     if not _SKY_JOBS_ACCESS_CLIENT_INITIALIZED then

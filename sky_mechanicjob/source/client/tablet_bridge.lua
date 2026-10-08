@@ -105,6 +105,10 @@ local function openMechanicTabletRoute(route, extra)
         jobsBaseState = GetResourceState("sky_jobs_base"), browserReady = SkyDiagnostics and SkyDiagnostics.UiReady == true or false })
     if TuningState then
         tabletLog("debug", "tuning_deactivated", { wasActive = TuningState.active == true })
+        -- Closing properly restores the previewed parts that were not bought.
+        if TuningState.active and type(setTuningClosed) == "function" then
+            setTuningClosed(true)
+        end
         TuningState.active = false
     else
         tabletLog("warn", "tuning_state_missing", { message = "TuningState is unavailable. Check state.lua/main.lua startup errors." })

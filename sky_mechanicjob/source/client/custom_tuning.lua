@@ -35,6 +35,12 @@ TuningState.customHandlingSessionState = TuningState.customHandlingSessionState 
 
 -- ── Helpers ──────────────────────────────────────────
 
+local function logDebug(msg)
+    if Sky and Sky.IsDebugActive and Sky.IsDebugActive() and Sky.Debug then
+        Sky.Debug("debug", msg)
+    end
+end
+
 local function filterValidHandlingFields(rawTable)
     local result = {}
     if type(rawTable) ~= "table" then return result end
@@ -280,6 +286,11 @@ local function fetchServerTuningProperties(vehicle)
     local props = (type(res.properties) == "table" and res.properties._skyMechanicTuning) or nil
     local customHandling = (type(props) == "table" and type(props.customHandling) == "table" and props.customHandling.profiles) or nil
 
+    -- The tuning menu reads anti-lag/two-step from local records; seed them for vehicles this client has not driven.
+    if type(VehiclePersistence) == "table" and VehiclePersistence.SeedEffectRecords then
+        VehiclePersistence.SeedEffectRecords(vehicle, props)
+    end
+
     return sanitizeSelections(customHandling), true
 end
 
@@ -324,7 +335,7 @@ function CustomTuning.ApplyHandling(vehicle, selections, baseValues)
             local preset = getProfilePreset(pKey, selectedIdx)
             applyPresetToHandlingData(handlingData, preset)
         else
-            print(string.format("[sky_mechanicjob][custom_tuning] preset skipped: vehicle=%s profile=%s preset=%s is not whitelisted",
+            logDebug(string.format("[sky_mechanicjob][custom_tuning] preset skipped: vehicle=%s profile=%s preset=%s is not whitelisted",
                 tostring(vehicle), tostring(pKey), tostring(selections[pKey])))
         end
     end
@@ -347,7 +358,7 @@ function CustomTuning.ApplyHandling(vehicle, selections, baseValues)
                 and GetVehicleHandlingInt(vehicle, "CHandlingData", field)
                 or GetVehicleHandlingFloat(vehicle, "CHandlingData", field)
 
-            print(string.format("[sky_mechanicjob][custom_tuning] handling changed: vehicle=%s field=%s before=%s target=%s after=%s",
+            logDebug(string.format("[sky_mechanicjob][custom_tuning] handling changed: vehicle=%s field=%s before=%s target=%s after=%s",
                 tostring(vehicle), tostring(field), tostring(beforeVal), tostring(targetVal), tostring(afterVal)))
         end
     end
@@ -364,25 +375,31 @@ function CustomTuning.ApplyHandling(vehicle, selections, baseValues)
 end
 
 function CustomTuning.ApplyPersistedState(vehicle, serverProperties, force)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return false end
+
     local selections = sanitizeSelections((type(serverProperties) == "table" and serverProperties.profiles) or nil)
-    updateStateSelections(vehicle, selections)
-
-    if not next(selections) then
-        print("[sky_mechanicjob][custom_tuning] apply skipped: no persisted custom handling selections")
-        return true
-    end
-
-    local netId = (vehicle ~= 0 and DoesEntityExist(vehicle)) and NetworkGetNetworkIdFromEntity(vehicle) or 0
+    local netId = NetworkGetNetworkIdFromEntity(vehicle)
     local sig = computeSelectionsSignature(selections)
 
-    if not force and netId and netId > 0 then
-        if TuningState.customHandlingAppliedByNetId[netId] == sig then
-            print(string.format("[sky_mechanicjob][custom_tuning] apply skipped: already applied netId=%s signature=%s", tostring(netId), tostring(sig)))
-            return true
+    if force == nil then
+        force = customHandlingConfig and customHandlingConfig.overwriteHandling == true
+    end
+
+    if force and netId > 0 then
+        -- Another resource reset the handling, so the current values are the base again.
+        TuningState.customHandlingAppliedByNetId[netId] = nil
+        if type(TuningState.customHandlingBase) == "table" and TuningState.customHandlingBase.vehicleNetId == netId then
+            TuningState.customHandlingBase = nil
         end
     end
 
-    print(string.format("[sky_mechanicjob][custom_tuning] applying persisted custom handling: vehicle=%s netId=%s force=%s signature=%s",
+    local appliedSig = netId > 0 and TuningState.customHandlingAppliedByNetId[netId] or nil
+    if appliedSig == sig or (appliedSig == nil and not next(selections)) then
+        logDebug(string.format("[sky_mechanicjob][custom_tuning] apply skipped: netId=%s signature=%s", tostring(netId), tostring(sig)))
+        return true
+    end
+
+    logDebug(string.format("[sky_mechanicjob][custom_tuning] applying persisted custom handling: vehicle=%s netId=%s force=%s signature=%s",
         tostring(vehicle), tostring(netId), tostring(force == true), tostring(sig)))
 
     return CustomTuning.ApplyHandling(vehicle, selections, CustomTuning.EnsureBaseline(vehicle))
@@ -429,7 +446,7 @@ end
 
 function CustomTuning.EnsureBaseline(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][custom_tuning] baseline capture failed: vehicle is missing")
+        logDebug("[sky_mechanicjob][custom_tuning] baseline capture failed: vehicle is missing")
         return {}
     end
 
@@ -440,12 +457,10 @@ function CustomTuning.EnsureBaseline(vehicle)
         return filterValidHandlingFields(base.values)
     end
 
-    local currentValues = readCurrentHandlingValues(vehicle)
-    local selections = sanitizeSelections(TuningState.customHandlingSelections)
-
-    local rawBase = currentValues
-    if netId and netId > 0 then
-        rawBase = computeTargetHandlingValues(vehicle, selections)
+    -- Handling is not networked: the current values only contain presets this client applied itself.
+    local rawBase = readCurrentHandlingValues(vehicle)
+    if netId and netId > 0 and TuningState.customHandlingAppliedByNetId[netId] ~= nil then
+        rawBase = computeTargetHandlingValues(vehicle, sanitizeSelections(TuningState.customHandlingSelectionsByNetId[netId]))
     end
 
     TuningState.customHandlingBase = {
@@ -458,16 +473,19 @@ end
 
 function CustomTuning.CaptureSessionState(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][custom_tuning] session capture failed: vehicle is missing")
+        logDebug("[sky_mechanicjob][custom_tuning] session capture failed: vehicle is missing")
         TuningState.customHandlingSessionState = nil
         return
     end
 
+    local netId = NetworkGetNetworkIdFromEntity(vehicle)
     TuningState.customHandlingSessionState = {
-        vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle),
+        vehicleNetId = netId,
         plate = getNormalizedPlate(vehicle),
         values = readCurrentHandlingValues(vehicle),
-        selections = sanitizeSelections(TuningState.customHandlingSelections)
+        selections = sanitizeSelections(TuningState.customHandlingSelections),
+        appliedSignature = TuningState.customHandlingAppliedByNetId[netId],
+        appliedSelections = sanitizeSelections(TuningState.customHandlingSelectionsByNetId[netId])
     }
 end
 
@@ -476,7 +494,7 @@ function CustomTuning.RestoreSessionState(vehicle)
     if type(session) ~= "table" then return true end
 
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][custom_tuning] session restore failed: vehicle is missing")
+        logDebug("[sky_mechanicjob][custom_tuning] session restore failed: vehicle is missing")
         return false
     end
 
@@ -484,13 +502,13 @@ function CustomTuning.RestoreSessionState(vehicle)
     local sessionNetId = tonumber(session.vehicleNetId)
 
     if sessionNetId and sessionNetId > 0 and netId and netId > 0 and sessionNetId ~= netId then
-        print(string.format("[sky_mechanicjob][custom_tuning] session restore failed: vehicle netId changed from %s to %s", tostring(sessionNetId), tostring(netId)))
+        logDebug(string.format("[sky_mechanicjob][custom_tuning] session restore failed: vehicle netId changed from %s to %s", tostring(sessionNetId), tostring(netId)))
         return false
     end
 
     local values = filterValidHandlingFields(session.values)
     if not next(values) then
-        print("[sky_mechanicjob][custom_tuning] session restore failed: baseline values are missing")
+        logDebug("[sky_mechanicjob][custom_tuning] session restore failed: baseline values are missing")
         return false
     end
 
@@ -508,8 +526,10 @@ function CustomTuning.RestoreSessionState(vehicle)
     ModifyVehicleTopSpeed(vehicle, 1.0)
     updateStateSelections(vehicle, session.selections)
 
+    -- The restored values are the pre-session ones, so restore what this client had applied then.
     if netId and netId > 0 then
-        TuningState.customHandlingAppliedByNetId[netId] = computeSelectionsSignature(session.selections)
+        TuningState.customHandlingAppliedByNetId[netId] = session.appliedSignature
+        TuningState.customHandlingSelectionsByNetId[netId] = sanitizeSelections(session.appliedSelections)
     end
 
     return true

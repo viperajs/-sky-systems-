@@ -76,6 +76,12 @@ function Sky.Query(query, params)
 end
 Sky.DB.Query = Sky.Query
 
+-- Table and column names are formatted into the query; only plain identifiers pass.
+local function assertIdentifier(name)
+    assert(type(name) == "string" and name:match("^[%w_]+$"), ("Invalid SQL identifier: %s"):format(tostring(name)))
+    return name
+end
+
 --- Get a single column value from a table where whereCol = whereVal
 ---@param tableName string
 ---@param whereCol string
@@ -83,6 +89,7 @@ Sky.DB.Query = Sky.Query
 ---@param targetCol string
 ---@return any
 function Sky.DB.GetValue(tableName, whereCol, whereVal, targetCol)
+    assertIdentifier(tableName); assertIdentifier(whereCol); assertIdentifier(targetCol)
     local query = string.format("SELECT `%s` FROM `%s` WHERE `%s` = @whereVal LIMIT 1", targetCol, tableName, whereCol)
     local row = MySQL.single.await(query, { ["@whereVal"] = whereVal })
     if row then
@@ -106,6 +113,7 @@ end
 ---@param whereVal any
 ---@return boolean
 function Sky.DB.SetValue(tableName, targetCol, targetVal, whereCol, whereVal)
+    assertIdentifier(tableName); assertIdentifier(targetCol); assertIdentifier(whereCol)
     local val = targetVal
     if type(val) == "table" then
         val = json.encode(val)
@@ -124,6 +132,7 @@ end
 ---@param whereVal any
 ---@return table|nil
 function Sky.DB.GetSingleRow(tableName, whereCol, whereVal)
+    assertIdentifier(tableName); assertIdentifier(whereCol)
     local query = string.format("SELECT * FROM `%s` WHERE `%s` = @whereVal LIMIT 1", tableName, whereCol)
     return MySQL.single.await(query, { ["@whereVal"] = whereVal })
 end
@@ -134,12 +143,14 @@ end
 ---@return number|boolean
 function Sky.DB.AddRow(tableName, data)
     if type(data) ~= "table" then return false end
+    assertIdentifier(tableName)
 
     local cols = {}
     local placeholders = {}
     local params = {}
 
     for k, v in pairs(data) do
+        assertIdentifier(k)
         cols[#cols + 1] = string.format("`%s`", k)
         placeholders[#placeholders + 1] = string.format("@%s", k)
         local val = v

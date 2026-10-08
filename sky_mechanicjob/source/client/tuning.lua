@@ -278,7 +278,7 @@ function tryUseVehicleCarJack()
 
     CarJackState.prop = jackObj
 
-    local animOk, animErr = playCarJackPedAnim(ped, CAR_JACK_LIFT_TIME_MS + 800, GetEntityCoords(targetVeh), sideData)
+    local animOk, animErr = playCarJackPedAnim(ped, CAR_JACK_LIFT_TIME_MS + 800, GetEntityCoords(targetVeh), pedCoords)
     if not animOk then
         clearCarJackState()
         return false, animErr
@@ -776,16 +776,15 @@ local function registerJobInteractionEvents(jobName)
     end)
 end
 
-registerJobInteractionEvents("mechanic")
-for _, job in ipairs(Config and Config.Jobs or {}) do
-    local jName = type(job) == "table" and job.name or job
-    registerJobInteractionEvents(jName)
+-- sky_jobs_base raises the interaction with the workshop's framework job (jobKey), which
+-- for /jobconfig workshops differs from their display name.
+for _, jobName in ipairs(GetMechanicJobNames()) do
+    registerJobInteractionEvents(jobName)
 end
 
 AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
-    for _, job in ipairs(Config and Config.Jobs or {}) do
-        local jName = type(job) == "table" and job.name or job
-        registerJobInteractionEvents(jName)
+    for _, jobName in ipairs(GetMechanicJobNames()) do
+        registerJobInteractionEvents(jobName)
     end
 end)
 
@@ -1045,13 +1044,30 @@ RegisterNUICallback("tuning:purchase", function(data, cb)
 
     local chargeAmount = isAdmin and 0 or pendingTotal
     local modelHash = GetEntityModel(TuningState.vehicle)
+    local displayName = GetDisplayNameFromVehicleModel(modelHash)
+
+    -- Admin, item and instant tunings are saved by the server, which needs the result.
+    local properties = nil
+    if isAdmin or isInstant then
+        properties = Sky.Vehicle.new(TuningState.vehicle):GetVehicleProperties()
+        if properties then
+            properties._skyMechanicTuning = {
+                stance = StanceKit.BuildPersistedState(TuningState.vehicle),
+                antiLag = AntiLag.GetPersistedState(TuningState.vehicle),
+                twoStep = TwoStep.GetPersistedState(TuningState.vehicle)
+            }
+        end
+    end
 
     local res = Sky.Cb.Trigger("sky_mechanicjob:tuning:purchase", {
         method = method,
         amount = chargeAmount,
         plate = GetVehicleNumberPlateText(TuningState.vehicle),
-        model = GetDisplayNameFromVehicleModel(modelHash),
+        model = displayName,
+        modelLabel = GetLabelText(displayName),
         modelHash = modelHash,
+        mode = TuningState.mode,
+        properties = properties,
         vehicleClass = GetVehicleClass(TuningState.vehicle),
         parts = pendingParts,
         societyJob = TuningState.societyJob,
@@ -1071,7 +1087,12 @@ RegisterNUICallback("tuning:purchase", function(data, cb)
     ))
 
     if type(res) ~= "table" or res.success ~= true then
-        if type(res) == "table" and res.error == "not_authorized" then
+        if type(res) == "table" and res.error == "missing_item" then
+            notify(("%s: %s"):format(
+                getNuiLocale("tablet.orders.missing_item", "Missing required item"),
+                getNuiLocale(("tablet.orders.items.%s"):format(tostring(res.requiredItem or "")), tostring(res.requiredItem or ""))
+            ), "error")
+        elseif type(res) == "table" and res.error == "not_authorized" then
             notify((tuningLocales and tuningLocales.NoPermission) or "You do not have permission to use this command.", "error")
         elseif type(res) == "table" and res.error == "insufficient_funds" then
             if method == "card" then
@@ -1092,7 +1113,8 @@ RegisterNUICallback("tuning:purchase", function(data, cb)
         return
     end
 
-    local isDirectApplied = isFreeTuning or (type(res) == "table" and res.appliedDirect == true)
+    -- The server decides whether the tuning was applied or became an order.
+    local isDirectApplied = type(res) == "table" and res.appliedDirect == true
 
     if isDirectApplied then
         if hasCustomProfile then

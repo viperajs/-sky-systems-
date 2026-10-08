@@ -15,6 +15,10 @@ shared_scripts {
 }
 
 client_scripts {
+	'@sky_base/source/shared/modules/Info.lua',
+	'@sky_base/source/client/modules/Info.lua',
+	'@sky_base/source/client/modules/Players.lua',
+	'@sky_base/source/client/modules/Poly.lua',
 	'config/init.lua',
 	'config/config.lua',
 	'config/locales/*.lua',
@@ -69,6 +73,7 @@ server_scripts {
 	'source/server/storage.lua',
 	'source/server/tablet_apps.lua',
 	'source/server/wardrobe.lua',
+	'source/server/alerts.lua',
 }
 
 files {

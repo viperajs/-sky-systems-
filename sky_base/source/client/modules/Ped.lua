@@ -64,8 +64,27 @@ function Sky.Ped:Spawn(model, coords, heading, options)
         if options.scenario then
             TaskStartScenarioInPlace(pedHandle, options.scenario, 0, true)
         end
-        if type(options.onSpawn) == "function" then
-            options.onSpawn(pedHandle)
+        -- Looped idle animation for interaction NPCs ({ dict = ..., name = ..., flag = ... }).
+        local anim = options.animation
+        if not options.scenario and type(anim) == "table" and type(anim.dict) == "string" and type(anim.name) == "string" then
+            RequestAnimDict(anim.dict)
+            local timeout = GetGameTimer() + 2000
+            while not HasAnimDictLoaded(anim.dict) and GetGameTimer() < timeout do
+                Wait(0)
+            end
+            if HasAnimDictLoaded(anim.dict) then
+                TaskPlayAnim(pedHandle, anim.dict, anim.name, 8.0, -8.0, -1, tonumber(anim.flag) or 1, 0.0, false, false, false)
+                RemoveAnimDict(anim.dict)
+            end
+        end
+        -- onSpawn from another resource's config arrives as a callable table.
+        local onSpawn = options.onSpawn
+        local mt = type(onSpawn) == "table" and getmetatable(onSpawn) or nil
+        if type(onSpawn) == "function" or (type(mt) == "table" and mt.__call ~= nil) then
+            local ok, err = pcall(onSpawn, pedHandle)
+            if not ok then
+                Sky.Debug("error", ("Ped onSpawn hook failed: %s"):format(tostring(err)))
+            end
         end
     end
 end

@@ -301,8 +301,16 @@ end
 ---@param currencyName string|table
 ---@param amount number
 ---@return boolean
+-- Amount for has/remove: nil for negative or NaN amounts, which used to pass as 0.
+local function parseAmount(amount)
+    local n = tonumber(amount)
+    if not n or n ~= n or n < 0 or n == math.huge then return nil end
+    return n
+end
+
 function Sky.Currency.Has(target, currencyName, amount)
-    local reqAmount = math.max(0, tonumber(amount) or 0)
+    local reqAmount = parseAmount(amount)
+    if not reqAmount then return false end
     local currency = getCurrencyConfig(currencyName)
     if type(currency) == "table" and type(currency.has) == "function" then
         local res = callCurrencyMethod(currency, "has", target, reqAmount)
@@ -317,8 +325,9 @@ end
 ---@param amount number
 ---@return boolean
 function Sky.Currency.Add(target, currencyName, amount)
-    local addAmount = math.max(0, tonumber(amount) or 0)
-    if addAmount <= 0 then return true end
+    local addAmount = parseAmount(amount)
+    if not addAmount then return false end
+    if addAmount == 0 then return true end
     local currency = getCurrencyConfig(currencyName)
     local res = callCurrencyMethod(currency, "add", target, addAmount)
     return res == true
@@ -330,8 +339,9 @@ end
 ---@param amount number
 ---@return boolean
 function Sky.Currency.Remove(target, currencyName, amount)
-    local remAmount = math.max(0, tonumber(amount) or 0)
-    if remAmount <= 0 then return true end
+    local remAmount = parseAmount(amount)
+    if not remAmount then return false end
+    if remAmount == 0 then return true end
     local currency = getCurrencyConfig(currencyName)
     local res = callCurrencyMethod(currency, "remove", target, remAmount)
     return res == true

@@ -652,20 +652,35 @@ local function persistStagedVehicleStance(vehicle, force)
     logDebug(("[sky_mechanicjob][stance] managed persist failed: plate=%s force=%s result=%s %s"):format(
         tostring(entry.plate), tostring(force == true), tostring(errText), formatStanceDebug(entry.stance)
     ))
+
+    -- Only a timeout is retried; a refusal (not a mechanic on duty, vehicle not owned) stays a refusal.
+    if type(res) == "table" then
+        entry.dirty = false
+        entry.lastPersistAt = now
+    end
     return false
 end
 
 -- Thread 1: Managed persistence background thread
 CreateThread(function()
     while true do
-        for vehicle, entry in pairs(stagedPersistVehicles) do
-            if vehicle == 0 or not DoesEntityExist(vehicle) then
-                if type(entry) == "table" and entry.dirty == true then
-                    persistStagedVehicleStance(vehicle, true)
+        -- Saving yields, and other handlers add or remove entries meanwhile; iterate over a key snapshot.
+        local vehicles = {}
+        for vehicle in pairs(stagedPersistVehicles) do
+            vehicles[#vehicles + 1] = vehicle
+        end
+
+        for _, vehicle in ipairs(vehicles) do
+            local entry = stagedPersistVehicles[vehicle]
+            if entry ~= nil then
+                if vehicle == 0 or not DoesEntityExist(vehicle) then
+                    if type(entry) == "table" and entry.dirty == true then
+                        persistStagedVehicleStance(vehicle, true)
+                    end
+                    stagedPersistVehicles[vehicle] = nil
+                else
+                    persistStagedVehicleStance(vehicle, false)
                 end
-                stagedPersistVehicles[vehicle] = nil
-            else
-                persistStagedVehicleStance(vehicle, false)
             end
         end
 
@@ -769,7 +784,7 @@ CreateThread(function()
                 applyStanceNoColliders(vehicle, stanceData)
             end
         end
-        Wait(0)
+        Wait(next(activeRuntimeVehicles) and 0 or 250)
     end
 end)
 
@@ -836,6 +851,12 @@ end
 
 function StanceKit.ClearPendingReset(vehicle)
     pendingResetByVehicle[vehicle] = nil
+end
+
+--- True while a stance change on this vehicle still waits for its save.
+function StanceKit.HasPendingPersist(vehicle)
+    local entry = stagedPersistVehicles[vehicle]
+    return type(entry) == "table" and entry.dirty == true
 end
 
 function StanceKit.RestorePreviewState(vehicle, st, origPlate)
