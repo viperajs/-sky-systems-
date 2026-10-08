@@ -668,7 +668,7 @@ local function copyEntries(list, fields, required)
                     value = tonumber(value)
                     if not value or value ~= value or value < 0 or value == math.huge then valid = false end
                 end
-                if type(value) == kind then entry[field] = value end
+                if type(value) == kind or (kind == "any" and value ~= nil) then entry[field] = value end
             end
             if valid then out[#out + 1] = entry end
         end
@@ -683,8 +683,15 @@ local function sanitizeJobDefinition(def)
         label = type(def.label) == "string" and def.label or def.name,
         color = type(def.color) == "string" and def.color ~= "" and def.color or nil,
         shop = copyEntries(def.shop, { name = "string", label = "string", price = "number" }, "name"),
-        props = copyEntries(def.props, { model = "string", label = "string" }, "model"),
-        vehicles = copyEntries(def.vehicles, { name = "string", model = "string", price = "number", trunkCapacity = "number", garageType = "string" }, "model"),
+        props = copyEntries(def.props, { model = "string", label = "string", item = "string", zOffset = "number" }, "model"),
+        vehicles = copyEntries(def.vehicles, {
+            name = "string", model = "string", price = "number", trunkCapacity = "number", garageType = "string",
+            trunkEnabled = "boolean", trunkPropsEnabled = "boolean", fuelType = "string", hasStretcher = "boolean",
+            livery = "number", props = "any", propCounts = "any", altModels = "any", extras = "any", properties = "any",
+            primaryColor = "any", secondaryColor = "any", pearlescentColor = "any", wheelColor = "any"
+        }, "model"),
+        jobGroup = type(def.jobGroup) == "string" and def.jobGroup or nil,
+        storage = type(def.storage) == "table" and def.storage or nil,
         offDutyJob = type(def.offDutyJob) == "string" and def.offDutyJob ~= "" and def.offDutyJob or nil
     }
 end

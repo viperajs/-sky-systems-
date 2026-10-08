@@ -428,7 +428,7 @@ AddEventHandler("sky_jobs_base:wardrobe:interaction", function(id, point, extra)
     savedCivilianOutfit = nil
 
     local res = Sky.Cb.Trigger("sky_jobs_base:wardrobe:getOutfits")
-    local outfitsRaw = (res and res.success and res.data) or {}
+    local outfitsRaw = (res and res.success and type(res.data) == "table" and (res.data.outfits or res.data)) or {}
     local outfitsList = {}
 
     for _, outfit in pairs(outfitsRaw) do
@@ -509,7 +509,8 @@ RegisterNUICallback("changeClothing", function(data, cb)
         return
     end
 
-    local clothes = (res.data and type(res.data) == "string" and json.decode(res.data)) or res.data or {}
+    local outfitData = type(res.data) == "table" and (res.data.components or res.data) or res.data
+    local clothes = (type(outfitData) == "string" and json.decode(outfitData)) or outfitData or {}
 
     TriggerEvent("skinchanger:getSkin", function(currentSkin)
         if savedCivilianOutfit == nil then
@@ -599,7 +600,7 @@ RegisterNUICallback("change", function(data, cb)
     local maxVals = Citizen.Await(p)
 
     if data.name ~= "sex" and initialCamCoords and activeWardrobeCam and activeWardrobeCam.cam then
-        local camZOffset = data.camOffset - 0.65
+        local camZOffset = (tonumber(data.camOffset) or 0.65) - 0.65
         SetCamCoord(activeWardrobeCam.cam, initialCamCoords.x, initialCamCoords.y, initialCamCoords.z + camZOffset)
         PointCamAtCoord(activeWardrobeCam.cam, initialCamCoords.x, initialCamCoords.y, initialCamCoords.z + camZOffset)
     end

@@ -31,6 +31,10 @@ Config.CommandPermissions = {
     multijobadmin = { "god", "superadmin", "admin" },
     -- /dutytest [playerId] [on|off] - Debug command to force a duty state on a player
     dutytest = { "god", "superadmin", "admin" },
+    -- /addcctvcam - Save the current camera position as a CCTV camera
+    addcctvcam = { "god", "superadmin", "admin" },
+    -- Create and delete exclusion zones on the tablet map (not a command)
+    exclusionzones = { "god", "superadmin", "admin" },
 }
 
 Config.MultiJob = {
