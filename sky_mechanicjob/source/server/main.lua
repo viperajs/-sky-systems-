@@ -68,6 +68,24 @@ local function getItemSessionMode(src, requestedMode)
     return session.mode
 end
 
+-- A session belongs to the first plate it is used on.
+local function bindItemSessionPlate(src, plate)
+    local session = itemSessions[src]
+    if not session then return false end
+    session.plate = session.plate or plate
+    return session.plate == plate
+end
+
+MechanicItemSessions = {}
+
+---@param src number
+---@param mode string
+---@param plate string
+---@return boolean
+function MechanicItemSessions.IsActive(src, mode, plate)
+    return getItemSessionMode(src, mode) ~= nil and bindItemSessionPlate(src, plate)
+end
+
 -- ── Instant tuning ─────────────────────────────────
 
 local function isJobAllowedAtLocation(src, location, root)
@@ -221,6 +239,30 @@ Sky.Cb.Register("sky_mechanicjob:tuning:purchase", function(source, data)
         return { success = false, error = "invalid_payload" }
     end
 
+    -- Item users: lights only from the driver seat; a stance kit buys one stored stance, so the
+    -- vehicle must be storable and belong to the user (or be driven by them / a mechanic on duty).
+    if itemMode then
+        if not bindItemSessionPlate(src, plate) then
+            return { success = false, error = "not_authorized" }
+        end
+        local isDriver = VehiclePersistence.IsDriver(src, vehicle)
+        if itemMode == "rgb_controller" and not isDriver and not Functions.IsMechanicOnDuty(src) then
+            return { success = false, error = "not_driver" }
+        end
+        if itemMode == "stancing" then
+            local state = data.properties._skyMechanicTuning
+            if type(state) ~= "table" or type(state.stance) ~= "table" then
+                return { success = false, error = "invalid_payload" }
+            end
+            if not isDriver and not Functions.IsMechanicOnDuty(src) and not VehiclePersistence.IsOwner(src, plate) then
+                return { success = false, error = "not_authorized" }
+            end
+            if not TuningDB.CanPersistPlate(plate) then
+                return { success = false, error = "vehicle_not_owned" }
+            end
+        end
+    end
+
     local workshopJob = resolveWorkshopJob(src, data.societyJob)
     local ctx = Pricing.NewContext(workshopJob, modelHash, {
         instant = isInstant,
@@ -333,7 +375,11 @@ Sky.Cb.Register("sky_mechanicjob:tuning:purchase", function(source, data)
             }
         end
         if type(state) == "table" and next(state) and VehiclePersistence and VehiclePersistence.SaveTuningState then
-            VehiclePersistence.SaveTuningState(plate, state)
+            local saved = VehiclePersistence.SaveTuningState(plate, state)
+            if not saved and itemMode == "stancing" then
+                Functions.AddItem(src, "stance_kit", 1)
+                return { success = false, error = "save_failed" }
+            end
         end
 
         VehicleHistory.Add(plate, "tuning_direct",

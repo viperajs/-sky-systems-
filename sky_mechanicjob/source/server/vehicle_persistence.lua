@@ -97,6 +97,24 @@ local function canEditVehicle(src, plate, adminPermission)
     return true
 end
 
+--- Whether the player sits in the driver seat of this vehicle entity.
+---@param src number
+---@param vehicle number
+---@return boolean
+function VehiclePersistence.IsDriver(src, vehicle)
+    local ped = GetPlayerPed(src)
+    return ped ~= nil and ped ~= 0 and vehicle ~= nil and GetPedInVehicleSeat(vehicle, -1) == ped
+end
+
+--- Whether the player's character is the registered owner of the plate.
+---@param src number
+---@param plate string
+---@return boolean
+function VehiclePersistence.IsOwner(src, plate)
+    local owner = TuningDB.GetVehicleOwner(plate)
+    return owner ~= nil and owner ~= "" and owner == Functions.GetIdentifier(src)
+end
+
 --- Saves the client-built extended tuning state (stance, custom handling, anti-lag, two-step).
 --- Missing parts keep their stored value. Nitro is only written by the nitro callbacks.
 ---@param plate string
@@ -246,6 +264,115 @@ Sky.Cb.Register("sky_mechanicjob:stance:save", function(source, data)
     end
 
     return { success = true }
+end)
+
+-- ── RGB controller lights (item users) ───────────────
+-- Contract P stays on the generic endpoints; this one only takes light keys. Item users must
+-- drive the vehicle and hold an rgb_controller or have the item session open for this plate.
+
+local LIGHTS_SAVE_COOLDOWN_MS = 2000
+local lightsSavedAt = {}
+
+local function sanitizeRgbArray(color)
+    if type(color) ~= "table" then return nil end
+    local r = clampNumber(color.r or color[1], 0, 255)
+    local g = clampNumber(color.g or color[2], 0, 255)
+    local b = clampNumber(color.b or color[3], 0, 255)
+    if not r or not g or not b then return nil end
+    return { math.floor(r), math.floor(g), math.floor(b) }
+end
+
+local function sanitizeLightEffect(effect)
+    if type(effect) ~= "table" then return nil end
+    local color = sanitizeRgbArray(effect.color)
+    return {
+        mode = math.floor(clampNumber(effect.mode, 0, 3) or 0),
+        speed = math.floor(clampNumber(effect.speed, 1, 10) or 5),
+        color = color and { r = color[1], g = color[2], b = color[3] } or nil,
+        custom = effect.custom == true or nil
+    }
+end
+
+local function buildLightProperties(data)
+    local props = {}
+
+    if data.xenon ~= nil then
+        local on = data.xenon == true
+        props.modXenon = on
+        props.toggleMods = { ["22"] = on }
+    end
+
+    local xenonIndex = tonumber(data.xenonColor)
+    if xenonIndex then
+        xenonIndex = math.floor(xenonIndex)
+        if xenonIndex == 255 or (xenonIndex >= -1 and xenonIndex <= 12) then
+            props.xenonColor = xenonIndex
+            props.customXenonColor = xenonIndex == 255 and sanitizeRgbArray(data.customXenonColor) or false
+        end
+    end
+
+    if type(data.neonEnabled) == "table" then
+        local sides = data.neonEnabled
+        props.neonEnabled = { sides[1] == true, sides[2] == true, sides[3] == true, sides[4] == true }
+    end
+    props.neonColor = sanitizeRgbArray(data.neonColor)
+
+    return props
+end
+
+Sky.Cb.Register("sky_mechanicjob:rgb:saveLights", function(source, data)
+    local src = tonumber(source)
+    if not src or src <= 0 or type(data) ~= "table" then
+        return { success = false, error = "invalid_payload" }
+    end
+
+    local now = GetGameTimer()
+    if lightsSavedAt[src] and now - lightsSavedAt[src] < LIGHTS_SAVE_COOLDOWN_MS then
+        return { success = false, error = "rate_limited" }
+    end
+    lightsSavedAt[src] = now
+
+    local plate = sanitizePlate(data.plate)
+    if plate == "" or #plate > 12 then
+        return { success = false, error = "invalid_payload" }
+    end
+
+    local vehicle = Functions.GetNearbyVehicleByPlate(src, plate, EDIT_DISTANCE)
+    if not vehicle then
+        return { success = false, error = "vehicle_not_found" }
+    end
+
+    if not Functions.HasPermission(src, "admintuning") and not Functions.IsMechanicOnDuty(src) then
+        if not VehiclePersistence.IsDriver(src, vehicle) then
+            return { success = false, error = "not_driver" }
+        end
+        local item = Config.RgbControllerItem or "rgb_controller"
+        local hasSession = MechanicItemSessions and MechanicItemSessions.IsActive(src, "rgb_controller", plate)
+        if not hasSession and Functions.GetItemCount(src, item) < 1 then
+            return { success = false, error = "missing_item", requiredItem = item }
+        end
+    end
+
+    if not TuningDB.CanPersistPlate(plate) then
+        return { success = false, error = "vehicle_not_owned" }
+    end
+
+    local ok = TuningDB.SaveVehicleProperties(plate, buildLightProperties(data)) == true
+
+    local neon, xenon = sanitizeLightEffect(data.neonEffect), sanitizeLightEffect(data.xenonEffect)
+    if neon or xenon then
+        local current = TuningDB.GetVehicleTuning(plate)
+        local stored = type(current) == "table" and type(current.rgb) == "table" and current.rgb or {}
+        ok = TuningDB.SaveVehicleTuning(plate, { rgb = { neon = neon or stored.neon, xenon = xenon or stored.xenon } }) and ok
+    end
+
+    if not ok then return { success = false, error = "save_failed" } end
+    return { success = true }
+end)
+
+AddEventHandler("playerDropped", function()
+    local src = tonumber(source)
+    if src then lightsSavedAt[src] = nil end
 end)
 
 Sky.Cb.Register("sky_mechanicjob:tuning:saveProperties", function(source, data)

@@ -69,6 +69,30 @@ function TuningDB.IsVehicleOwned(plate)
     return result and result[1] ~= nil
 end
 
+--- Identifier of the owning character (citizenid / ESX owner), or nil for unowned plates
+---@param plate string
+---@return string|nil
+function TuningDB.GetVehicleOwner(plate)
+    local cleanPlate = sanitizePlate(plate)
+    if cleanPlate == "" then return nil end
+
+    local query = "SELECT citizenid AS owner FROM player_vehicles WHERE plate = ? LIMIT 1"
+    if isEsx() then
+        query = "SELECT owner FROM owned_vehicles WHERE plate = ? LIMIT 1"
+    end
+
+    local row = MySQL.single.await(query, { cleanPlate })
+    return row and row.owner and tostring(row.owner) or nil
+end
+
+--- Whether tuning for this plate is stored at all (Config.VehiclePersistence.requireOwnedVehicle)
+---@param plate string
+---@return boolean
+function TuningDB.CanPersistPlate(plate)
+    if not requireOwnedVehicle() then return sanitizePlate(plate) ~= "" end
+    return TuningDB.IsVehicleOwned(plate)
+end
+
 --- Get saved tuning record for vehicle plate
 ---@param plate string
 ---@return table|nil

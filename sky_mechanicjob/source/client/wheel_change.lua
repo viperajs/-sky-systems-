@@ -191,7 +191,11 @@ function setTuningClosed(skipUiMessage)
 
     if shouldSave then
         if TuningState.vehicle ~= 0 and DoesEntityExist(TuningState.vehicle) then
-            saveTuningForVehicle(TuningState.vehicle)
+            if TuningState.mode == "rgb_controller" then
+                VehiclePersistence.SaveLights(TuningState.vehicle)
+            else
+                saveTuningForVehicle(TuningState.vehicle)
+            end
             StanceKit.EnsureRuntimeForVehicle(TuningState.vehicle)
         end
     end
@@ -1554,6 +1558,7 @@ function completeActiveOrderInstall(vehicle, force)
         if res.success ~= true then
             local reason = res.error == "missing_item"
                 and ("%s: %s"):format(getNuiLocale("tablet.orders.missing_item", "Missing required item"), getNuiLocale("tablet.orders.items.stance_kit", "stance_kit"))
+                or (res.error == "vehicle_not_owned" and getNuiLocale("tablet.orders.stance_checklist.not_owned", "Only owned vehicles can keep a stance."))
                 or ((tuningLocales and tuningLocales.NoPermission) or "You do not have permission to use this command.")
             notify(reason, "error")
             StanceKit.RestorePreviewState(vehicle, OrderInstallState.directStanceRestore, Sky.Math.Trim(GetVehicleNumberPlateText(vehicle)))

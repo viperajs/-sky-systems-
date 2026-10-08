@@ -404,6 +404,113 @@ end
 -- saveTuningForVehicle (import.lua) calls StanceKit.PersistCurrent after saving the vehicle properties.
 StanceKit.PersistCurrent = VehiclePersistence.SaveTuningState
 
+-- ── RGB Controller Lights ────────────────────────────
+
+local function colorRecord(color)
+    if type(color) ~= "table" then return nil end
+    local r, g, b = tonumber(color.r or color[1]), tonumber(color.g or color[2]), tonumber(color.b or color[3])
+    if not r or not g or not b then return nil end
+    return {
+        r = math.floor(math.max(0, math.min(255, r))),
+        g = math.floor(math.max(0, math.min(255, g))),
+        b = math.floor(math.max(0, math.min(255, b)))
+    }
+end
+
+--- Xenon, neon and the RGB effect modes of a vehicle, in the shape sky_mechanicjob:rgb:saveLights takes.
+function VehiclePersistence.BuildLightsState(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return nil end
+
+    local neonData, xenonData = RgbController.GetVehicleEffectState(vehicle)
+    local nr, ng, nb = GetVehicleNeonLightsColour(vehicle)
+    local neonColor = (neonData and colorRecord(neonData.baseColor)) or colorRecord({ nr, ng, nb })
+
+    local xenonIndex = math.floor(tonumber(GetVehicleXenonLightsColor(vehicle)) or -1)
+    local customXenon = colorRecord(Entity(vehicle).state["sky_mechanicjob:xenonCustomColor"])
+    if not customXenon and xenonIndex == 255 then
+        local _ok, xr, xg, xb = GetVehicleXenonLightsCustomColor(vehicle)
+        customXenon = colorRecord({ xr, xg, xb })
+    end
+    if customXenon then xenonIndex = 255 end
+    local xenonColor = (xenonData and colorRecord(xenonData.baseColor)) or customXenon or RgbController.CaptureVehicleXenonColor(vehicle)
+
+    local neonSides = {}
+    for i = 0, 3 do
+        neonSides[i + 1] = IsVehicleNeonLightEnabled(vehicle, i) == true
+    end
+
+    return {
+        plate = getVehiclePlate(vehicle),
+        xenon = IsToggleModOn(vehicle, 22) == true,
+        xenonColor = xenonIndex,
+        customXenonColor = customXenon,
+        neonEnabled = neonSides,
+        neonColor = neonColor,
+        neonEffect = {
+            mode = neonData and neonData.mode or RgbController.NEON_EFFECT_MODES.off,
+            speed = neonData and neonData.speed or 5,
+            color = neonColor
+        },
+        xenonEffect = {
+            mode = xenonData and xenonData.mode or RgbController.XENON_EFFECT_MODES.off,
+            speed = xenonData and xenonData.speed or 5,
+            color = xenonColor,
+            custom = customXenon ~= nil
+        }
+    }
+end
+
+--- Saves the lights through the RGB controller endpoint (driver with the item, admins, mechanics on duty).
+function VehiclePersistence.SaveLights(vehicle)
+    local payload = VehiclePersistence.BuildLightsState(vehicle)
+    if type(payload) ~= "table" or payload.plate == "" then return false end
+
+    CreateThread(function()
+        local res = Sky.Cb.Trigger("sky_mechanicjob:rgb:saveLights", payload)
+        if type(res) == "table" and res.success == true then return end
+
+        local err = type(res) == "table" and res.error or "save_failed"
+        logDebug(("[sky_mechanicjob][rgb] lights save refused: plate=%s error=%s"):format(payload.plate, tostring(err)))
+        if err == "not_driver" then
+            notify(getNuiLocale("tablet.rgb.driver_required", "Sit in the driver seat to save the lights."), "error")
+        elseif err == "missing_item" then
+            notify(("%s: %s"):format(
+                getNuiLocale("tablet.orders.missing_item", "Missing required item"),
+                getNuiLocale("tablet.orders.items.rgb_controller", "rgb_controller")
+            ), "error")
+        end
+    end)
+    return true
+end
+
+local function applyPersistedRgb(vehicle, rgb)
+    if type(rgb) ~= "table" then return end
+
+    local neon = type(rgb.neon) == "table" and rgb.neon or nil
+    if neon then
+        local color = colorRecord(neon.color)
+        RgbController.BindNeonEffectVehicle(vehicle)
+        if color then RgbController.SetNeonBaseColor(color) end
+        RgbController.SetNeonSpeed(vehicle, neon.speed)
+        RgbController.SetNeonMode(vehicle, math.floor(math.max(0, math.min(3, tonumber(neon.mode) or 0))))
+    end
+
+    local xenon = type(rgb.xenon) == "table" and rgb.xenon or nil
+    if xenon then
+        local color = colorRecord(xenon.color)
+        RgbController.BindXenonEffectVehicle(vehicle)
+        if color then
+            RgbController.SetXenonBaseColor(color)
+            if xenon.custom == true and IsToggleModOn(vehicle, 22)
+                and colorRecord(Entity(vehicle).state["sky_mechanicjob:xenonCustomColor"]) == nil then
+                XenonSync.SetCustomColor(vehicle, color)
+            end
+        end
+        RgbController.SetXenonSpeed(vehicle, xenon.speed)
+        RgbController.SetXenonMode(vehicle, math.floor(math.max(0, math.min(3, tonumber(xenon.mode) or 0))))
+    end
+end
+
 --- Fills missing local anti-lag/two-step records from server data without touching ones the menu changed.
 function VehiclePersistence.SeedEffectRecords(vehicle, state)
     if type(state) ~= "table" then return end
@@ -419,7 +526,7 @@ function VehiclePersistence.SeedEffectRecords(vehicle, state)
     end
 end
 
---- Applies the server's stance, nitro, custom handling, anti-lag and two-step to a vehicle.
+--- Applies the server's stance, nitro, custom handling, anti-lag, two-step and RGB effects to a vehicle.
 --- Plates without a stored record keep their local state.
 function VehiclePersistence.LoadForVehicle(vehicle)
     local plate = getVehiclePlate(vehicle)
@@ -445,6 +552,8 @@ function VehiclePersistence.LoadForVehicle(vehicle)
     if type(state.customHandling) == "table" then
         CustomTuning.ApplyPersistedState(vehicle, state.customHandling)
     end
+
+    applyPersistedRgb(vehicle, state.rgb)
 
     return true
 end
