@@ -724,6 +724,7 @@ RegisterServerEvent("sky_jobs_base:bodycam:requestSave", function(data)
 
     local cctvCfg = Config and Config.Cctv or {}
     if cctvCfg.bodycamRecorderEnabled == false then return reply("disabled") end
+    if not Sky_Jobs.Uploads.IsConfigured() then return reply("missing_config") end
     local viewerJob = getEmployment(src, true)
     if not viewerJob or not reqId then return reply("not_authorized") end
 
@@ -767,7 +768,7 @@ RegisterNetEvent("sky_jobs_base:bodycam:saveResult", function(data)
     if not pending or pending.target ~= src or pending.expires < os.time() then return end
     pendingBodycamSaves[key] = nil
 
-    local url = type(data.url) == "string" and #data.url <= 1024 and data.url:match("^https?://[^%s\"'<>]+$") or nil
+    local url = Sky_Jobs.Uploads.IsAllowedUrl(data.url) and data.url or nil
     local err = cleanText(data.error, 64)
     local recordingId
     if data.success == true and url then
@@ -782,7 +783,18 @@ RegisterNetEvent("sky_jobs_base:bodycam:saveResult", function(data)
             ["@location"] = pending.location,
             ["@url"] = url
         })
-        if not recordingId then err = "insert_failed" end
+        if not recordingId then
+            err = "insert_failed"
+        else
+            -- The CCTV app reports "Video saved to gallery."; a full gallery keeps the recording only.
+            Sky_Jobs.Gallery.Add(src, pending.job, {
+                url = url,
+                image_id = data.image_id,
+                folder = "cctv",
+                media_type = "video",
+                metadata = { name = pending.label, description = pending.location }
+            })
+        end
     elseif data.success == true then
         err = "upload_failed"
     end

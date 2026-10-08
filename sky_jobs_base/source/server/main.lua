@@ -79,19 +79,49 @@ end)
 
 -- ── Gallery & Creator Callbacks ───────────────────────
 
--- Photos reach the gallery through presigned upload URLs from an upload provider. None is
--- configured in this resource, so nothing can be uploaded and every gallery is empty.
+-- Each job has one gallery (sky_jobs_gallery_photos); uploads go to presigned URLs from the
+-- provider in Config.Uploads (helpers in jobs.lua).
 Sky.Cb.Register("sky_jobs_base:gallery:getPhotos", function(source, data)
-    return { success = true, data = {} }
+    local job, err = Sky_Jobs.Uploads.Authorize(source)
+    if not job then return { success = false, error = err } end
+    data = type(data) == "table" and data or {}
+    local photos, loadErr = Sky_Jobs.Gallery.List(job, data.limit, data.offset)
+    if not photos then return { success = false, error = loadErr } end
+    return { success = true, data = photos }
 end)
 
-local function uploadNotConfigured()
-    return { success = false, error = "upload_not_configured" }
-end
+Sky.Cb.Register("sky_jobs_base:gallery:getPresignedUrl", function(source, data)
+    local fileType = type(data) == "table" and data.fileType == "video" and "video" or "image"
+    local job, err = Sky_Jobs.Uploads.Authorize(source, fileType == "video")
+    if not job then return { success = false, error = err } end
+    if Sky_Jobs.Gallery.IsFull(job) then return { success = false, error = "gallery_full" } end
+    local presignedUrl, presignErr = Sky_Jobs.Uploads.PresignFor(source, fileType)
+    if not presignedUrl then return { success = false, error = presignErr } end
+    return { success = true, data = { presignedUrl = presignedUrl } }
+end)
 
-Sky.Cb.Register("sky_jobs_base:gallery:getPresignedUrl", uploadNotConfigured)
-Sky.Cb.Register("sky_jobs_base:gallery:deletePhoto", uploadNotConfigured)
-Sky.Cb.Register("sky_jobs_base:gallery:addPhoto", uploadNotConfigured)
+Sky.Cb.Register("sky_jobs_base:gallery:addPhoto", function(source, data)
+    local job, err = Sky_Jobs.Uploads.Authorize(source)
+    if not job then return { success = false, error = err } end
+    data = type(data) == "table" and data or {}
+    if not Sky_Jobs.Uploads.IsAllowedUrl(data.url) then return { success = false, error = "invalid_url" } end
+    if not Sky_Jobs.Uploads.ConsumeCredit(source) then return { success = false, error = "not_authorized" } end
+    local photo, addErr = Sky_Jobs.Gallery.Add(source, job, {
+        url = data.url,
+        image_id = data.image_id,
+        folder = data.folder
+    })
+    if not photo then return { success = false, error = addErr } end
+    return { success = true, data = photo }
+end)
+
+Sky.Cb.Register("sky_jobs_base:gallery:deletePhoto", function(source, data)
+    local job, err = Sky_Jobs.Uploads.Authorize(source)
+    if not job then return { success = false, error = err } end
+    local ok, deleteErr = Sky_Jobs.Gallery.Delete(job, type(data) == "table" and data.id or nil)
+    if not ok then return { success = false, error = deleteErr } end
+    return { success = true }
+end)
 
 CreateThread(function()
     Wait(500)

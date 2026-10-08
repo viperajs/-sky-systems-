@@ -237,6 +237,33 @@ Config.HeliCam = {
     }
 }
 
+-- ============================================================================
+-- Uploads: camera/heli/CCTV photos, the tablet gallery, chat images and bodycam clips.
+-- The server asks the provider for a one-time presigned URL and the player's game uploads
+-- the file straight to it. The API token is read on the server from a convar and is never
+-- sent to players. Do NOT write it in this file (players download it); put it in server.cfg:
+--     set sky_jobs_upload_token "YOUR_FIVEMANAGE_API_TOKEN"
+-- Without the convar every upload fails with "upload_not_configured" / "Upload config missing."
+-- provider = "fivemanage": GET presignedUrlEndpoint?fileType=image|video with the token as the
+--   Authorization header (Fivemanage dashboard -> API tokens; the token needs image and video access).
+-- provider = "custom": your own endpoint, called the same way, answering
+--   { "data": { "presignedUrl": "https://..." } } or { "presignedUrl": "https://..." }. That URL must
+--   accept a multipart POST with a "file" field and answer { "data": { "url": "...", "id": "..." } }
+--   or { "url": "...", "id": "..." }. Put the host of the returned file URLs in allowedHosts.
+-- ============================================================================
+Config.Uploads = {
+    provider = "fivemanage", -- "fivemanage" or "custom"
+    presignedUrlEndpoint = "https://api.fivemanage.com/api/presigned-url",
+    tokenConvar = "sky_jobs_upload_token", -- server convar holding the API token
+    authorizationPrefix = "", -- prepended to the token in the Authorization header, e.g. "Bearer "
+    requestTimeoutMs = 5000,
+    rateLimitMs = 1500, -- per player and file type, between presigned URL requests
+    requireOnDuty = false, -- gallery and chat uploads; CCTV/speed cam captures and bodycam clips always require duty
+    maxPhotosPerJob = 500, -- photos and clips kept per job gallery; new uploads are refused when full (0 = no limit)
+    -- Uploaded file URLs must be https and on one of these hosts (or their subdomains).
+    allowedHosts = { "fivemanage.com" }
+}
+
 Config.ManagementFinance = {
     historyDays = 14
 }

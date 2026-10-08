@@ -885,6 +885,8 @@ local function ensureIndex(tableName, indexName, columns)
     end
 end
 
+local chatSupportsImages = false
+
 local function ensureJobsBaseTables()
     if not (MySQL and MySQL.query and MySQL.query.await) then return end
     if Config and Config.AutoExecuteQuery == false then return end
@@ -966,6 +968,21 @@ local function ensureJobsBaseTables()
                 `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (`job`, `grade`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ]],
+        [[
+            CREATE TABLE IF NOT EXISTS `sky_jobs_gallery_photos` (
+                `id` INT AUTO_INCREMENT PRIMARY KEY,
+                `job` VARCHAR(50) NOT NULL,
+                `url` VARCHAR(1024) NOT NULL,
+                `image_id` VARCHAR(128) DEFAULT NULL,
+                `folder` VARCHAR(20) NOT NULL DEFAULT 'camera',
+                `media_type` VARCHAR(10) NOT NULL DEFAULT 'image',
+                `metadata` TEXT DEFAULT NULL,
+                `taken_by` VARCHAR(100) DEFAULT NULL,
+                `taken_by_identifier` VARCHAR(64) DEFAULT NULL,
+                `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX `idx_job` (`job`, `id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]]
     }
 
@@ -977,6 +994,7 @@ local function ensureJobsBaseTables()
     ensureColumn("sky_jobs_chat_messages", "recipient_identifier", "VARCHAR(64) DEFAULT NULL")
     ensureColumn("sky_jobs_chat_messages", "is_read", "TINYINT(1) NOT NULL DEFAULT 0")
     ensureColumn("sky_jobs_calendar_events", "color", "VARCHAR(16) DEFAULT NULL")
+    ensureColumn("sky_jobs_chat_messages", "image_url", "VARCHAR(1024) DEFAULT NULL")
     local chatIdLength = columnLength("sky_jobs_chat_messages", "chat_id")
     if chatIdLength and chatIdLength < 160 then
         runSchemaStatement("ALTER TABLE `sky_jobs_chat_messages` MODIFY `chat_id` VARCHAR(160) NOT NULL")
@@ -990,7 +1008,260 @@ CreateThread(function()
         Wait(500)
     end
     ensureJobsBaseTables()
+    -- Chat images need the image_url column (added above, or by schema.sql when AutoExecuteQuery is off).
+    local imageColumn = columnLength("sky_jobs_chat_messages", "image_url")
+    chatSupportsImages = imageColumn ~= nil and imageColumn ~= false
     loadGradeStore()
+end)
+
+-- -----------------------------------------------------
+--  UPLOADS (presigned URLs) & JOB GALLERY
+-- -----------------------------------------------------
+
+Sky_Jobs.Uploads = Sky_Jobs.Uploads or {}
+Sky_Jobs.Gallery = Sky_Jobs.Gallery or {}
+
+local GALLERY_FOLDERS = { camera = true, cctv = true, speedcam = true, mugshot = true, chat = true }
+local lastPresignAt = {}
+local UPLOAD_CREDIT_SECONDS = 600
+local uploadCredits = {}
+local loggedRejectedHosts = {}
+
+local function uploadConfig()
+    return Config and type(Config.Uploads) == "table" and Config.Uploads or {}
+end
+
+local function uploadTokenConvar()
+    local name = uploadConfig().tokenConvar
+    return type(name) == "string" and name ~= "" and name or "sky_jobs_upload_token"
+end
+
+-- Read on every request so `set sky_jobs_upload_token ...` takes effect without a restart.
+local function uploadToken()
+    return GetConvar(uploadTokenConvar(), "")
+end
+
+local function uploadEndpoint()
+    local cfg = uploadConfig()
+    local endpoint = cfg.presignedUrlEndpoint
+    if type(endpoint) == "string" and endpoint:match("^https?://") then return endpoint end
+    if (cfg.provider or "fivemanage") == "fivemanage" then return "https://api.fivemanage.com/api/presigned-url" end
+    return nil
+end
+
+function Sky_Jobs.Uploads.IsConfigured()
+    return uploadToken() ~= "" and uploadEndpoint() ~= nil
+end
+
+--- Presigned upload URL from the configured provider (yields).
+---@param fileType string "image" or "video"
+---@return string|nil presignedUrl, string|nil error
+function Sky_Jobs.Uploads.RequestPresignedUrl(fileType)
+    fileType = fileType == "video" and "video" or "image"
+    local token, endpoint = uploadToken(), uploadEndpoint()
+    if token == "" or not endpoint then return nil, "upload_not_configured" end
+
+    local cfg = uploadConfig()
+    local url = endpoint .. (endpoint:find("?", 1, true) and "&" or "?") .. "fileType=" .. fileType
+    local prefix = type(cfg.authorizationPrefix) == "string" and cfg.authorizationPrefix or ""
+    local timeout = math.max(1000, tonumber(cfg.requestTimeoutMs) or 5000)
+
+    local p, settled = promise.new(), false
+    local function settle(presigned, err)
+        if settled then return end
+        settled = true
+        p:resolve({ presigned, err })
+    end
+
+    SetTimeout(timeout, function() settle(nil, "upload_timeout") end)
+    PerformHttpRequest(url, function(status, body)
+        status = tonumber(status) or 0
+        if status < 200 or status >= 300 then
+            print(("[sky_jobs_base] Presigned upload URL request failed (HTTP %d)%s."):format(status,
+                (status == 401 or status == 403) and "; check the token in the " .. uploadTokenConvar() .. " convar" or ""))
+            return settle(nil, "upload_failed")
+        end
+        local ok, decoded = pcall(json.decode, body or "")
+        decoded = ok and type(decoded) == "table" and decoded or {}
+        local inner = type(decoded.data) == "table" and decoded.data or {}
+        local presigned = inner.presignedUrl or decoded.presignedUrl
+        if type(presigned) ~= "string" or not presigned:match("^https?://[^%s\"'<>]+$") then
+            print("[sky_jobs_base] The upload provider answered without a presignedUrl.")
+            return settle(nil, "upload_failed")
+        end
+        settle(presigned)
+    end, "GET", "", { ["Authorization"] = prefix .. token, ["Accept"] = "application/json" })
+
+    local result = Citizen.Await(p)
+    return result[1], result[2]
+end
+
+local function isRegisteredJob(job)
+    if Sky_Jobs.GetJobDefinition(job) then return true end
+    for _, apps in pairs(Sky_Jobs.RegisteredTabletApps or {}) do
+        for _, app in ipairs(type(apps) == "table" and apps or {}) do
+            if type(app) == "table" and app.job == job then return true end
+        end
+    end
+    return false
+end
+
+--- Job of an employee of a registered job who may upload, or nil and an error key.
+function Sky_Jobs.Uploads.Authorize(source, requireOnDuty)
+    local src = tonumber(source)
+    local onDuty = requireOnDuty == true or uploadConfig().requireOnDuty == true
+    local job = src and Sky_Jobs.GetEmployment(src)
+    if not job then return nil, "no_job" end
+    if onDuty and not Sky_Jobs.RequireEmployee(src, true) then return nil, "not_on_duty" end
+    if not isRegisteredJob(job) then return nil, "not_authorized" end
+    return job
+end
+
+--- Presigned URL for an authorized player, rate limited per player and file type.
+function Sky_Jobs.Uploads.PresignFor(source, fileType)
+    if not Sky_Jobs.Uploads.IsConfigured() then return nil, "upload_not_configured" end
+    local src = tonumber(source)
+    fileType = fileType == "video" and "video" or "image"
+    local now = GetGameTimer()
+    local entry = lastPresignAt[src] or {}
+    lastPresignAt[src] = entry
+    if entry[fileType] and now - entry[fileType] < math.max(0, tonumber(uploadConfig().rateLimitMs) or 1500) then
+        return nil, "rate_limited"
+    end
+    entry[fileType] = now
+    local presignedUrl, err = Sky_Jobs.Uploads.RequestPresignedUrl(fileType)
+    if presignedUrl then
+        local credits = uploadCredits[src] or {}
+        uploadCredits[src] = credits
+        credits[#credits + 1] = os.time() + UPLOAD_CREDIT_SECONDS
+        if #credits > 5 then table.remove(credits, 1) end
+    end
+    return presignedUrl, err
+end
+
+--- Uses up one presigned URL handed to this player, so files reported back by the client
+--- (gallery:addPhoto) match an upload the server allowed.
+function Sky_Jobs.Uploads.ConsumeCredit(source)
+    local credits = uploadCredits[tonumber(source)]
+    local now = os.time()
+    while credits and credits[1] do
+        local expires = table.remove(credits, 1)
+        if expires >= now then return true end
+    end
+    return false
+end
+
+--- True for an https URL on a host in Config.Uploads.allowedHosts (or a subdomain of one).
+function Sky_Jobs.Uploads.IsAllowedUrl(url)
+    if type(url) ~= "string" or #url > 1024 then return false end
+    local host = url:match("^https://([^/?#%s\"'<>\\]+)[^%s\"'<>\\]*$")
+    if not host or host:find("@", 1, true) then return false end
+    host = host:gsub(":%d+$", ""):lower()
+
+    for _, allowed in ipairs(type(uploadConfig().allowedHosts) == "table" and uploadConfig().allowedHosts or {}) do
+        if type(allowed) == "string" and allowed ~= "" then
+            allowed = allowed:lower():gsub("^%*?%.", "")
+            if host == allowed or host:sub(-(#allowed + 1)) == "." .. allowed then return true end
+        end
+    end
+    if not loggedRejectedHosts[host] then
+        loggedRejectedHosts[host] = true
+        print(("[sky_jobs_base] Rejected an uploaded file URL on %s; add the host to Config.Uploads.allowedHosts if it is your upload provider."):format(host))
+    end
+    return false
+end
+
+function Sky_Jobs.Gallery.Folder(value)
+    value = type(value) == "string" and value:lower() or nil
+    return value and GALLERY_FOLDERS[value] and value or "camera"
+end
+
+function Sky_Jobs.Gallery.IsFull(job)
+    local max = math.floor(tonumber(uploadConfig().maxPhotosPerJob) or 0)
+    if max <= 0 then return false end
+    local ok, row = pcall(MySQL.single.await, "SELECT COUNT(*) AS total FROM sky_jobs_gallery_photos WHERE job = ?", { job })
+    return ok and (row and tonumber(row.total) or 0) >= max
+end
+
+local function galleryPhoto(row)
+    local ok, metadata = pcall(json.decode, row.metadata or "")
+    return {
+        id = row.id,
+        url = row.url,
+        image_id = row.image_id,
+        folder = row.folder,
+        media_type = row.media_type,
+        metadata = ok and type(metadata) == "table" and metadata or nil,
+        taken_by = row.taken_by,
+        created_at = os.date("!%Y-%m-%dT%H:%M:%SZ", math.floor(tonumber(row.created_ts) or os.time()))
+    }
+end
+
+local function galleryMetadata(value)
+    if type(value) ~= "table" then return nil end
+    local name, description = cleanText(value.name, 150), cleanText(value.description, 300)
+    if not name and not description then return nil end
+    return json.encode({ name = name, description = description })
+end
+
+--- Stores an uploaded file in a job's gallery. entry: url, image_id, folder, media_type, metadata.
+---@return table|nil photo, string|nil error
+function Sky_Jobs.Gallery.Add(source, job, entry)
+    entry = type(entry) == "table" and entry or {}
+    if type(job) ~= "string" or job == "" then return nil, "no_job" end
+    if not Sky_Jobs.Uploads.IsAllowedUrl(entry.url) then return nil, "invalid_url" end
+    if Sky_Jobs.Gallery.IsFull(job) then return nil, "gallery_full" end
+
+    local imageId = entry.image_id ~= nil and cleanText(tostring(entry.image_id), 128) or nil
+    local mediaType = entry.media_type == "video" and "video" or "image"
+    local folder = Sky_Jobs.Gallery.Folder(entry.folder)
+    local takenBy = cleanText(GetPlayerFullName(source), 100) or "Unknown"
+    local ok, id = pcall(MySQL.insert.await, [[
+        INSERT INTO sky_jobs_gallery_photos (job, url, image_id, folder, media_type, metadata, taken_by_identifier, taken_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ]], { job, entry.url, imageId, folder, mediaType, galleryMetadata(entry.metadata), Sky_Jobs.GetPlayerIdentifier(source), takenBy })
+    if not ok or not id then return nil, "save_failed" end
+
+    return galleryPhoto({
+        id = id, url = entry.url, image_id = imageId, folder = folder, media_type = mediaType,
+        metadata = galleryMetadata(entry.metadata), taken_by = takenBy, created_ts = os.time()
+    })
+end
+
+function Sky_Jobs.Gallery.List(job, limit, offset)
+    limit = math.max(1, math.min(100, math.floor(tonumber(limit) or 36)))
+    offset = math.max(0, math.floor(tonumber(offset) or 0))
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT id, url, image_id, folder, media_type, metadata, taken_by, UNIX_TIMESTAMP(created_at) AS created_ts
+        FROM sky_jobs_gallery_photos WHERE job = ? ORDER BY id DESC LIMIT ? OFFSET ?
+    ]], { job, limit, offset })
+    if not ok then return nil, "load_failed" end
+    local photos = {}
+    for _, row in ipairs(type(rows) == "table" and rows or {}) do photos[#photos + 1] = galleryPhoto(row) end
+    return photos
+end
+
+function Sky_Jobs.Gallery.Delete(job, id)
+    id = math.floor(tonumber(id) or 0)
+    if id <= 0 then return false, "invalid_photo" end
+    local ok, affected = pcall(MySQL.update.await, "DELETE FROM sky_jobs_gallery_photos WHERE id = ? AND job = ?", { id, job })
+    if not ok then return false, "delete_failed" end
+    if (tonumber(affected) or 0) < 1 then return false, "not_found" end
+    return true
+end
+
+AddEventHandler("playerDropped", function()
+    lastPresignAt[source] = nil
+    uploadCredits[source] = nil
+end)
+
+CreateThread(function()
+    Wait(1000)
+    if uploadToken() == "" then
+        print(("[sky_jobs_base] Uploads are off: camera photos, the gallery, chat images and bodycam clips need an upload token. Add `set %s \"YOUR_FIVEMANAGE_API_TOKEN\"` to server.cfg (see Config.Uploads)."):format(uploadTokenConvar()))
+    elseif not uploadEndpoint() then
+        print("[sky_jobs_base] Uploads are off: Config.Uploads.presignedUrlEndpoint is not a valid URL.")
+    end
 end)
 
 -- -----------------------------------------------------
@@ -1193,7 +1464,8 @@ end
 local function toChatMessage(row, me, groupId)
     return {
         id = row.id,
-        message = row.message,
+        message = row.message ~= "" and row.message or nil,
+        image_url = row.image_url,
         author = row.sender_name,
         sender_identifier = row.sender_identifier,
         recipient_identifier = row.recipient_identifier,
@@ -1232,10 +1504,10 @@ Sky.Cb.Register("sky_jobs_base:chat:getMessages", function(source, payload)
     if not chat then return { success = false, error = err } end
 
     local limit = math.max(1, math.min(200, math.floor(tonumber(type(payload) == "table" and payload.limit) or 100)))
-    local ok, rows = pcall(MySQL.query.await, [[
-        SELECT id, sender_identifier, recipient_identifier, sender_name, message, timestamp, is_read
+    local ok, rows = pcall(MySQL.query.await, ([[
+        SELECT id, sender_identifier, recipient_identifier, sender_name, message, timestamp, is_read%s
         FROM sky_jobs_chat_messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
-    ]], { chat.chatId, limit })
+    ]]):format(chatSupportsImages and ", image_url" or ""), { chat.chatId, limit })
     if not ok then return { success = false, error = "load_failed" } end
 
     local messages, unreadIds = {}, {}
@@ -1273,9 +1545,15 @@ Sky.Cb.Register("sky_jobs_base:chat:sendMessage", function(source, data)
     end
 
     data = type(data) == "table" and data or {}
-    -- Image messages need an upload provider, which this resource does not have.
     local text = cleanText(data.message or data.text, CHAT_TEXT_LIMIT)
-    if not text then return { success = false, error = "empty_message" } end
+    local imageUrl = data.image_url or data.imageUrl
+    if imageUrl ~= nil and imageUrl ~= "" then
+        if not chatSupportsImages then return { success = false, error = "upload_not_configured" } end
+        if not Sky_Jobs.Uploads.IsAllowedUrl(imageUrl) then return { success = false, error = "invalid_url" } end
+    else
+        imageUrl = nil
+    end
+    if not text and not imageUrl then return { success = false, error = "empty_message" } end
 
     local chat, err = resolveChat(ctx, data)
     if not chat then return { success = false, error = err } end
@@ -1285,16 +1563,24 @@ Sky.Cb.Register("sky_jobs_base:chat:sendMessage", function(source, data)
     lastChatSend[ctx.src] = now
 
     local ts = os.time()
-    local ok, msgId = pcall(MySQL.insert.await, [[
-        INSERT INTO sky_jobs_chat_messages (chat_id, sender_identifier, recipient_identifier, sender_name, message, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ]], { chat.chatId, ctx.me, chat.target, cleanText(ctx.name, 100) or "Unknown", text, ts })
+    local ok, msgId
+    if imageUrl then
+        ok, msgId = pcall(MySQL.insert.await, [[
+            INSERT INTO sky_jobs_chat_messages (chat_id, sender_identifier, recipient_identifier, sender_name, message, timestamp, image_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ]], { chat.chatId, ctx.me, chat.target, cleanText(ctx.name, 100) or "Unknown", text or "", ts, imageUrl })
+    else
+        ok, msgId = pcall(MySQL.insert.await, [[
+            INSERT INTO sky_jobs_chat_messages (chat_id, sender_identifier, recipient_identifier, sender_name, message, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ]], { chat.chatId, ctx.me, chat.target, cleanText(ctx.name, 100) or "Unknown", text, ts })
+    end
     if not ok or not msgId then return { success = false, error = "send_failed" } end
 
     local groupId = chat.scope == "group" and chat.chatId or nil
     local message = toChatMessage({
         id = msgId, sender_identifier = ctx.me, recipient_identifier = chat.target,
-        sender_name = ctx.name, message = text, timestamp = ts, is_read = 0
+        sender_name = ctx.name, message = text or "", image_url = imageUrl, timestamp = ts, is_read = 0
     }, ctx.me, groupId)
 
     local update = {
@@ -1312,10 +1598,10 @@ Sky.Cb.Register("sky_jobs_base:chat:getUnreadMessages", function(source, payload
     local ctx = chatContext(source)
     if not ctx then return { success = true, data = { count = 0, messages = {} } } end
     local limit = math.max(1, math.min(200, math.floor(tonumber(type(payload) == "table" and payload.limit) or 60)))
-    local ok, rows = pcall(MySQL.query.await, [[
-        SELECT id, sender_identifier, recipient_identifier, sender_name, message, timestamp, is_read
+    local ok, rows = pcall(MySQL.query.await, ([[
+        SELECT id, sender_identifier, recipient_identifier, sender_name, message, timestamp, is_read%s
         FROM sky_jobs_chat_messages WHERE recipient_identifier = ? AND is_read = 0 ORDER BY id DESC LIMIT ?
-    ]], { ctx.me, limit })
+    ]]):format(chatSupportsImages and ", image_url" or ""), { ctx.me, limit })
     local countOk, countRow = pcall(MySQL.single.await, "SELECT COUNT(*) AS total FROM sky_jobs_chat_messages WHERE recipient_identifier = ? AND is_read = 0", { ctx.me })
     local messages = {}
     for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
@@ -1375,7 +1661,7 @@ Sky.Cb.Register("sky_jobs_base:chat:getOpenChats", function(source, payload)
             end
             if entry then
                 entry.last_message_at = isoTime(row.timestamp)
-                entry.last_message = row.message
+                entry.last_message = row.message ~= "" and row.message or nil
                 entry.last_author = row.sender_name
             end
         end
@@ -3112,10 +3398,77 @@ Sky.Cb.Register("sky_jobs_base:map:getOfficers", function(source)
     return { success = true, data = { officers = officers, speedcams = {}, vehicles = {}, trackers = {} } }
 end)
 
--- Photos are uploaded to a presigned URL from an upload provider; this resource has none
--- configured, so the camera reports that instead of a fake success.
+-- The server gets a presigned URL, the client's NUI captures and uploads the frame
+-- (camera:captureAndUpload) and answers with camera:uploadResult; the photo then joins the gallery.
+-- The client waits 15 s for this callback, so the capture gets what is left of 14 s.
+local CAPTURE_DEADLINE_MS = 14000
+local pendingCaptures = {}
+local captureSerial = 0
+
 Sky.Cb.Register("sky_jobs_base:camera:takePhoto", function(source, data)
-    return { success = false, error = "upload_not_configured" }
+    local src = tonumber(source)
+    local started = GetGameTimer()
+    data = type(data) == "table" and data or {}
+    local folder = Sky_Jobs.Gallery.Folder(data.folder)
+    local job, err = Sky_Jobs.Uploads.Authorize(src, folder == "cctv" or folder == "speedcam")
+    if not job then return { success = false, error = err } end
+    for _, pending in pairs(pendingCaptures) do
+        if pending.src == src then return { success = false, error = "busy" } end
+    end
+    if Sky_Jobs.Gallery.IsFull(job) then return { success = false, error = "gallery_full" } end
+
+    local presignedUrl, presignErr = Sky_Jobs.Uploads.PresignFor(src, "image")
+    if not presignedUrl then return { success = false, error = presignErr } end
+
+    captureSerial = captureSerial + 1
+    local requestId = ("%d-%d-%d"):format(src, captureSerial, math.random(100000, 999999))
+    local p = promise.new()
+    pendingCaptures[requestId] = { src = src, promise = p }
+    TriggerClientEvent("sky_jobs_base:camera:captureAndUpload", src, { requestId = requestId, presignedUrl = presignedUrl })
+    SetTimeout(math.max(1000, CAPTURE_DEADLINE_MS - (GetGameTimer() - started)), function()
+        if pendingCaptures[requestId] then
+            pendingCaptures[requestId] = nil
+            p:resolve({ success = false, error = "upload_timeout" })
+        end
+    end)
+
+    local result = Citizen.Await(p)
+    if not result.success then return { success = false, error = result.error or "upload_failed" } end
+
+    local photo, addErr = Sky_Jobs.Gallery.Add(src, job, {
+        url = result.url,
+        image_id = result.image_id,
+        folder = folder,
+        metadata = data.metadata
+    })
+    if not photo then return { success = false, error = addErr } end
+    return { success = true, data = { id = photo.id, url = photo.url, image_id = photo.image_id } }
+end)
+
+RegisterNetEvent("sky_jobs_base:camera:uploadResult", function(data)
+    local src = source
+    data = type(data) == "table" and data or {}
+    local requestId = type(data.requestId) == "string" and data.requestId or nil
+    local pending = requestId and pendingCaptures[requestId]
+    if not pending or pending.src ~= src then return end
+    pendingCaptures[requestId] = nil
+
+    local result = type(data.data) == "table" and data.data or {}
+    if data.success == true and type(result.url) == "string" then
+        pending.promise:resolve({ success = true, url = result.url, image_id = result.image_id or result.id })
+    else
+        pending.promise:resolve({ success = false, error = cleanText(data.error, 64) or "upload_failed" })
+    end
+end)
+
+AddEventHandler("playerDropped", function()
+    local src = source
+    for requestId, pending in pairs(pendingCaptures) do
+        if pending.src == src then
+            pendingCaptures[requestId] = nil
+            pending.promise:resolve({ success = false, error = "upload_failed" })
+        end
+    end
 end)
 
 -- -----------------------------------------------------

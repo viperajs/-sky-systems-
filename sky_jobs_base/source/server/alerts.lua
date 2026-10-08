@@ -775,8 +775,8 @@ RegisterNetEvent("sky_jobs_base:cctv:bodycamScope", function(target, active)
     runBodycamScopes()
 end)
 
--- No video storage provider is configured, so no presignedUrl is returned and saving a clip
--- fails with "missing_config" in the CCTV app.
+-- Asked by the recorder right before a clip upload (bodycam saves and tablet camera clips);
+-- without a presignedUrl the CCTV app reports "missing_config".
 Sky.Cb.Register("sky_jobs_base:cctv:getVideoConfig", function(source)
     local src = tonumber(source)
     local cctvCfg = Config and Config.Cctv or {}
@@ -788,13 +788,16 @@ Sky.Cb.Register("sky_jobs_base:cctv:getVideoConfig", function(source)
     end
 
     local bitrate = tonumber(cctvCfg.recordBitrateKbps)
-    return {
-        success = true,
-        data = {
-            bufferMinutes = math.max(0, tonumber(cctvCfg.recordBufferMinutes) or 5),
-            bitrateKbps = (bitrate and bitrate > 0) and bitrate or 1500
-        }
+    local data = {
+        bufferMinutes = math.max(0, tonumber(cctvCfg.recordBufferMinutes) or 5),
+        bitrateKbps = (bitrate and bitrate > 0) and bitrate or 1500
     }
+    local job, err = Sky_Jobs.Uploads.Authorize(src, true)
+    local presignedUrl
+    if job then presignedUrl, err = Sky_Jobs.Uploads.PresignFor(src, "video") end
+    if not presignedUrl then return { success = false, error = err, data = data } end
+    data.presignedUrl = presignedUrl
+    return { success = true, data = data }
 end)
 
 -- -----------------------------------------------------
