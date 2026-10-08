@@ -29,6 +29,23 @@ RegisterCommand("admintuning", function(source, args, rawCommand)
     end
 end, false)
 
+-- ── /stancing and /rgb (admin tuning in one mode) ──────
+
+local function registerAdminModeCommand(commandName, clientEvent)
+    RegisterCommand(commandName, function(source)
+        local src = source
+        if src <= 0 then return end
+        if not Functions.HasPermission(src, "admintuning") then
+            Functions.ShowNotification(src, "Tuning", ("You do not have permission to use /%s."):format(commandName), "error")
+            return
+        end
+        TriggerClientEvent(clientEvent, src)
+    end, false)
+end
+
+registerAdminModeCommand("stancing", "sky_mechanicjob:tuning:openStancing")
+registerAdminModeCommand("rgb", "sky_mechanicjob:tuning:openRgbController")
+
 -- ── /adminrepair [playerId] ───────────────────────────
 
 RegisterCommand("adminrepair", function(source, args, rawCommand)

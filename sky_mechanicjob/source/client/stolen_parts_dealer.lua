@@ -112,7 +112,7 @@ local function setupDialogCam(interactionData)
     local coords = GetEntityCoords(npcEntity)
     local heading = GetEntityHeading(npcEntity)
 
-    dealerState.dialogCam = Sky.Cam:new(coords, { 0.0, 0.0, heading }, true)
+    dealerState.dialogCam = Sky.Cam.new(coords, { 0.0, 0.0, heading }, true)
     dealerState.dialogCam:PointCamAtEntity(npcEntity)
 end
 

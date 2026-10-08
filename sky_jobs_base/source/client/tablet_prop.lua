@@ -5,7 +5,7 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/t
 -- =====================================================
 
 local tabletConfig = (Config and Config.Tablet and Config.Tablet.prop) or {}
-local animConfig = (Config and Config.Tablet and Config.Tablet.anim) or {}
+local animConfig = tabletConfig.anim or (Config and Config.Tablet and Config.Tablet.anim) or {}
 
 local function toVector3(val, default)
     if type(val) == "vector3" then

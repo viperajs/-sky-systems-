@@ -574,10 +574,13 @@ local function saveNitroStateServer(plate, record, force)
     end
 
     State.lastSaveAtByPlate[cleanP] = now
-    Sky.Cb.Trigger("sky_mechanicjob:nitro:updateState", {
-        plate = cleanP,
-        nitro = sanitized
-    })
+    -- The server only accepts lower levels from the driver; the boost loop must not wait for it.
+    CreateThread(function()
+        Sky.Cb.Trigger("sky_mechanicjob:nitro:updateState", {
+            plate = cleanP,
+            nitro = sanitized
+        })
+    end)
 end
 
 local function setNitroStateBag(vehicle, active)
@@ -848,8 +851,11 @@ function NitroSystem_TickVehicle(vehicle, gameTime)
             applyEngineBoost(vehicle, blend)
         else
             resetVehicleEnginePower(vehicle)
-            showHud(record)
-            updateHud(record, false)
+            setNitroStateBag(vehicle, false)
+            StopGameplayCamShaking(true)
+            State.active = false
+            updateHud(record, true)
+            saveNitroStateServer(plate, record, true)
         end
     end
 end
@@ -880,15 +886,16 @@ function NitroSystem_ShouldRunForVehicle(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
         return false
     end
+    if GetPedInVehicleSeat(vehicle, -1) ~= PlayerPedId() then
+        return false
+    end
 
     if State.active and State.activeVehicle == vehicle then return true end
     if State.priming and State.primingVehicle == vehicle then return true end
     if State.controlHeld ~= true then return false end
 
     local record = State.recordsByPlate[getPlateText(vehicle)]
-    if not record or record.installed ~= true then return false end
-
-    return GetPedInVehicleSeat(vehicle, -1) == PlayerPedId()
+    return record ~= nil and record.installed == true
 end
 
 local function stopRuntimeLoop()
@@ -1041,21 +1048,14 @@ local function startNitroInstallation()
     end
 
     local plate = getPlateText(vehicle)
-    local vehObj = Sky.Vehicle:new(vehicle)
-    local props = vehObj:GetVehicleProperties()
-
     local response = Sky.Cb.Trigger("sky_mechanicjob:nitro:install", {
-        plate = plate,
-        properties = props
+        plate = plate
     }) or {}
 
     State.installBusy = false
 
     if type(response) == "table" and response.success == true and type(response.nitro) == "table" then
         local newRecord = setNitroRecordForPlate(plate, response.nitro)
-        if newRecord then
-            saveTuningForVehicle(vehicle)
-        end
 
         if tostring(response.action or "") == "add_bottle" then
             showNotify(
@@ -1067,6 +1067,10 @@ local function startNitroInstallation()
             showNotify(tuningLocales and tuningLocales.NitroInstallSuccess or "Nitro system installed successfully.", "success")
         end
         return
+    end
+
+    if type(response) == "table" and response.error == "not_authorized" then
+        return -- the server already sent sky_mechanicjob:nitro:showError
     end
 
     if type(response) == "table" and response.error == "missing_item" then
@@ -1116,6 +1120,7 @@ function NitroSystem_ApplyPersistedStateToVehicle(vehicle, plate, nitroData)
     local record = State.recordsByPlate[cleanP]
 
     if not record or record.installed ~= true then return end
+    if Config and Config.ToggleFeatures and Config.ToggleFeatures.nitro == false then return end
     if getNitroConfig().notifyOnVehicleEnter == false then return end
     if State.lastHintPlate == cleanP then return end
 

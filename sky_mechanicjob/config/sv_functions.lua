@@ -66,23 +66,41 @@ end
 local QBCore = nil
 local ESX = nil
 
-CreateThread(function()
-    if Sky and Sky.Config then
-        if Sky.Config.framework == "qb" or Sky.Config.framework == "qbox" then
-            local success, obj = pcall(function() return exports['qb-core']:GetCoreObject() end)
-            if success and obj then QBCore = obj end
-        elseif Sky.Config.framework == "esx" then
-            local success, obj = pcall(function() return exports['es_extended']:getSharedObject() end)
-            if success and obj then ESX = obj end
-        end
-    else
-        if GetResourceState("qb-core") == "started" then
-            QBCore = exports['qb-core']:GetCoreObject()
-        elseif GetResourceState("es_extended") == "started" then
-            ESX = exports['es_extended']:getSharedObject()
-        end
+local function isStarted(resourceName)
+    return GetResourceState(resourceName) == "started"
+end
+
+--- Active framework: "qbox", "qb", "esx" or nil.
+---@return string|nil
+function Functions.GetFramework()
+    if isStarted("qbx_core") then return "qbox" end
+    if isStarted("qb-core") then return "qb" end
+    if isStarted("es_extended") then return "esx" end
+    local configured = Sky and Sky.Config and Sky.Config.framework
+    return type(configured) == "string" and configured or nil
+end
+
+-- QBCore / ESX objects for the fallbacks below; Qbox is always reached through its exports.
+local function loadCoreObjects()
+    local framework = Functions.GetFramework()
+    if framework == "qb" and not QBCore then
+        local ok, obj = pcall(function() return exports["qb-core"]:GetCoreObject() end)
+        if ok and type(obj) == "table" then QBCore = obj end
+    elseif framework == "esx" and not ESX then
+        local ok, obj = pcall(function() return exports["es_extended"]:getSharedObject() end)
+        if ok and type(obj) == "table" then ESX = obj end
     end
-end)
+end
+
+CreateThread(loadCoreObjects)
+
+local function getFrameworkFunction(method)
+    if Sky and Sky.FW then
+        local fn = Sky.FW[method]
+        if fn then return fn end
+    end
+    return nil
+end
 
 --- Get framework player object by source
 ---@param source number|string
@@ -91,6 +109,12 @@ function Functions.GetPlayer(source)
     local src = tonumber(source)
     if not src or src <= 0 then return nil end
 
+    if Functions.GetFramework() == "qbox" then
+        local ok, player = pcall(function() return exports.qbx_core:GetPlayer(src) end)
+        return ok and type(player) == "table" and player or nil
+    end
+
+    loadCoreObjects()
     if QBCore then
         return QBCore.Functions.GetPlayer(src)
     elseif ESX then
@@ -119,8 +143,9 @@ end
 ---@param source number|string
 ---@return string
 function Functions.GetIdentifier(source)
-    if Sky and Sky.FW and Sky.FW.GetIdentifier then
-        local id = Sky.FW.GetIdentifier(source)
+    local getIdentifier = getFrameworkFunction("GetIdentifier")
+    if getIdentifier then
+        local id = getIdentifier(source)
         if id and id ~= "" then return tostring(id) end
     end
 
@@ -146,8 +171,9 @@ end
 ---@return string
 function Functions.GetName(source)
     local srcNum = tonumber(source)
-    if Sky and Sky.FW and Sky.FW.GetName then
-        local name = Sky.FW.GetName(source)
+    local getName = getFrameworkFunction("GetName")
+    if getName then
+        local name = getName(source)
         if name and name ~= "" then return name end
     end
 
@@ -182,8 +208,10 @@ end
 ---@param source number|string
 ---@return string
 function Functions.GetJob(source)
-    if Sky and Sky.FW and Sky.FW.GetJob then
-        return Sky.FW.GetJob(source) or ""
+    local getJob = getFrameworkFunction("GetJob")
+    if getJob then
+        local job = getJob(source)
+        return type(job) == "string" and job or ""
     end
 
     local player = Functions.GetPlayer(source)
@@ -201,8 +229,9 @@ end
 ---@param source number|string
 ---@return number
 function Functions.GetJobGrade(source)
-    if Sky and Sky.FW and Sky.FW.GetJobData then
-        local grade = Sky.FW.GetJobData(source, "grade")
+    local getJobData = getFrameworkFunction("GetJobData")
+    if getJobData then
+        local grade = getJobData(source, "grade")
         if grade ~= nil then return tonumber(grade) or 0 end
     end
 
@@ -221,7 +250,7 @@ end
 --- The server keeps the Config.Jobs from config.lua, so these are checked in addition.
 ---@return string[]
 function Functions.GetConfiguratorJobNames()
-    if not (Config and Config.UseJobConfigurator) or GetResourceState("sky_jobs_base") ~= "started" then
+    if not (Config and Config.UseJobConfigurator) or not isStarted("sky_jobs_base") then
         return {}
     end
 
@@ -231,51 +260,102 @@ function Functions.GetConfiguratorJobNames()
     return (ok and type(names) == "table") and names or {}
 end
 
---- Check if player is a mechanic or belongs to configured mechanic jobs
----@param source number|string
----@return boolean
-function Functions.IsMechanic(source)
-    local jobName = Functions.GetJob(source)
-    if jobName == "" then return false end
-
-    for _, j in ipairs(Config.Jobs or {}) do
-        if j.name == jobName then
-            return true
+--- Every mechanic job name: Config.Jobs plus the /jobconfig workshops.
+---@return string[]
+function Functions.GetMechanicJobNames()
+    local names, seen = {}, {}
+    local function add(name)
+        if type(name) == "string" and name ~= "" and not seen[name] then
+            seen[name] = true
+            names[#names + 1] = name
         end
     end
+
+    for _, job in ipairs(Config and Config.Jobs or {}) do
+        add(type(job) == "table" and job.name or job)
+    end
+    if #names == 0 then
+        add("mechanic")
+    end
     for _, name in ipairs(Functions.GetConfiguratorJobNames()) do
+        add(name)
+    end
+    return names
+end
+
+--- Whether a job name is one of the mechanic jobs
+---@param jobName string
+---@return boolean
+function Functions.IsMechanicJobName(jobName)
+    if type(jobName) ~= "string" or jobName == "" then return false end
+    for _, name in ipairs(Functions.GetMechanicJobNames()) do
         if name == jobName then
             return true
         end
     end
-    return jobName == "mechanic"
+    return false
 end
 
---- Check if player is currently on duty
+--- Check if player is a mechanic or belongs to configured mechanic jobs
+---@param source number|string
+---@return boolean
+function Functions.IsMechanic(source)
+    return Functions.IsMechanicJobName(Functions.GetJob(source))
+end
+
+--- Check if player is currently on duty. Unknown duty counts as off duty; sky_jobs_base
+--- reports true for everyone when its duty system is disabled.
 ---@param source number|string
 ---@return boolean
 function Functions.IsOnDuty(source)
     local src = tonumber(source)
-    if not src then return true end
+    if not src or src <= 0 then return false end
 
-    if Sky_Jobs and Sky_Jobs.PlayerCache and Sky_Jobs.PlayerCache.IsOnDuty then
-        local duty = Sky_Jobs.PlayerCache.IsOnDuty(src)
-        if duty ~= nil then return duty == true end
+    if isStarted("sky_jobs_base") then
+        local ok, duty = pcall(function()
+            return exports.sky_jobs_base:isOnDuty(src)
+        end)
+        if ok and type(duty) == "boolean" then return duty end
     end
 
-    if Sky and Sky.FW and Sky.FW.GetJobData then
-        local duty = Sky.FW.GetJobData(src, "duty")
-        if duty ~= nil then return duty == true end
+    local getJobData = getFrameworkFunction("GetJobData")
+    if getJobData then
+        local duty = getJobData(src, "duty")
+        if type(duty) == "boolean" then return duty end
     end
 
     local player = Functions.GetPlayer(src)
-    if not player then return true end
-
-    if player.PlayerData and player.PlayerData.job then
-        return player.PlayerData.job.onduty == true
+    if player and player.PlayerData and player.PlayerData.job and type(player.PlayerData.job.onduty) == "boolean" then
+        return player.PlayerData.job.onduty
     end
 
-    return true
+    return false
+end
+
+--- Mechanic job and on duty
+---@param source number|string
+---@return boolean
+function Functions.IsMechanicOnDuty(source)
+    return Functions.IsMechanic(source) and Functions.IsOnDuty(source)
+end
+
+-- -----------------------------------------------------
+--  Money
+-- -----------------------------------------------------
+
+-- "card" is the bank account; "money" is cash. sky_base maps the names per framework.
+local function normalizeAccount(account)
+    account = type(account) == "string" and account:lower() or "cash"
+    if account == "card" or account == "own_card" then return "bank" end
+    if account == "money" then return "cash" end
+    return account
+end
+Functions.NormalizeAccount = normalizeAccount
+
+local function validAmount(amount)
+    amount = tonumber(amount)
+    if not amount or amount ~= amount or amount == math.huge or amount == -math.huge then return nil end
+    return math.floor(amount)
 end
 
 --- Get account money (cash, bank, or crypto)
@@ -283,79 +363,97 @@ end
 ---@param account? string
 ---@return number
 function Functions.GetMoney(source, account)
-    account = account or "cash"
-    if Sky and Sky.FW and Sky.FW.GetAccountMoney then
-        return Sky.FW.GetAccountMoney(source, account) or 0
+    account = normalizeAccount(account)
+    local getAccountMoney = getFrameworkFunction("GetAccountMoney")
+    if getAccountMoney then
+        return tonumber(getAccountMoney(source, account)) or 0
     end
 
     local player = Functions.GetPlayer(source)
     if not player then return 0 end
 
     if player.PlayerData and player.PlayerData.money then
-        local accKey = account == "money" and "cash" or account
-        return player.PlayerData.money[accKey] or 0
+        return tonumber(player.PlayerData.money[account]) or 0
     elseif player.getAccount then
-        local accKey = account == "cash" and "money" or account
-        local acc = player.getAccount(accKey)
-        return acc and acc.money or 0
+        local acc = player.getAccount(account == "cash" and "money" or account)
+        return acc and tonumber(acc.money) or 0
     end
     return 0
 end
 
---- Add account money
+--- Add account money. True only when the money was added (0 adds nothing and succeeds).
 ---@param source number|string
 ---@param account string
 ---@param amount number
+---@return boolean
 function Functions.AddMoney(source, account, amount)
-    amount = math.floor(tonumber(amount) or 0)
-    if amount <= 0 then return end
+    local src = tonumber(source)
+    amount = validAmount(amount)
+    if not src or src <= 0 or not amount or amount < 0 then return false end
+    if amount == 0 then return true end
 
-    account = account or "cash"
-    if Sky and Sky.FW and Sky.FW.AddAccountMoney then
-        Sky.FW.AddAccountMoney(source, account, amount)
-        return
+    account = normalizeAccount(account)
+    local addAccountMoney = getFrameworkFunction("AddAccountMoney")
+    if addAccountMoney then
+        return addAccountMoney(src, account, amount) == true
     end
 
-    local player = Functions.GetPlayer(source)
-    if not player then return end
+    if Functions.GetFramework() == "qbox" then
+        local ok, res = pcall(function()
+            return exports.qbx_core:AddMoney(src, account, amount, "sky_mechanicjob")
+        end)
+        return ok and res == true
+    end
+
+    local player = Functions.GetPlayer(src)
+    if not player then return false end
 
     if player.Functions and player.Functions.AddMoney then
-        local accKey = account == "money" and "cash" or account
-        player.Functions.AddMoney(accKey, amount)
+        return player.Functions.AddMoney(account, amount, "sky_mechanicjob") == true
     elseif player.addAccountMoney then
-        local accKey = account == "cash" and "money" or account
-        player.addAccountMoney(accKey, amount)
+        player.addAccountMoney(account == "cash" and "money" or account, amount)
+        return true
     end
+    return false
 end
 
+--- Remove account money. True only when the money was removed (0 removes nothing and succeeds).
+---@param source number|string
+---@param account string
+---@param amount number
+---@return boolean
 function Functions.RemoveMoney(source, account, amount)
     local src = tonumber(source)
-    if not src then return false end
-    amount = math.floor(tonumber(amount) or 0)
-    if amount <= 0 then return true end
+    amount = validAmount(amount)
+    if not src or src <= 0 or not amount or amount < 0 then return false end
+    if amount == 0 then return true end
 
-    account = account or "bank"
-    local accKey = (account == "money" and "cash") or account
+    account = normalizeAccount(account or "bank")
 
-    -- 1. Try sky_base FW wrapper if available.
-    -- Count success only when the wrapper returns boolean true or a NON-NEGATIVE
-    -- number: some wrappers return the new balance (>= 0) rather than a boolean.
-    -- A negative number is treated as a failure/error code, and false/nil or a
-    -- truthy failure object are also "not removed", so we fall through to the
-    -- other payment paths instead of granting a free charge.
-    if Sky and Sky.FW and Sky.FW.RemoveAccountMoney then
-        local ok = Sky.FW.RemoveAccountMoney(src, account, amount)
-        if ok == true or (type(ok) == "number" and ok >= 0) then return true end
+    -- sky_base checks the balance and only reports true when the framework removed it.
+    local removeAccountMoney = getFrameworkFunction("RemoveAccountMoney")
+    if removeAccountMoney then
+        return removeAccountMoney(src, account, amount) == true
     end
 
-    -- 2. Try tgg-banking exports if running
-    if GetResourceState("tgg-banking") == "started" then
+    if Functions.GetMoney(src, account) < amount then
+        return false
+    end
+
+    if Functions.GetFramework() == "qbox" then
+        local ok, res = pcall(function()
+            return exports.qbx_core:RemoveMoney(src, account, amount, "sky_mechanicjob")
+        end)
+        return ok and res == true
+    end
+
+    if account == "bank" and isStarted("tgg-banking") then
         local ok, res = pcall(function()
             local tgg = exports["tgg-banking"]
             if tgg.RemoveMoney then
-                return tgg:RemoveMoney(src, amount, "Parts Purchase")
+                return tgg:RemoveMoney(src, amount, "sky_mechanicjob")
             elseif tgg.removeMoney then
-                return tgg:removeMoney(src, amount, "Parts Purchase")
+                return tgg:removeMoney(src, amount, "sky_mechanicjob")
             elseif tgg.RemoveAccountMoney then
                 return tgg:RemoveAccountMoney(src, amount)
             end
@@ -363,40 +461,80 @@ function Functions.RemoveMoney(source, account, amount)
         if ok and res == true then return true end
     end
 
-    -- 3. Try qbx_core
-    if GetResourceState("qbx_core") == "started" then
-        local ok, res = pcall(function()
-            return exports.qbx_core:RemoveMoney(src, accKey, amount, "Parts Purchase")
-        end)
-        if ok and res == true then return true end
-    end
-
     local player = Functions.GetPlayer(src)
-    if player then
-        -- QBCore
-        if player.Functions and player.Functions.RemoveMoney then
-            local res = player.Functions.RemoveMoney(accKey, amount, "Parts Purchase")
-            if res == true then return true end
+    if not player then return false end
 
-            -- Fallback to cash if bank deduction returned false
-            if accKey == "bank" then
-                local cashRes = player.Functions.RemoveMoney("cash", amount, "Parts Purchase")
-                if cashRes == true then return true end
-            end
-            return false
-        -- ESX
-        elseif player.removeAccountMoney then
-            local esxAcc = accKey == "cash" and "money" or accKey
-            if player.getAccount then
-                local acc = player.getAccount(esxAcc)
-                if not acc or (acc.money or 0) < amount then return false end
-            end
-            player.removeAccountMoney(esxAcc, amount)
-            return true
-        end
+    if player.Functions and player.Functions.RemoveMoney then
+        return player.Functions.RemoveMoney(account, amount, "sky_mechanicjob") == true
+    elseif player.removeAccountMoney then
+        player.removeAccountMoney(account == "cash" and "money" or account, amount)
+        return true
     end
-
     return false
+end
+
+-- -----------------------------------------------------
+--  Society (sky_jobs_base finances)
+-- -----------------------------------------------------
+
+--- Add money to a job's society account
+---@param job string
+---@param amount number
+---@param reason? string
+---@return boolean
+function Functions.AddSocietyMoney(job, amount, reason)
+    amount = validAmount(amount)
+    if type(job) ~= "string" or job == "" or not amount or amount <= 0 or not isStarted("sky_jobs_base") then return false end
+    local ok, res = pcall(function()
+        return exports.sky_jobs_base:AddSocietyMoney(job, amount, reason)
+    end)
+    return ok and res == true
+end
+
+--- Remove money from a job's society account (atomic in sky_jobs_base)
+---@param job string
+---@param amount number
+---@param reason? string
+---@return boolean
+function Functions.RemoveSocietyMoney(job, amount, reason)
+    amount = validAmount(amount)
+    if type(job) ~= "string" or job == "" or not amount or amount <= 0 or not isStarted("sky_jobs_base") then return false end
+    local ok, res = pcall(function()
+        return exports.sky_jobs_base:RemoveSocietyMoney(job, amount, reason)
+    end)
+    return ok and res == true
+end
+
+--- Pay from the society of the player's own mechanic job. Requires the PURCHASE_SUPPLIES
+--- job permission. Returns success and the charged job.
+---@param source number|string
+---@param amount number
+---@param reason? string
+---@return boolean, string|nil
+function Functions.ChargeSociety(source, amount, reason)
+    local src = tonumber(source)
+    amount = validAmount(amount)
+    if not src or src <= 0 or not amount or amount <= 0 or not isStarted("sky_jobs_base") then return false, nil end
+
+    local job = Functions.GetJob(src)
+    if not Functions.IsMechanicJobName(job) then return false, nil end
+
+    local ok, allowed = pcall(function()
+        return exports.sky_jobs_base:HasJobPermission(src, "PURCHASE_SUPPLIES")
+    end)
+    if not ok or allowed ~= true then return false, job end
+
+    return Functions.RemoveSocietyMoney(job, amount, reason), job
+end
+
+-- -----------------------------------------------------
+--  Items
+-- -----------------------------------------------------
+
+local function validItemCall(source, item)
+    local src = tonumber(source)
+    if not src or src <= 0 or type(item) ~= "string" or item == "" then return nil end
+    return src
 end
 
 --- Get item count in player inventory
@@ -404,12 +542,14 @@ end
 ---@param item string
 ---@return number
 function Functions.GetItemCount(source, item)
-    local src = tonumber(source)
+    local src = validItemCall(source, item)
     if not src then return 0 end
 
-    if GetResourceState("ox_inventory") == "started" then
-        local count = exports.ox_inventory:GetItem(src, item, nil, true)
-        return tonumber(count) or 0
+    if isStarted("ox_inventory") then
+        local ok, count = pcall(function() return exports.ox_inventory:GetItemCount(src, item) end)
+        if ok and tonumber(count) then return math.floor(tonumber(count)) end
+        ok, count = pcall(function() return exports.ox_inventory:GetItem(src, item, nil, true) end)
+        return ok and math.floor(tonumber(count) or 0) or 0
     end
 
     local player = Functions.GetPlayer(src)
@@ -417,10 +557,10 @@ function Functions.GetItemCount(source, item)
 
     if player.Functions and player.Functions.GetItemByName then
         local it = player.Functions.GetItemByName(item)
-        return it and (it.amount or it.count) or 0
+        return it and math.floor(tonumber(it.amount or it.count) or 0) or 0
     elseif player.getInventoryItem then
         local it = player.getInventoryItem(item)
-        return it and (it.count or it.amount) or 0
+        return it and math.floor(tonumber(it.count or it.amount) or 0) or 0
     end
 
     return 0
@@ -432,23 +572,26 @@ end
 ---@param count? number
 ---@return boolean
 function Functions.HasItem(source, item, count)
-    count = count or 1
+    count = math.max(1, math.floor(tonumber(count) or 1))
     return Functions.GetItemCount(source, item) >= count
 end
 
---- Add item to player inventory
+--- Add item to player inventory. True only when every item was added.
 ---@param source number|string
 ---@param item string
 ---@param count? number
 ---@param metadata? table
 ---@return boolean
 function Functions.AddItem(source, item, count, metadata)
-    local src = tonumber(source)
-    if not src then return false end
-    count = math.max(1, math.floor(tonumber(count) or 1))
+    local src = validItemCall(source, item)
+    count = validAmount(count or 1)
+    if not src or not count or count < 1 then return false end
 
-    if GetResourceState("ox_inventory") == "started" then
-        return exports.ox_inventory:AddItem(src, item, count, metadata) == true
+    if isStarted("ox_inventory") then
+        local ok, success = pcall(function()
+            return exports.ox_inventory:AddItem(src, item, count, metadata)
+        end)
+        return ok and success == true
     end
 
     local player = Functions.GetPlayer(src)
@@ -457,6 +600,7 @@ function Functions.AddItem(source, item, count, metadata)
     if player.Functions and player.Functions.AddItem then
         return player.Functions.AddItem(item, count, nil, metadata) == true
     elseif player.addInventoryItem then
+        if player.canCarryItem and not player.canCarryItem(item, count) then return false end
         player.addInventoryItem(item, count)
         return true
     end
@@ -464,20 +608,25 @@ function Functions.AddItem(source, item, count, metadata)
     return false
 end
 
---- Remove item from player inventory
+--- Remove item from player inventory. True only when the full count was removed.
 ---@param source number|string
 ---@param item string
 ---@param count? number
 ---@param metadata? table
 ---@return boolean
 function Functions.RemoveItem(source, item, count, metadata)
-    local src = tonumber(source)
-    if not src then return false end
-    count = math.max(1, math.floor(tonumber(count) or 1))
+    local src = validItemCall(source, item)
+    count = validAmount(count or 1)
+    if not src or not count or count < 1 then return false end
 
-    if GetResourceState("ox_inventory") == "started" then
-        return exports.ox_inventory:RemoveItem(src, item, count, metadata) == true
+    if isStarted("ox_inventory") then
+        local ok, success = pcall(function()
+            return exports.ox_inventory:RemoveItem(src, item, count, metadata)
+        end)
+        return ok and success == true
     end
+
+    if Functions.GetItemCount(src, item) < count then return false end
 
     local player = Functions.GetPlayer(src)
     if not player then return false end
@@ -498,37 +647,150 @@ end
 ---@param count? number
 ---@return boolean
 function Functions.CanCarryItem(source, item, count)
-    local src = tonumber(source)
-    if not src then return false end
-    count = count or 1
+    local src = validItemCall(source, item)
+    count = validAmount(count or 1)
+    if not src or not count or count < 1 then return false end
 
-    if GetResourceState("ox_inventory") == "started" then
-        return exports.ox_inventory:CanCarryItem(src, item, count) == true
+    if isStarted("ox_inventory") then
+        local ok, canCarry = pcall(function()
+            return exports.ox_inventory:CanCarryItem(src, item, count)
+        end)
+        return ok and canCarry == true
     end
 
+    if isStarted("qb-inventory") then
+        local ok, canAdd = pcall(function()
+            return exports["qb-inventory"]:CanAddItem(src, item, count)
+        end)
+        if ok and type(canAdd) == "boolean" then return canAdd end
+    end
+
+    local player = Functions.GetPlayer(src)
+    if player and player.canCarryItem then
+        return player.canCarryItem(item, count) == true
+    end
+
+    -- No inventory check available; AddItem still reports failure.
     return true
 end
 
---- Register usable item across frameworks
----@param itemName string
----@param cb function
-function Functions.RegisterUsableItem(itemName, cb)
-    if not itemName or itemName == "" then return end
+-- -----------------------------------------------------
+--  Usable items
+-- -----------------------------------------------------
 
-    if GetResourceState("ox_inventory") == "started" then
-        -- ox_inventory uses standard exports or item defs, fallback to ESX/QBCore
+local usableItems = {}
+
+local function registerUsableItemNow(itemName, cb)
+    if Functions.GetFramework() == "qbox" then
+        local ok = pcall(function()
+            exports.qbx_core:CreateUseableItem(itemName, function(source, item)
+                cb(source, item)
+            end)
+        end)
+        return ok
     end
 
+    loadCoreObjects()
     if QBCore and QBCore.Functions and QBCore.Functions.CreateUseableItem then
         QBCore.Functions.CreateUseableItem(itemName, function(source, item)
             cb(source, item)
         end)
+        return true
     elseif ESX and ESX.RegisterUsableItem then
         ESX.RegisterUsableItem(itemName, function(source)
             cb(source, { name = itemName })
         end)
+        return true
     end
+    return false
 end
+
+--- Register usable item across frameworks (ox_inventory uses the framework's usable items)
+---@param itemName string
+---@param cb function
+---@return boolean
+function Functions.RegisterUsableItem(itemName, cb)
+    if type(itemName) ~= "string" or itemName == "" or cb == nil then return false end
+    usableItems[itemName] = cb
+    return registerUsableItemNow(itemName, cb)
+end
+
+-- A restarted framework forgets the registrations.
+AddEventHandler("onResourceStart", function(resourceName)
+    if resourceName ~= "qbx_core" and resourceName ~= "qb-core" and resourceName ~= "es_extended" then return end
+    QBCore, ESX = nil, nil
+    CreateThread(function()
+        Wait(1000)
+        for itemName, cb in pairs(usableItems) do
+            registerUsableItemNow(itemName, cb)
+        end
+    end)
+end)
+
+-- -----------------------------------------------------
+--  Vehicles
+-- -----------------------------------------------------
+
+local function normalizePlate(plate)
+    if type(plate) ~= "string" and type(plate) ~= "number" then return "" end
+    local trimmed = tostring(plate):gsub("^%s+", ""):gsub("%s+$", "")
+    return trimmed:upper()
+end
+Functions.NormalizePlate = normalizePlate
+
+local function getPlayerCoords(src)
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return nil end
+    return GetEntityCoords(ped)
+end
+
+--- Closest vehicle with this plate near the player
+---@param source number|string
+---@param plate string
+---@param maxDistance? number
+---@return number|nil
+function Functions.GetNearbyVehicleByPlate(source, plate, maxDistance)
+    local src = tonumber(source)
+    local target = normalizePlate(plate)
+    if not src or src <= 0 or target == "" then return nil end
+
+    local origin = getPlayerCoords(src)
+    if not origin then return nil end
+
+    local maxDist = tonumber(maxDistance) or 10.0
+    local best, bestDist = nil, maxDist
+    for _, vehicle in ipairs(GetAllVehicles()) do
+        if DoesEntityExist(vehicle) and normalizePlate(GetVehicleNumberPlateText(vehicle)) == target then
+            local dist = #(GetEntityCoords(vehicle) - origin)
+            if dist <= bestDist then
+                best, bestDist = vehicle, dist
+            end
+        end
+    end
+    return best
+end
+
+--- Vehicle entity for a network id, if it exists and is near the player
+---@param source number|string
+---@param netId number
+---@param maxDistance? number
+---@return number|nil
+function Functions.GetVehicleByNetId(source, netId, maxDistance)
+    local src = tonumber(source)
+    local id = tonumber(netId)
+    if not src or src <= 0 or not id or id <= 0 then return nil end
+
+    local vehicle = NetworkGetEntityFromNetworkId(math.floor(id))
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) or GetEntityType(vehicle) ~= 2 then return nil end
+
+    local origin = getPlayerCoords(src)
+    if not origin or #(GetEntityCoords(vehicle) - origin) > (tonumber(maxDistance) or 10.0) then return nil end
+    return vehicle
+end
+
+-- -----------------------------------------------------
+--  Notifications, permissions, logging
+-- -----------------------------------------------------
 
 --- Show notification to player
 ---@param source number|string
@@ -544,55 +806,43 @@ function Functions.ShowNotification(source, title, message, msgType)
     TriggerClientEvent("sky_base:notification", src, title or "", message or "", msgType or "info")
 end
 
---- Check if player has permission for command / admin action
+--- Check if player has permission for command / admin action: the server console, ACE
+--- `sky_mechanicjob.<commandName>`, ACE `command`, or a group listed for the command in
+--- Config.CommandPermissions. (`command.<name>` is not used: every player has it for
+--- commands registered without restriction.)
 ---@param source number|string
 ---@param commandName string
 ---@return boolean
 function Functions.HasPermission(source, commandName)
     local src = tonumber(source)
-    if not src or src == 0 then return true end -- console has all permissions
+    if src == 0 then return true end
+    if not src or src < 0 then return false end
 
-    local acePerm = string.format("sky_mechanicjob.%s", commandName or "")
-    if IsPlayerAceAllowed(tostring(src), acePerm)
-       or (commandName and IsPlayerAceAllowed(tostring(src), "command." .. commandName))
-       or IsPlayerAceAllowed(tostring(src), "command") then
+    local srcStr = tostring(src)
+    local name = type(commandName) == "string" and commandName or ""
+    if (name ~= "" and IsPlayerAceAllowed(srcStr, ("sky_mechanicjob.%s"):format(name)))
+        or IsPlayerAceAllowed(srcStr, "command") then
         return true
     end
 
-    if Sky and Sky.FW and Sky.FW.HasCommandPermission then
-        if Sky.FW.HasCommandPermission(src, acePerm) or (commandName and Sky.FW.HasCommandPermission(src, commandName)) then
-            return true
+    local groups = name ~= "" and Config and Config.CommandPermissions and Config.CommandPermissions[name]
+    if type(groups) ~= "table" then return false end
+
+    local esxGroup = nil
+    if Functions.GetFramework() == "esx" then
+        local player = Functions.GetPlayer(src)
+        if player and player.getGroup then
+            esxGroup = tostring(player.getGroup()):lower()
         end
     end
 
-    local player = Functions.GetPlayer(src)
-    if player then
-        if QBCore and QBCore.Functions and QBCore.Functions.HasPermission then
-            if QBCore.Functions.HasPermission(src, "god") or QBCore.Functions.HasPermission(src, "admin") then
+    for _, group in ipairs(groups) do
+        if type(group) == "string" and group ~= "" then
+            -- Qbox / QBCore grant their admin ACEs ("admin", "god") to group.<name>.
+            if IsPlayerAceAllowed(srcStr, ("group.%s"):format(group)) or IsPlayerAceAllowed(srcStr, group) then
                 return true
             end
-        end
-        if player.PlayerData and player.PlayerData.group then
-            local g = tostring(player.PlayerData.group):lower()
-            if g == "admin" or g == "god" or g == "superadmin" then return true end
-        end
-        if player.getGroup then
-            local g = tostring(player.getGroup()):lower()
-            if g == "admin" or g == "god" or g == "superadmin" or g == "_dev" then return true end
-        end
-    end
-
-    if GetResourceState("qbx_core") == "started" then
-        local ok, has = pcall(function()
-            return exports.qbx_core:HasPermission(src, "admin") or exports.qbx_core:HasPermission(src, "god")
-        end)
-        if ok and has then return true end
-    end
-
-    local permsConfig = Config and Config.CommandPermissions and commandName and Config.CommandPermissions[commandName]
-    if type(permsConfig) == "table" then
-        for _, group in ipairs(permsConfig) do
-            if IsPlayerAceAllowed(tostring(src), string.format("group.%s", group)) then
+            if esxGroup and esxGroup == group:lower() then
                 return true
             end
         end

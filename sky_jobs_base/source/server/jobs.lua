@@ -64,6 +64,21 @@ if not MySQL or type(MySQL) ~= "table" or not MySQL.query then
             end
         }
     end
+
+    if not MySQL.update then
+        MySQL.update = {
+            await = function(query, params)
+                if exports.oxmysql and exports.oxmysql.update_async then
+                    return exports.oxmysql:update_async(query, params)
+                elseif MySQL.Async and MySQL.Async.execute then
+                    local p = promise.new()
+                    MySQL.Async.execute(query, params or {}, function(rows) p:resolve(rows) end)
+                    return Citizen.Await(p)
+                end
+                return 0
+            end
+        }
+    end
 end
 
 local playerDutyState = {}
@@ -184,9 +199,13 @@ function Sky_Jobs.PlayerCache.GetJob(source)
     local src = tonumber(source)
     if not src or src <= 0 then return "" end
 
+    -- The framework's answer is authoritative ("" = no character loaded); the local cache
+    -- is only a fallback for when the framework cannot be reached.
     if Sky and Sky.FW and Sky.FW.GetJob then
         local job = Sky.FW.GetJob(src)
-        if job and job ~= "" then return job end
+        if type(job) == "string" then
+            return job ~= "" and job or "unemployed"
+        end
     end
 
     return playerJobCache[src] or "unemployed"
@@ -198,7 +217,7 @@ function Sky_Jobs.PlayerCache.GetJobGrade(source)
 
     if Sky and Sky.FW and Sky.FW.GetJobData then
         local grade = Sky.FW.GetJobData(src, "grade")
-        if grade ~= nil then return tonumber(grade) or 0 end
+        if grade ~= nil then return math.floor(tonumber(grade) or 0) end
     end
 
     return 0
@@ -233,6 +252,493 @@ AddEventHandler("playerDropped", function()
 end)
 
 -- -----------------------------------------------------
+--  FRAMEWORK & DATA HELPERS (Contract J)
+-- -----------------------------------------------------
+
+local function notify(src, title, message, kind)
+    TriggerClientEvent("sky_base:notification", src, title, message, kind or "info", 5000)
+end
+
+-- UTF-8 safe trim + length cap; nil for empty or invalid UTF-8 text.
+local function cleanText(value, maxChars)
+    if type(value) ~= "string" then return nil end
+    local text = value:match("^%s*(.-)%s*$")
+    if text == "" or not utf8.len(text) then return nil end
+    local cut = utf8.offset(text, maxChars + 1)
+    if cut then text = text:sub(1, cut - 1) end
+    return text
+end
+
+function Sky_Jobs.GetPlayerIdentifier(source)
+    local src = tonumber(source)
+    if not src or src <= 0 or not (Sky and Sky.FW and Sky.FW.GetIdentifier) then return nil end
+    local id = Sky.FW.GetIdentifier(src)
+    if id == nil or id == "" then return nil end
+    return tostring(id)
+end
+
+local function GetPlayerFullName(source)
+    local src = tonumber(source)
+    if not src then return "Unknown" end
+    if Sky and Sky.FW and Sky.FW.GetName then
+        local name = Sky.FW.GetName(src)
+        if name and name ~= "" then return tostring(name) end
+    end
+    return GetPlayerName(src) or ("Player " .. tostring(src))
+end
+Sky_Jobs.GetPlayerFullName = GetPlayerFullName
+
+local function validAmount(amount)
+    amount = tonumber(amount)
+    if not amount or amount ~= amount or amount <= 0 or amount == math.huge then return nil end
+    amount = math.floor(amount)
+    return amount > 0 and amount or nil
+end
+
+-- Fail closed: true only when the framework confirmed that the money moved.
+function Sky_Jobs.AddPlayerMoney(source, account, amount)
+    local src, value = tonumber(source), validAmount(amount)
+    if not src or not value or not (Sky and Sky.FW and Sky.FW.AddAccountMoney) then return false end
+    return Sky.FW.AddAccountMoney(src, account or "money", value) == true
+end
+
+function Sky_Jobs.RemovePlayerMoney(source, account, amount)
+    local src, value = tonumber(source), validAmount(amount)
+    if not src or not value or not (Sky and Sky.FW and Sky.FW.RemoveAccountMoney) then return false end
+    return Sky.FW.RemoveAccountMoney(src, account or "money", value) == true
+end
+
+local function SetPlayerJob(source, job, grade)
+    local src = tonumber(source)
+    if not src then return false end
+    local ok = false
+    if Sky and Sky.FW and Sky.FW.SetJob then
+        ok = Sky.FW.SetJob(src, job, grade or 0) == true
+    end
+    if ok then
+        Sky_Jobs.PlayerCache.UpdateJob(src, job)
+    end
+    return ok
+end
+
+local function detectFramework()
+    if GetResourceState("qbx_core") == "started" then return "qbox" end
+    if GetResourceState("qb-core") == "started" then return "qb" end
+    if GetResourceState("es_extended") == "started" then return "esx" end
+    return nil
+end
+
+-- Job label and sorted grades from the framework (Sky.FW.GetJobs), cached briefly.
+local frameworkJobs = { at = -math.huge, data = nil, info = {} }
+
+local function getJobInfo(jobName)
+    if type(jobName) ~= "string" or jobName == "" then return nil end
+    local now = os.time()
+    if not frameworkJobs.data or now - frameworkJobs.at >= 60 then
+        local jobs = Sky and Sky.FW and Sky.FW.GetJobs and Sky.FW.GetJobs()
+        if type(jobs) == "table" then
+            frameworkJobs.data, frameworkJobs.at, frameworkJobs.info = jobs, now, {}
+        end
+    end
+    if not frameworkJobs.data then return nil end
+    if frameworkJobs.info[jobName] ~= nil then return frameworkJobs.info[jobName] or nil end
+
+    local job = nil
+    for key, entry in pairs(frameworkJobs.data) do
+        if type(entry) == "table" and (key == jobName or entry.name == jobName) then
+            job = entry
+            break
+        end
+    end
+    if not job then
+        frameworkJobs.info[jobName] = false
+        return nil
+    end
+
+    local grades, byLevel, top = {}, {}, nil
+    for key, g in pairs(type(job.grades) == "table" and job.grades or {}) do
+        if type(g) == "table" then
+            local level = math.tointeger(tonumber(g.grade) or tonumber(key))
+            if level and not byLevel[level] then
+                local entry = {
+                    grade = level,
+                    label = tostring(g.label or g.name or ("Grade " .. level)),
+                    salary = tonumber(g.payment or g.salary) or 0,
+                    isboss = g.isboss == true
+                }
+                byLevel[level] = entry
+                grades[#grades + 1] = entry
+                if not top or level > top then top = level end
+            end
+        end
+    end
+    table.sort(grades, function(a, b) return a.grade < b.grade end)
+
+    local info = { name = jobName, label = tostring(job.label or jobName), grades = grades, byLevel = byLevel, top = top }
+    frameworkJobs.info[jobName] = info
+    return info
+end
+
+local function gradeLabel(info, level)
+    local g = info and info.byLevel[level]
+    return g and g.label or ("Grade " .. tostring(level))
+end
+
+-- jobName, grade (integer) or nil when offline, jobless or unemployed.
+function Sky_Jobs.GetEmployment(source)
+    local src = tonumber(source)
+    if not src or src <= 0 then return nil end
+    local job = Sky_Jobs.PlayerCache.GetJob(src)
+    if isUnemployedJob(job) then return nil end
+    return job, Sky_Jobs.PlayerCache.GetJobGrade(src)
+end
+
+function Sky_Jobs.RequireEmployee(source, requireOnDuty)
+    local job, grade = Sky_Jobs.GetEmployment(source)
+    if not job then return nil end
+    if requireOnDuty and not Sky_Jobs.PlayerCache.IsOnDuty(source) then return nil end
+    return job, grade
+end
+
+-- Framework isboss; the job's highest grade only when the framework cannot say.
+local function isBossFor(src, job, grade)
+    local fwBoss = Sky and Sky.FW and Sky.FW.IsPlayerBoss and Sky.FW.IsPlayerBoss(src)
+    if type(fwBoss) == "boolean" then return fwBoss end
+    local info = getJobInfo(job)
+    return info ~= nil and info.top ~= nil and grade >= info.top
+end
+
+function Sky_Jobs.IsPlayerBoss(source)
+    local job, grade = Sky_Jobs.GetEmployment(source)
+    if not job then return false end
+    return isBossFor(tonumber(source), job, grade) == true
+end
+
+-- -----------------------------------------------------
+--  GRADE PERMISSIONS & RESTRICTIONS
+-- -----------------------------------------------------
+
+local PERMISSION_ALL = 57495345
+local RESTRICTION_KEYS = { "items", "weapons", "vehicles", "tablet_apps", "document_classifications" }
+
+local function permissionEnum()
+    return Permission or {}
+end
+
+local function resolvePermission(permission)
+    local enum = permissionEnum()
+    if type(permission) == "string" then
+        permission = enum[permission:upper()]
+    end
+    local id = math.tointeger(tonumber(permission))
+    if not id then return nil end
+    if id == PERMISSION_ALL then return id end
+    for _, value in pairs(enum) do
+        if value == id then return id end
+    end
+    return nil
+end
+
+-- [job][grade] = { perms = { [id] = true }, restrictions = { items = {...}, ... } }
+local gradeStore = {}
+local gradeStoreLoaded = false
+
+local function decodeJson(text)
+    if type(text) ~= "string" or text == "" then return nil end
+    local ok, value = pcall(json.decode, text)
+    return (ok and type(value) == "table") and value or nil
+end
+
+local function normalizeEntry(perms, restrictions)
+    local entry = { perms = {}, restrictions = {} }
+    for _, id in ipairs(type(perms) == "table" and perms or {}) do
+        local resolved = resolvePermission(id)
+        if resolved then entry.perms[resolved] = true end
+    end
+    for _, key in ipairs(RESTRICTION_KEYS) do
+        local list = {}
+        local source = type(restrictions) == "table" and restrictions[key]
+        for _, value in ipairs(type(source) == "table" and source or {}) do
+            if type(value) == "string" and value ~= "" and #value <= 64 and #list < 200 then
+                list[#list + 1] = value
+            end
+        end
+        entry.restrictions[key] = list
+    end
+    return entry
+end
+
+local function loadGradeStore()
+    local ok, rows = pcall(MySQL.query.await, "SELECT job, grade, permissions, restrictions FROM sky_jobs_grade_permissions")
+    if not ok or type(rows) ~= "table" then return false end
+    local store = {}
+    for _, row in ipairs(rows) do
+        local grade = math.tointeger(tonumber(row.grade))
+        if type(row.job) == "string" and grade then
+            store[row.job] = store[row.job] or {}
+            store[row.job][grade] = normalizeEntry(decodeJson(row.permissions), decodeJson(row.restrictions))
+        end
+    end
+    gradeStore = store
+    gradeStoreLoaded = true
+    return true
+end
+
+local function getGradeEntry(job, grade)
+    if not gradeStoreLoaded then loadGradeStore() end
+    return gradeStore[job] and gradeStore[job][grade] or nil
+end
+
+local function saveGradeEntry(job, grade, entry)
+    local perms = {}
+    for id in pairs(entry.perms) do perms[#perms + 1] = id end
+    table.sort(perms)
+    local ok = pcall(MySQL.query.await, [[
+        INSERT INTO sky_jobs_grade_permissions (job, grade, permissions, restrictions)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE permissions = VALUES(permissions), restrictions = VALUES(restrictions)
+    ]], { job, grade, json.encode(perms), json.encode(entry.restrictions) })
+    if not ok then return false end
+    gradeStore[job] = gradeStore[job] or {}
+    gradeStore[job][grade] = entry
+    return true
+end
+
+-- The acting player: job, grade, boss flag and a permission test computed once.
+local function getActor(source)
+    local src = tonumber(source)
+    local job, grade = Sky_Jobs.GetEmployment(src)
+    if not job then return nil end
+    local actor = { src = src, job = job, grade = grade }
+    actor.boss = isBossFor(src, job, grade) == true
+    function actor.can(permission)
+        if actor.boss then return true end
+        local id = resolvePermission(permission)
+        if not id then return false end
+        local entry = getGradeEntry(job, grade)
+        return entry ~= nil and (entry.perms[id] == true or entry.perms[PERMISSION_ALL] == true)
+    end
+    return actor
+end
+
+function Sky_Jobs.HasJobPermission(source, permission)
+    if not resolvePermission(permission) then return false end
+    local actor = getActor(source)
+    return actor ~= nil and actor.can(permission)
+end
+
+-- Stored restriction lists of a grade (what the roles editor saved).
+function Sky_Jobs.GetGradeRestrictions(job, grade)
+    local entry = getGradeEntry(job, math.tointeger(tonumber(grade)) or -1)
+    local out = {}
+    for _, key in ipairs(RESTRICTION_KEYS) do
+        out[key] = entry and entry.restrictions[key] or {}
+    end
+    return out
+end
+
+-- Restrictions that apply to a player: only while the matching permission is enabled for
+-- the grade, and never for bosses or grades with full access.
+function Sky_Jobs.GetPlayerRestrictions(source)
+    local out = {}
+    for _, key in ipairs(RESTRICTION_KEYS) do out[key] = {} end
+    local actor = getActor(source)
+    if not actor or actor.boss then return out end
+    local entry = getGradeEntry(actor.job, actor.grade)
+    if not entry or entry.perms[PERMISSION_ALL] then return out end
+    local enum = permissionEnum()
+    local function apply(permissionName, ...)
+        if entry.perms[enum[permissionName]] then
+            for _, key in ipairs({ ... }) do out[key] = entry.restrictions[key] end
+        end
+    end
+    apply("MANAGE_WAREHOUSE", "items", "weapons")
+    apply("GARAGE_VEHICLES", "vehicles")
+    apply("TABLET_APPS", "tablet_apps")
+    apply("DOCUMENT_CLASSIFICATIONS", "document_classifications")
+    return out
+end
+
+-- -----------------------------------------------------
+--  SOCIETY MONEY
+-- -----------------------------------------------------
+
+local MAX_BALANCE = 2147483647
+
+local MONEY_CREDIT = { deposited = true, deposit = true, vehicle_sold = true, income = true }
+local MONEY_DEBIT = { withdrawn = true, withdraw = true, bonus_paid = true, bonus = true, supplies_purchased = true, vehicle_purchased = true, salary_paid = true, expense = true }
+local LEGACY_ACTIONS = { deposit = "deposited", withdraw = "withdrawn", bonus = "bonus_paid" }
+local FINANCE_CATEGORY = {
+    deposited = "deposits", withdrawn = "withdrawals", bonus_paid = "bonuses", supplies_purchased = "supplies",
+    vehicle_purchased = "vehicles", vehicle_sold = "vehicles", salary_paid = "salaries", income = "income", expense = "expenses"
+}
+local MONEY_TYPE_LIST = { "deposited", "deposit", "withdrawn", "withdraw", "bonus_paid", "bonus", "supplies_purchased",
+    "vehicle_purchased", "vehicle_sold", "salary_paid", "income", "expense" }
+
+local function validJob(job)
+    return type(job) == "string" and job ~= "" and #job <= 50
+end
+
+local function logJobTransaction(job, txType, amount, actorName, reason)
+    pcall(MySQL.insert.await, "INSERT INTO sky_jobs_transactions (job, type, amount, sender, reason) VALUES (?, ?, ?, ?, ?)", {
+        job, txType, math.floor(tonumber(amount) or 0), cleanText(actorName, 100) or "System", cleanText(reason, 500)
+    })
+end
+
+function Sky_Jobs.GetSocietyBalance(job)
+    if not validJob(job) then return 0 end
+    local ok, row = pcall(MySQL.single.await, "SELECT balance FROM sky_jobs_finances WHERE job = ? LIMIT 1", { job })
+    return ok and row and tonumber(row.balance) or 0
+end
+
+local function debitSociety(job, amount)
+    local ok, changed = pcall(MySQL.update.await, "UPDATE sky_jobs_finances SET balance = balance - ? WHERE job = ? AND balance >= ?", { amount, job, amount })
+    return ok and (tonumber(changed) or 0) > 0
+end
+
+local function creditSociety(job, amount)
+    if amount > MAX_BALANCE then return false end
+    local function bump()
+        local ok, changed = pcall(MySQL.update.await, "UPDATE sky_jobs_finances SET balance = balance + ? WHERE job = ? AND balance <= ?", { amount, job, MAX_BALANCE - amount })
+        return ok and (tonumber(changed) or 0) > 0
+    end
+    if bump() then return true end
+    pcall(MySQL.insert.await, "INSERT IGNORE INTO sky_jobs_finances (job, balance) VALUES (?, 0)", { job })
+    return bump()
+end
+
+-- A reason that is a known transaction type (e.g. "supplies_purchased") is logged as that type.
+local function transactionType(reason, credit)
+    if type(reason) == "string" and FINANCE_CATEGORY[reason] and (credit and MONEY_CREDIT[reason] or (not credit and MONEY_DEBIT[reason])) then
+        return reason, nil
+    end
+    return credit and "income" or "expense", reason
+end
+
+function Sky_Jobs.DebitSociety(job, amount, reason, actorName)
+    amount = validAmount(amount)
+    if not validJob(job) or not amount or not debitSociety(job, amount) then return false end
+    local txType, text = transactionType(reason, false)
+    logJobTransaction(job, txType, amount, actorName, text)
+    return true
+end
+
+function Sky_Jobs.CreditSociety(job, amount, reason, actorName)
+    amount = validAmount(amount)
+    if not validJob(job) or not amount or not creditSociety(job, amount) then return false end
+    local txType, text = transactionType(reason, true)
+    logJobTransaction(job, txType, amount, actorName, text)
+    return true
+end
+
+local function invokingResource()
+    return type(GetInvokingResource) == "function" and GetInvokingResource() or nil
+end
+
+registerExport("GetSocietyMoney", function(job)
+    return Sky_Jobs.GetSocietyBalance(job)
+end)
+
+registerExport("AddSocietyMoney", function(job, amount, reason)
+    return Sky_Jobs.CreditSociety(job, amount, reason, invokingResource())
+end)
+
+registerExport("RemoveSocietyMoney", function(job, amount, reason)
+    return Sky_Jobs.DebitSociety(job, amount, reason, invokingResource())
+end)
+
+registerExport("HasJobPermission", function(source, permission)
+    return Sky_Jobs.HasJobPermission(source, permission)
+end)
+
+-- -----------------------------------------------------
+--  JOB REGISTRY (definitions sent by job resources)
+-- -----------------------------------------------------
+
+local jobRegistry = { byResource = {}, defs = {} }
+
+local function copyEntries(list, fields, required)
+    local out = {}
+    for _, item in ipairs(type(list) == "table" and list or {}) do
+        if type(item) == "table" and type(item[required]) == "string" and item[required] ~= "" then
+            local entry, valid = {}, true
+            for field, kind in pairs(fields) do
+                local value = item[field]
+                if kind == "number" and value ~= nil then
+                    value = tonumber(value)
+                    if not value or value ~= value or value < 0 or value == math.huge then valid = false end
+                end
+                if type(value) == kind then entry[field] = value end
+            end
+            if valid then out[#out + 1] = entry end
+        end
+    end
+    return out
+end
+
+local function sanitizeJobDefinition(def)
+    if type(def) ~= "table" or not validJob(def.name) then return nil end
+    return {
+        name = def.name,
+        label = type(def.label) == "string" and def.label or def.name,
+        color = type(def.color) == "string" and def.color ~= "" and def.color or nil,
+        shop = copyEntries(def.shop, { name = "string", label = "string", price = "number" }, "name"),
+        props = copyEntries(def.props, { model = "string", label = "string" }, "model"),
+        vehicles = copyEntries(def.vehicles, { name = "string", model = "string", price = "number", trunkCapacity = "number", garageType = "string" }, "model"),
+        offDutyJob = type(def.offDutyJob) == "string" and def.offDutyJob ~= "" and def.offDutyJob or nil
+    }
+end
+
+local function rebuildJobRegistry()
+    local defs = {}
+    for _, jobs in pairs(jobRegistry.byResource) do
+        for name, def in pairs(jobs) do defs[name] = def end
+    end
+    jobRegistry.defs = defs
+end
+
+function Sky_Jobs.GetJobDefinition(jobName)
+    return type(jobName) == "string" and jobRegistry.defs[jobName] or nil
+end
+
+function Sky_Jobs.GetRegisteredJobNames()
+    local names = {}
+    for name in pairs(jobRegistry.defs) do names[#names + 1] = name end
+    table.sort(names)
+    return names
+end
+
+registerExport("RegisterJobs", function(resourceName, jobs)
+    resourceName = type(resourceName) == "string" and resourceName ~= "" and resourceName or invokingResource()
+    if not resourceName then return false end
+    local previous = jobRegistry.byResource[resourceName] or {}
+    local defs = {}
+    for _, def in ipairs(type(jobs) == "table" and jobs or {}) do
+        local clean = sanitizeJobDefinition(def)
+        if clean then defs[clean.name] = clean end
+    end
+    jobRegistry.byResource[resourceName] = defs
+    rebuildJobRegistry()
+    for name in pairs(defs) do
+        TriggerClientEvent("sky_jobs_base:jobs:registered", -1, name)
+    end
+    for name in pairs(previous) do
+        if not jobRegistry.defs[name] then TriggerClientEvent("sky_jobs_base:jobs:unregistered", -1, name) end
+    end
+    return true
+end)
+
+AddEventHandler("onResourceStop", function(resourceName)
+    local removed = jobRegistry.byResource[resourceName]
+    if not removed then return end
+    jobRegistry.byResource[resourceName] = nil
+    rebuildJobRegistry()
+    for name in pairs(removed) do
+        if not jobRegistry.defs[name] then TriggerClientEvent("sky_jobs_base:jobs:unregistered", -1, name) end
+    end
+end)
+
+-- -----------------------------------------------------
 --  CORE JOB & ACCESS SERVER CALLBACKS
 -- -----------------------------------------------------
 
@@ -249,13 +755,6 @@ Sky.Cb.Register("sky_jobs_base:creator:getPlayerJob", function(source, data)
     local jobName = Sky_Jobs.PlayerCache.GetJob(src)
     local gradeLevel = Sky_Jobs.PlayerCache.GetJobGrade(src)
 
-    local isBoss = false
-    if Sky and Sky.FW and Sky.FW.IsPlayerBoss then
-        isBoss = Sky.FW.IsPlayerBoss(src) == true
-    else
-        isBoss = (gradeLevel >= 4)
-    end
-
     -- No jobKey for the default job: clients treat any jobKey as employed.
     local jobKey = (not isUnemployedJob(jobName)) and jobName or nil
 
@@ -266,7 +765,7 @@ Sky.Cb.Register("sky_jobs_base:creator:getPlayerJob", function(source, data)
             jobKey = jobKey,
             job = jobKey,
             grade = gradeLevel,
-            isBoss = isBoss
+            isBoss = jobKey ~= nil and isBossFor(src, jobKey, gradeLevel) == true
         }
     }
 end)
@@ -288,48 +787,33 @@ Sky.Cb.Register("sky_jobs_base:creator:getPlayerDuty", function(source, data)
     }
 end)
 
+-- Array of job names: jobs registered with RegisterJobs plus jobs that own tablet apps.
 Sky.Cb.Register("sky_jobs_base:getRegisteredJobs", function(source)
-    local jobs = {}
-
-    if Config and Config.Jobs then
-        for k, v in pairs(Config.Jobs) do
-            local jobKey = type(k) == "string" and k or (v.name or tostring(k))
-            jobs[jobKey] = {
-                name = v.name or jobKey,
-                label = v.label or jobKey,
-                color = v.color or "#ff9800",
-                icon = v.icon or "briefcase"
-            }
+    local names, seen = {}, {}
+    local function add(name)
+        if type(name) == "string" and name ~= "" and name ~= "all" and not seen[name] then
+            seen[name] = true
+            names[#names + 1] = name
         end
     end
-
-    -- Default fallback if empty
-    if not next(jobs) then
-        jobs = {
-            mechanic = { name = "mechanic", label = "Mechanic", color = "#ff9800", icon = "wrench" },
-            police = { name = "police", label = "Police", color = "#2196f3", icon = "shield" },
-            ambulance = { name = "ambulance", label = "EMS", color = "#f44336", icon = "heart-pulse" },
-            fire = { name = "fire", label = "Fire", color = "#e91e63", icon = "fire-extinguisher" }
-        }
+    for _, name in ipairs(Sky_Jobs.GetRegisteredJobNames()) do add(name) end
+    for _, apps in pairs(Sky_Jobs.RegisteredTabletApps or {}) do
+        for _, app in ipairs(type(apps) == "table" and apps or {}) do
+            if type(app) == "table" then add(app.job) end
+        end
     end
-
-    return jobs
+    return names
 end)
 
 Sky.Cb.Register("sky_jobs_base:getJobColor", function(source)
-    local job = Sky_Jobs.PlayerCache.GetJob(source)
-    if Config and Config.Jobs and Config.Jobs[job] and Config.Jobs[job].color then
-        return Config.Jobs[job].color
-    end
-    return "#ff9800"
+    local def = Sky_Jobs.GetJobDefinition(Sky_Jobs.PlayerCache.GetJob(source))
+    return def and def.color or nil
 end)
 
 Sky.Cb.Register("sky_jobs_base:getJobColorFor", function(source, data)
-    local jobKey = data and data.jobKey or Sky_Jobs.PlayerCache.GetJob(source)
-    if Config and Config.Jobs and Config.Jobs[jobKey] and Config.Jobs[jobKey].color then
-        return Config.Jobs[jobKey].color
-    end
-    return "#ff9800"
+    local jobKey = type(data) == "table" and data.jobKey or Sky_Jobs.PlayerCache.GetJob(source)
+    local def = Sky_Jobs.GetJobDefinition(jobKey)
+    return def and def.color or nil
 end)
 
 Sky.Cb.Register("sky_jobs_base:getJobBackgroundPath", function(source)
@@ -347,7 +831,7 @@ Sky.Cb.Register("sky_jobs_base:getOnDutyJobFor", function(source, data)
     local isOnDuty = Sky_Jobs.PlayerCache.IsOnDuty(src)
 
     local activeDutyJob = nil
-    if isOnDuty and currentJob and currentJob ~= "" and currentJob ~= "unemployed" then
+    if isOnDuty and not isUnemployedJob(currentJob) then
         if not requestedJob or requestedJob == currentJob then
             activeDutyJob = currentJob
         end
@@ -364,15 +848,39 @@ Sky.Cb.Register("sky_jobs_base:getOnDutyJobFor", function(source, data)
 end)
 
 -- -----------------------------------------------------
---  TABLET, CHAT & CALENDAR CALLBACKS
--- -----------------------------------------------------
-
--- -----------------------------------------------------
 --  DATABASE SCHEMA ENSURANCE FOR JOBS BASE
 -- -----------------------------------------------------
 
+local function runSchemaStatement(query, params)
+    local ok, err = pcall(MySQL.query.await, query, params)
+    if not ok then
+        print(("[sky_jobs_base] database setup failed: %s"):format(tostring(err)))
+    end
+    return ok
+end
+
+local function columnLength(tableName, column)
+    local ok, row = pcall(MySQL.single.await, "SELECT COALESCE(CHARACTER_MAXIMUM_LENGTH, 0) AS len FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", { tableName, column })
+    if not ok then return nil end
+    return row and (tonumber(row.len) or 0) or false
+end
+
+local function ensureColumn(tableName, column, definition)
+    if columnLength(tableName, column) == false then
+        runSchemaStatement(("ALTER TABLE `%s` ADD COLUMN `%s` %s"):format(tableName, column, definition))
+    end
+end
+
+local function ensureIndex(tableName, indexName, columns)
+    local ok, row = pcall(MySQL.single.await, "SELECT 1 AS present FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1", { tableName, indexName })
+    if ok and not row then
+        runSchemaStatement(("ALTER TABLE `%s` ADD INDEX `%s` (%s)"):format(tableName, indexName, columns))
+    end
+end
+
 local function ensureJobsBaseTables()
     if not (MySQL and MySQL.query and MySQL.query.await) then return end
+    if Config and Config.AutoExecuteQuery == false then return end
 
     local jobTables = {
         [[
@@ -400,11 +908,13 @@ local function ensureJobsBaseTables()
         [[
             CREATE TABLE IF NOT EXISTS `sky_jobs_chat_messages` (
                 `id` INT AUTO_INCREMENT PRIMARY KEY,
-                `chat_id` VARCHAR(64) NOT NULL,
+                `chat_id` VARCHAR(160) NOT NULL,
                 `sender_identifier` VARCHAR(64) DEFAULT NULL,
+                `recipient_identifier` VARCHAR(64) DEFAULT NULL,
                 `sender_name` VARCHAR(100) NOT NULL,
                 `message` TEXT NOT NULL,
                 `timestamp` BIGINT NOT NULL,
+                `is_read` TINYINT(1) NOT NULL DEFAULT 0,
                 INDEX `idx_chat` (`chat_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]],
@@ -419,6 +929,14 @@ local function ensureJobsBaseTables()
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]],
         [[
+            CREATE TABLE IF NOT EXISTS `sky_jobs_chat_group_members` (
+                `group_id` VARCHAR(64) NOT NULL,
+                `identifier` VARCHAR(64) NOT NULL,
+                PRIMARY KEY (`group_id`, `identifier`),
+                INDEX `idx_identifier` (`identifier`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ]],
+        [[
             CREATE TABLE IF NOT EXISTS `sky_jobs_calendar_events` (
                 `id` INT AUTO_INCREMENT PRIMARY KEY,
                 `job` VARCHAR(50) NOT NULL,
@@ -426,16 +944,38 @@ local function ensureJobsBaseTables()
                 `description` TEXT DEFAULT NULL,
                 `date` VARCHAR(50) NOT NULL,
                 `time` VARCHAR(20) DEFAULT NULL,
+                `color` VARCHAR(16) DEFAULT NULL,
                 `created_by` VARCHAR(64) DEFAULT NULL,
                 `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX `idx_job` (`job`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ]],
+        [[
+            CREATE TABLE IF NOT EXISTS `sky_jobs_grade_permissions` (
+                `job` VARCHAR(50) NOT NULL,
+                `grade` INT NOT NULL,
+                `permissions` LONGTEXT DEFAULT NULL,
+                `restrictions` LONGTEXT DEFAULT NULL,
+                `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (`job`, `grade`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]]
     }
 
     for _, q in ipairs(jobTables) do
-        pcall(function() MySQL.query.await(q) end)
+        runSchemaStatement(q)
     end
+
+    -- Tables created by older versions (or schema.sql) lack these columns.
+    ensureColumn("sky_jobs_chat_messages", "recipient_identifier", "VARCHAR(64) DEFAULT NULL")
+    ensureColumn("sky_jobs_chat_messages", "is_read", "TINYINT(1) NOT NULL DEFAULT 0")
+    ensureColumn("sky_jobs_calendar_events", "color", "VARCHAR(16) DEFAULT NULL")
+    local chatIdLength = columnLength("sky_jobs_chat_messages", "chat_id")
+    if chatIdLength and chatIdLength < 160 then
+        runSchemaStatement("ALTER TABLE `sky_jobs_chat_messages` MODIFY `chat_id` VARCHAR(160) NOT NULL")
+    end
+    ensureIndex("sky_jobs_chat_messages", "idx_recipient", "`recipient_identifier`, `is_read`")
+    ensureIndex("sky_jobs_chat_messages", "idx_sender", "`sender_identifier`")
 end
 
 CreateThread(function()
@@ -443,515 +983,825 @@ CreateThread(function()
         Wait(500)
     end
     ensureJobsBaseTables()
+    loadGradeStore()
 end)
-
--- -----------------------------------------------------
---  FRAMEWORK & DATA HELPERS
--- -----------------------------------------------------
-
-local function GetPlayerIdentifierStr(source)
-    local src = tonumber(source)
-    if not src then return "" end
-    if Sky and Sky.FW and Sky.FW.GetIdentifier then
-        local id = Sky.FW.GetIdentifier(src)
-        if id and id ~= "" then return tostring(id) end
-    end
-    for _, id in ipairs(GetPlayerIdentifiers(src)) do
-        if string.find(id, "license:") or string.find(id, "steam:") then
-            return id
-        end
-    end
-    return "player:" .. tostring(src)
-end
-
-local function GetPlayerFullName(source)
-    local src = tonumber(source)
-    if not src then return "Unknown" end
-    if Sky and Sky.FW and Sky.FW.GetName then
-        local name = Sky.FW.GetName(src)
-        if name and name ~= "" then return tostring(name) end
-    end
-    return GetPlayerName(src) or ("Player " .. tostring(src))
-end
-
-local function AddPlayerMoney(source, account, amount)
-    local src = tonumber(source)
-    if not src or amount <= 0 then return false end
-    if Sky and Sky.FW and Sky.FW.AddAccountMoney then
-        return Sky.FW.AddAccountMoney(src, account or "money", amount) ~= false
-    end
-    return true
-end
-
-local function RemovePlayerMoney(source, account, amount)
-    local src = tonumber(source)
-    if not src or amount <= 0 then return false end
-    if Sky and Sky.FW and Sky.FW.RemoveAccountMoney then
-        return Sky.FW.RemoveAccountMoney(src, account or "money", amount) == true
-    end
-    return true
-end
-
-local function SetPlayerJob(source, job, grade)
-    local src = tonumber(source)
-    if not src then return false end
-    if Sky and Sky.FW and Sky.FW.SetJob then
-        Sky.FW.SetJob(src, job, grade or 0)
-    end
-    Sky_Jobs.PlayerCache.UpdateJob(src, job)
-    return true
-end
-
-local function getSocietyBalance(jobName)
-    if not jobName or jobName == "" then jobName = "mechanic" end
-    local row = MySQL.single.await("SELECT balance FROM sky_jobs_finances WHERE job = @job LIMIT 1", {
-        ["@job"] = jobName
-    })
-    if row and row.balance ~= nil then
-        return tonumber(row.balance) or 0
-    end
-    pcall(function()
-        MySQL.insert.await("INSERT INTO sky_jobs_finances (job, balance) VALUES (@job, @balance) ON DUPLICATE KEY UPDATE balance = balance", {
-            ["@job"] = jobName,
-            ["@balance"] = 10000
-        })
-    end)
-    return 10000
-end
-
-local function updateSocietyBalance(jobName, newBalance)
-    if not jobName or jobName == "" then jobName = "mechanic" end
-    pcall(function()
-        MySQL.query.await([[
-            INSERT INTO sky_jobs_finances (job, balance) VALUES (@job, @balance)
-            ON DUPLICATE KEY UPDATE balance = @balance
-        ]], {
-            ["@job"] = jobName,
-            ["@balance"] = math.max(0, math.floor(newBalance))
-        })
-    end)
-end
-
-local function addJobTransaction(jobName, transType, amount, senderName, reason)
-    if not jobName or jobName == "" then jobName = "mechanic" end
-    pcall(function()
-        MySQL.insert.await([[
-            INSERT INTO sky_jobs_transactions (job, type, amount, sender, reason)
-            VALUES (@job, @type, @amount, @sender, @reason)
-        ]], {
-            ["@job"] = jobName,
-            ["@type"] = transType,
-            ["@amount"] = amount,
-            ["@sender"] = senderName or "Unknown",
-            ["@reason"] = reason or transType
-        })
-    end)
-end
 
 -- -----------------------------------------------------
 --  TABLET APPS & RESTRICTIONS
 -- -----------------------------------------------------
 
+-- Keys of the apps / classifications this player's grade may not use.
 Sky.Cb.Register("sky_jobs_base:getPlayerRestrictedTabletApps", function(source)
-    local src = tonumber(source)
-    local playerJob = Sky_Jobs.PlayerCache.GetJob(src)
-    local combinedApps = {}
+    return { success = true, data = Sky_Jobs.GetPlayerRestrictions(source).tablet_apps }
+end)
 
-    for _, appsList in pairs(Sky_Jobs.RegisteredTabletApps) do
-        if type(appsList) == "table" then
-            for _, app in ipairs(appsList) do
-                if not app.job or app.job == playerJob or app.job == "all" then
-                    combinedApps[#combinedApps + 1] = app
+Sky.Cb.Register("sky_jobs_base:getPlayerRestrictedDocumentClassifications", function(source)
+    return { success = true, data = Sky_Jobs.GetPlayerRestrictions(source).document_classifications }
+end)
+
+-- -----------------------------------------------------
+--  JOB ROSTER (online + offline members)
+-- -----------------------------------------------------
+
+local function onlineJobMembers(job)
+    local online = {}
+    for _, s in ipairs(GetPlayers()) do
+        local p = tonumber(s)
+        if p and Sky_Jobs.PlayerCache.GetJob(p) == job then
+            local identifier = Sky_Jobs.GetPlayerIdentifier(p)
+            if identifier then
+                online[identifier] = {
+                    identifier = identifier,
+                    source = p,
+                    grade = Sky_Jobs.PlayerCache.GetJobGrade(p),
+                    name = GetPlayerFullName(p),
+                    onduty = Sky_Jobs.PlayerCache.IsOnDuty(p)
+                }
+            end
+        end
+    end
+    return online
+end
+
+-- Every holder of the job (qbx player_groups read fresh; other frameworks via Sky.FW).
+local function frameworkJobUsers(job)
+    local users = {}
+    local fwUsers = Sky and Sky.FW and Sky.FW.GetJobUsers and Sky.FW.GetJobUsers(job)
+    fwUsers = type(fwUsers) == "table" and fwUsers or {}
+
+    if GetResourceState("qbx_core") == "started" then
+        local ok, members = pcall(function()
+            return exports.qbx_core:GetGroupMembers(job, "job")
+        end)
+        if ok and type(members) == "table" then
+            local names = {}
+            for _, u in ipairs(fwUsers) do
+                if type(u) == "table" and u.identifier then names[tostring(u.identifier)] = u.name end
+            end
+            for _, m in ipairs(members) do
+                if type(m) == "table" and m.citizenid then
+                    local id = tostring(m.citizenid)
+                    users[#users + 1] = { identifier = id, grade = math.floor(tonumber(m.grade) or 0), name = names[id] }
                 end
+            end
+            return users
+        end
+    end
+
+    for _, u in ipairs(fwUsers) do
+        if type(u) == "table" and u.identifier then
+            users[#users + 1] = { identifier = tostring(u.identifier), grade = math.floor(tonumber(u.job_grade or u.grade) or 0), name = u.name }
+        end
+    end
+    return users
+end
+
+-- identifier -> { identifier, grade, name, source?, onduty }
+local function getJobRoster(job)
+    local roster = onlineJobMembers(job)
+    for _, u in ipairs(frameworkJobUsers(job)) do
+        if not roster[u.identifier] then
+            roster[u.identifier] = { identifier = u.identifier, grade = u.grade, name = u.name or u.identifier, onduty = false }
+        end
+    end
+    return roster
+end
+
+-- A member of `job` by server id (online, primary job) or by identifier.
+local function findJobMember(job, identifier)
+    local asSource = tonumber(identifier)
+    if asSource and GetPlayerName(asSource) then
+        if Sky_Jobs.PlayerCache.GetJob(asSource) ~= job then return nil end
+        local id = Sky_Jobs.GetPlayerIdentifier(asSource)
+        if not id then return nil end
+        return { identifier = id, source = asSource, grade = Sky_Jobs.PlayerCache.GetJobGrade(asSource), name = GetPlayerFullName(asSource) }
+    end
+    if type(identifier) ~= "string" or identifier == "" then return nil end
+    return getJobRoster(job)[identifier]
+end
+
+local function memberRow(member, job, info, me)
+    return {
+        id = member.identifier,
+        identifier = member.identifier,
+        online_source = member.source,
+        source = member.source,
+        name = member.name or member.identifier,
+        grade = member.grade,
+        grade_label = gradeLabel(info, member.grade),
+        job = job,
+        job_label = info and info.label or job,
+        onduty = member.onduty == true,
+        isOnline = member.source ~= nil,
+        is_self = member.identifier == me,
+        last_online_timestamp = member.source and os.time() or nil
+    }
+end
+
+local function memberRows(src)
+    local job = Sky_Jobs.GetEmployment(src)
+    if not job then return { success = false, error = "no_job" } end
+    local info, me = getJobInfo(job), Sky_Jobs.GetPlayerIdentifier(src)
+    local rows = {}
+    for _, member in pairs(getJobRoster(job)) do
+        rows[#rows + 1] = memberRow(member, job, info, me)
+    end
+    table.sort(rows, function(a, b)
+        if a.grade ~= b.grade then return a.grade > b.grade end
+        return tostring(a.name) < tostring(b.name)
+    end)
+    return { success = true, data = rows }
+end
+
+-- -----------------------------------------------------
+--  CHAT
+-- -----------------------------------------------------
+
+local CHAT_TEXT_LIMIT = 1000
+local lastChatSend = {}
+
+AddEventHandler("playerDropped", function()
+    lastChatSend[source] = nil
+end)
+
+local function chatContext(source)
+    local src = tonumber(source)
+    local job = Sky_Jobs.GetEmployment(src)
+    local me = Sky_Jobs.GetPlayerIdentifier(src)
+    if not job or not me then return nil end
+    return { src = src, job = job, me = me, name = GetPlayerFullName(src) }
+end
+
+local function dmChatId(a, b)
+    if a > b then a, b = b, a end
+    return ("dm:%s:%s"):format(a, b)
+end
+
+local function getChatGroup(groupId)
+    if type(groupId) ~= "string" and type(groupId) ~= "number" then return nil end
+    local ok, row = pcall(MySQL.single.await, "SELECT id, job, name, created_by FROM sky_jobs_chat_groups WHERE id = ? LIMIT 1", { tostring(groupId) })
+    return ok and row or nil
+end
+
+local function groupMemberIds(group)
+    local ids, seen = {}, {}
+    local function add(id)
+        if type(id) == "string" and id ~= "" and not seen[id] then
+            seen[id] = true
+            ids[#ids + 1] = id
+        end
+    end
+    add(group.created_by)
+    local ok, rows = pcall(MySQL.query.await, "SELECT identifier FROM sky_jobs_chat_group_members WHERE group_id = ?", { group.id })
+    for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do add(row.identifier) end
+    return ids, seen
+end
+
+-- Which chat a payload addresses, checked against the caller: own job room, a group of the
+-- caller's job they belong to, or a private chat that always includes the caller.
+local function resolveChat(ctx, payload)
+    payload = type(payload) == "table" and payload or {}
+    local groupId = payload.group_id or payload.groupId or payload.group
+    if payload.scope == "group" or (groupId ~= nil and payload.scope ~= "private") then
+        local group = getChatGroup(groupId)
+        if not group or group.job ~= ctx.job then return nil, "group_not_found" end
+        local ids, members = groupMemberIds(group)
+        if not members[ctx.me] then return nil, "not_a_member" end
+        return { scope = "group", chatId = tostring(group.id), group = group, participants = ids }
+    end
+    if payload.scope == "private" or payload.target ~= nil then
+        local target = payload.target
+        if type(target) ~= "string" or target == "" or #target > 64 or target == ctx.me then
+            return nil, "invalid_target"
+        end
+        return { scope = "private", chatId = dmChatId(ctx.me, target), target = target, participants = { ctx.me, target } }
+    end
+    return { scope = "room", chatId = "room:" .. ctx.job }
+end
+
+local function isoTime(ts)
+    return os.date("!%Y-%m-%dT%H:%M:%SZ", math.floor(tonumber(ts) or os.time()))
+end
+
+local function toChatMessage(row, me, groupId)
+    return {
+        id = row.id,
+        message = row.message,
+        author = row.sender_name,
+        sender_identifier = row.sender_identifier,
+        recipient_identifier = row.recipient_identifier,
+        group_id = groupId,
+        created_at = isoTime(row.timestamp),
+        is_self = row.sender_identifier == me,
+        is_read = row.is_read == true or tonumber(row.is_read) == 1
+    }
+end
+
+-- identifier -> server id for the given identifiers that are online.
+local function onlineSourcesFor(identifiers)
+    local wanted, out = {}, {}
+    for _, id in ipairs(identifiers) do wanted[id] = true end
+    for _, s in ipairs(GetPlayers()) do
+        local p = tonumber(s)
+        local id = p and Sky_Jobs.GetPlayerIdentifier(p)
+        if id and wanted[id] then out[#out + 1] = p end
+    end
+    return out
+end
+
+local function chatRecipients(ctx, chat)
+    if chat.scope == "room" then
+        local list = {}
+        for _, member in pairs(onlineJobMembers(ctx.job)) do list[#list + 1] = member.source end
+        return list
+    end
+    return onlineSourcesFor(chat.participants)
+end
+
+Sky.Cb.Register("sky_jobs_base:chat:getMessages", function(source, payload)
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local chat, err = resolveChat(ctx, payload)
+    if not chat then return { success = false, error = err } end
+
+    local limit = math.max(1, math.min(200, math.floor(tonumber(type(payload) == "table" and payload.limit) or 100)))
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT id, sender_identifier, recipient_identifier, sender_name, message, timestamp, is_read
+        FROM sky_jobs_chat_messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
+    ]], { chat.chatId, limit })
+    if not ok then return { success = false, error = "load_failed" } end
+
+    local messages, unreadIds = {}, {}
+    for i = #rows, 1, -1 do
+        local row = rows[i]
+        local message = toChatMessage(row, ctx.me, chat.scope == "group" and chat.chatId or nil)
+        if chat.scope == "private" and row.recipient_identifier == ctx.me and not message.is_read then
+            unreadIds[#unreadIds + 1] = row.id
+            message.is_read = true
+        end
+        messages[#messages + 1] = message
+    end
+
+    if chat.scope == "private" then
+        pcall(MySQL.update.await, "UPDATE sky_jobs_chat_messages SET is_read = 1 WHERE chat_id = ? AND recipient_identifier = ? AND is_read = 0", { chat.chatId, ctx.me })
+        if #unreadIds > 0 then
+            for _, p in ipairs(onlineSourcesFor({ chat.target })) do
+                TriggerClientEvent("sky_jobs_base:chat:messageUpdate", p, {
+                    type = "read_receipt", scope = "private", message_ids = unreadIds,
+                    sender_identifier = ctx.me, recipient_identifier = chat.target
+                })
             end
         end
     end
 
-    return { success = true, data = combinedApps }
-end)
-
-Sky.Cb.Register("sky_jobs_base:getPlayerRestrictedDocumentClassifications", function(source)
-    return { success = true, data = { "unclassified", "restricted", "confidential", "secret", "top_secret" } }
-end)
-
-Sky.Cb.Register("sky_jobs_base:chat:getUnreadMessages", function(source)
-    local src = tonumber(source)
-    local identifier = tostring(src)
-    if Sky and Sky.FW and Sky.FW.GetIdentifier then
-        identifier = Sky.FW.GetIdentifier(src)
-    elseif Functions and Functions.GetIdentifier then
-        identifier = Functions.GetIdentifier(src)
-    end
-    return { success = true, data = { count = 0, messages = {} } }
-end)
-
-local function resolveChatId(payload)
-    if type(payload) == "string" and payload ~= "" then
-        return payload
-    end
-    if type(payload) ~= "table" then
-        return "general"
-    end
-    if payload.chatId and tostring(payload.chatId) ~= "" then
-        return tostring(payload.chatId)
-    end
-    if payload.group_id or payload.groupId or payload.group then
-        return tostring(payload.group_id or payload.groupId or payload.group)
-    end
-    if payload.target and tostring(payload.target) ~= "" then
-        return tostring(payload.target)
-    end
-    if payload.scope and tostring(payload.scope) ~= "" then
-        return tostring(payload.scope)
-    end
-    return "general"
-end
-
-Sky.Cb.Register("sky_jobs_base:chat:getOpenChats", function(source)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
-
-    local groups = MySQL.query.await("SELECT id, name, created_by, created_at FROM sky_jobs_chat_groups WHERE job = @job", {
-        ["@job"] = jobName
-    }) or {}
-
-    local defaultChats = {
-        { id = "general", name = "Job Team Chat", members = {} }
-    }
-    for _, g in ipairs(groups) do
-        table.insert(defaultChats, {
-            id = g.id,
-            name = g.name,
-            members = {}
-        })
-    end
-
-    return {
-        success = true,
-        data = defaultChats
-    }
-end)
-
-Sky.Cb.Register("sky_jobs_base:chat:getMessages", function(source, payload)
-    local chatId = resolveChatId(payload)
-    local limit = 100
-    if type(payload) == "table" and tonumber(payload.limit) then
-        limit = math.max(1, math.min(500, math.floor(tonumber(payload.limit))))
-    end
-
-    local rows = MySQL.query.await([[
-        SELECT id, chat_id, sender_name AS sender, message, timestamp
-        FROM sky_jobs_chat_messages
-        WHERE chat_id = @chat_id
-        ORDER BY timestamp ASC LIMIT ]] .. tostring(limit), {
-        ["@chat_id"] = chatId
-    }) or {}
-
-    return {
-        success = true,
-        data = rows
-    }
+    return { success = true, data = messages }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:sendMessage", function(source, data)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local now = GetGameTimer()
+    if lastChatSend[ctx.src] and now - lastChatSend[ctx.src] < 400 then
+        return { success = false, error = "too_fast" }
+    end
 
-    local chatId = resolveChatId(data)
-    local messageText = (type(data) == "table" and (data.message or data.text)) or tostring(data or "")
-    local senderName = GetPlayerFullName(src)
-    local senderId = GetPlayerIdentifierStr(src)
-    local nowTime = os.time()
+    data = type(data) == "table" and data or {}
+    -- Image messages need an upload provider, which this resource does not have.
+    local text = cleanText(data.message or data.text, CHAT_TEXT_LIMIT)
+    if not text then return { success = false, error = "empty_message" } end
 
-    local msgId = MySQL.insert.await([[
-        INSERT INTO sky_jobs_chat_messages (chat_id, sender_identifier, sender_name, message, timestamp)
-        VALUES (@chat_id, @sender_identifier, @sender_name, @message, @timestamp)
-    ]], {
-        ["@chat_id"] = chatId,
-        ["@sender_identifier"] = senderId,
-        ["@sender_name"] = senderName,
-        ["@message"] = messageText,
-        ["@timestamp"] = nowTime
-    })
+    local chat, err = resolveChat(ctx, data)
+    if not chat then return { success = false, error = err } end
+    if chat.scope == "private" and not getJobRoster(ctx.job)[chat.target] then
+        return { success = false, error = "not_a_member" }
+    end
+    lastChatSend[ctx.src] = now
 
-    local msgObj = {
-        id = tostring(msgId or GetGameTimer()),
-        chatId = chatId,
-        sender = senderName,
-        sender_name = senderName,
-        message = messageText,
-        timestamp = nowTime
+    local ts = os.time()
+    local ok, msgId = pcall(MySQL.insert.await, [[
+        INSERT INTO sky_jobs_chat_messages (chat_id, sender_identifier, recipient_identifier, sender_name, message, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ]], { chat.chatId, ctx.me, chat.target, cleanText(ctx.name, 100) or "Unknown", text, ts })
+    if not ok or not msgId then return { success = false, error = "send_failed" } end
+
+    local groupId = chat.scope == "group" and chat.chatId or nil
+    local message = toChatMessage({
+        id = msgId, sender_identifier = ctx.me, recipient_identifier = chat.target,
+        sender_name = ctx.name, message = text, timestamp = ts, is_read = 0
+    }, ctx.me, groupId)
+
+    local update = {
+        scope = chat.scope, group_id = groupId, sender_identifier = ctx.me,
+        recipient_identifier = chat.target, message = message
     }
+    for _, p in ipairs(chatRecipients(ctx, chat)) do
+        TriggerClientEvent("sky_jobs_base:chat:messageUpdate", p, update)
+    end
 
-    for _, s in ipairs(GetPlayers()) do
-        local p = tonumber(s)
-        if p and Sky_Jobs.PlayerCache.GetJob(p) == jobName then
-            TriggerClientEvent("sky_jobs_base:chat:messageReceived", p, msgObj)
+    return { success = true, data = message }
+end)
+
+Sky.Cb.Register("sky_jobs_base:chat:getUnreadMessages", function(source, payload)
+    local ctx = chatContext(source)
+    if not ctx then return { success = true, data = { count = 0, messages = {} } } end
+    local limit = math.max(1, math.min(200, math.floor(tonumber(type(payload) == "table" and payload.limit) or 60)))
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT id, sender_identifier, recipient_identifier, sender_name, message, timestamp, is_read
+        FROM sky_jobs_chat_messages WHERE recipient_identifier = ? AND is_read = 0 ORDER BY id DESC LIMIT ?
+    ]], { ctx.me, limit })
+    local countOk, countRow = pcall(MySQL.single.await, "SELECT COUNT(*) AS total FROM sky_jobs_chat_messages WHERE recipient_identifier = ? AND is_read = 0", { ctx.me })
+    local messages = {}
+    for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
+        messages[#messages + 1] = toChatMessage(row, ctx.me)
+    end
+    return { success = true, data = { count = countOk and countRow and tonumber(countRow.total) or #messages, messages = messages } }
+end)
+
+local function myGroups(ctx)
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT g.id, g.name, g.created_by FROM sky_jobs_chat_groups g
+        WHERE g.job = ? AND (g.created_by = ? OR EXISTS (
+            SELECT 1 FROM sky_jobs_chat_group_members m WHERE m.group_id = g.id AND m.identifier = ?))
+        ORDER BY g.created_at DESC
+    ]], { ctx.job, ctx.me, ctx.me })
+    return ok and type(rows) == "table" and rows or {}
+end
+
+Sky.Cb.Register("sky_jobs_base:chat:getOpenChats", function(source, payload)
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local limit = math.max(1, math.min(200, math.floor(tonumber(type(payload) == "table" and payload.limit) or 120)))
+
+    local chats, lastIds, byChat = {}, {}, {}
+    for _, g in ipairs(myGroups(ctx)) do
+        local entry = { id = tostring(g.id), scope = "group", label = g.name, created_by = g.created_by }
+        chats[#chats + 1] = entry
+        byChat[entry.id] = entry
+    end
+
+    local okDm, dms = pcall(MySQL.query.await, [[
+        SELECT chat_id, MAX(id) AS last_id FROM sky_jobs_chat_messages
+        WHERE recipient_identifier = ? OR (sender_identifier = ? AND recipient_identifier IS NOT NULL)
+        GROUP BY chat_id ORDER BY last_id DESC LIMIT ?
+    ]], { ctx.me, ctx.me, limit })
+    for _, row in ipairs(okDm and type(dms) == "table" and dms or {}) do
+        lastIds[#lastIds + 1] = row.last_id
+    end
+
+    if #chats > 0 then
+        local placeholders, params = {}, {}
+        for _, c in ipairs(chats) do placeholders[#placeholders + 1] = "?"; params[#params + 1] = c.id end
+        local okLast, rows = pcall(MySQL.query.await, ("SELECT chat_id, MAX(id) AS last_id FROM sky_jobs_chat_messages WHERE chat_id IN (%s) GROUP BY chat_id"):format(table.concat(placeholders, ",")), params)
+        for _, row in ipairs(okLast and type(rows) == "table" and rows or {}) do lastIds[#lastIds + 1] = row.last_id end
+    end
+
+    if #lastIds > 0 then
+        local placeholders = {}
+        for i = 1, #lastIds do placeholders[i] = "?" end
+        local okRows, rows = pcall(MySQL.query.await, ("SELECT id, chat_id, sender_identifier, recipient_identifier, sender_name, message, timestamp FROM sky_jobs_chat_messages WHERE id IN (%s)"):format(table.concat(placeholders, ",")), lastIds)
+        for _, row in ipairs(okRows and type(rows) == "table" and rows or {}) do
+            local entry = byChat[row.chat_id]
+            if not entry and row.recipient_identifier then
+                local other = row.sender_identifier == ctx.me and row.recipient_identifier or row.sender_identifier
+                entry = { id = other, scope = "private" }
+                chats[#chats + 1] = entry
+            end
+            if entry then
+                entry.last_message_at = isoTime(row.timestamp)
+                entry.last_message = row.message
+                entry.last_author = row.sender_name
+            end
         end
     end
 
-    return {
-        success = true,
-        data = msgObj
-    }
-end)
-
-Sky.Cb.Register("sky_jobs_base:chat:createGroup", function(source, data)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
-
-    local groupName = (type(data) == "table" and data.name) or "New Group"
-    local groupId = "group_" .. tostring(GetGameTimer())
-    local senderId = GetPlayerIdentifierStr(src)
-
-    MySQL.insert.await([[
-        INSERT INTO sky_jobs_chat_groups (id, job, name, created_by)
-        VALUES (@id, @job, @name, @created_by)
-    ]], {
-        ["@id"] = groupId,
-        ["@job"] = jobName,
-        ["@name"] = groupName,
-        ["@created_by"] = senderId
-    })
-
-    return {
-        success = true,
-        data = {
-            id = groupId,
-            name = groupName,
-            members = {}
-        }
-    }
+    return { success = true, data = chats }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:getGroups", function(source)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    return { success = true, data = myGroups(ctx) }
+end)
 
-    local groups = MySQL.query.await("SELECT id, name, created_by, created_at FROM sky_jobs_chat_groups WHERE job = @job", {
-        ["@job"] = jobName
-    }) or {}
+-- Only identifiers of current members of the caller's job, plus the creator.
+local function sanitizeGroupMembers(ctx, members)
+    local roster = getJobRoster(ctx.job)
+    local out, seen = {}, { [ctx.me] = true }
+    for _, id in ipairs(type(members) == "table" and members or {}) do
+        id = tostring(id)
+        if not seen[id] and roster[id] and #out < 50 then
+            seen[id] = true
+            out[#out + 1] = id
+        end
+    end
+    return out
+end
 
-    return { success = true, data = groups }
+local function replaceGroupMembers(groupId, creator, members)
+    pcall(MySQL.query.await, "DELETE FROM sky_jobs_chat_group_members WHERE group_id = ?", { groupId })
+    for _, id in ipairs(members) do
+        pcall(MySQL.insert.await, "INSERT IGNORE INTO sky_jobs_chat_group_members (group_id, identifier) VALUES (?, ?)", { groupId, id })
+    end
+    pcall(MySQL.insert.await, "INSERT IGNORE INTO sky_jobs_chat_group_members (group_id, identifier) VALUES (?, ?)", { groupId, creator })
+end
+
+local function groupPayload(group)
+    local ids = groupMemberIds(group)
+    return { id = tostring(group.id), name = group.name, created_by = group.created_by, members = ids, admins = { group.created_by } }
+end
+
+-- The caller's group, editable only by its creator.
+local function ownedGroup(ctx, data)
+    data = type(data) == "table" and data or {}
+    local group = getChatGroup(data.group_id or data.groupId or data.group)
+    if not group or group.job ~= ctx.job then return nil, "group_not_found" end
+    if group.created_by ~= ctx.me then return nil, "not_group_owner" end
+    return group
+end
+
+Sky.Cb.Register("sky_jobs_base:chat:createGroup", function(source, data)
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    data = type(data) == "table" and data or {}
+    local name = cleanText(data.name, 100)
+    if not name then return { success = false, error = "invalid_name" } end
+
+    local groupId
+    for _ = 1, 3 do
+        local candidate = ("grp_%d_%06d"):format(os.time(), math.random(0, 999999))
+        local ok = pcall(MySQL.insert.await, "INSERT INTO sky_jobs_chat_groups (id, job, name, created_by) VALUES (?, ?, ?, ?)", { candidate, ctx.job, name, ctx.me })
+        if ok and getChatGroup(candidate) then
+            groupId = candidate
+            break
+        end
+    end
+    if not groupId then return { success = false, error = "create_failed" } end
+
+    replaceGroupMembers(groupId, ctx.me, sanitizeGroupMembers(ctx, data.members))
+    return { success = true, data = groupPayload({ id = groupId, name = name, created_by = ctx.me }) }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:getGroup", function(source, groupId)
-    groupId = resolveChatId(groupId)
-    local row = MySQL.single.await("SELECT id, name, created_by, created_at FROM sky_jobs_chat_groups WHERE id = @id LIMIT 1", {
-        ["@id"] = groupId
-    })
-    return { success = row ~= nil, data = row or {} }
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local chat, err = resolveChat(ctx, { scope = "group", group_id = type(groupId) == "table" and (groupId.group_id or groupId.groupId) or groupId })
+    if not chat then return { success = false, error = err } end
+    return { success = true, data = groupPayload(chat.group) }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:updateGroup", function(source, data)
-    if type(data) ~= "table" then return { success = false } end
-    local groupId = resolveChatId(data)
-    if groupId == "general" then return { success = false, error = "invalid_group" } end
-    MySQL.update.await("UPDATE sky_jobs_chat_groups SET name = @name WHERE id = @id", {
-        ["@id"] = groupId,
-        ["@name"] = tostring(data.name or "Group")
-    })
-    return { success = true, data = { id = groupId, name = data.name } }
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local group, err = ownedGroup(ctx, data)
+    if not group then return { success = false, error = err } end
+    local name = cleanText(data.name, 100)
+    if not name then return { success = false, error = "invalid_name" } end
+    local ok = pcall(MySQL.update.await, "UPDATE sky_jobs_chat_groups SET name = ? WHERE id = ?", { name, group.id })
+    if not ok then return { success = false, error = "save_failed" } end
+    group.name = name
+    return { success = true, data = groupPayload(group) }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:setGroupMembers", function(source, data)
-    return { success = true, data = type(data) == "table" and data or {} }
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local group, err = ownedGroup(ctx, data)
+    if not group then return { success = false, error = err } end
+    replaceGroupMembers(group.id, group.created_by, sanitizeGroupMembers(ctx, data.members))
+    return { success = true, data = groupPayload(group) }
 end)
 
-Sky.Cb.Register("sky_jobs_base:chat:setGroupOwner", function(source, data)
-    return { success = true, data = type(data) == "table" and data or {} }
-end)
-
-Sky.Cb.Register("sky_jobs_base:chat:removeGroupAdmin", function(source, data)
-    return { success = true, data = type(data) == "table" and data or {} }
-end)
+-- Only the creator manages a group; there is no separate admin role.
+local function groupAdminsUnsupported()
+    return { success = false, error = "Only the group creator can manage this group." }
+end
+Sky.Cb.Register("sky_jobs_base:chat:setGroupOwner", groupAdminsUnsupported)
+Sky.Cb.Register("sky_jobs_base:chat:removeGroupAdmin", groupAdminsUnsupported)
 
 Sky.Cb.Register("sky_jobs_base:chat:deleteGroup", function(source, data)
-    local groupId = resolveChatId(data)
-    if groupId == "general" then return { success = false, error = "invalid_group" } end
-    MySQL.query.await("DELETE FROM sky_jobs_chat_groups WHERE id = @id", { ["@id"] = groupId })
-    MySQL.query.await("DELETE FROM sky_jobs_chat_messages WHERE chat_id = @id", { ["@id"] = groupId })
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local group, err = ownedGroup(ctx, data)
+    if not group then return { success = false, error = err } end
+    pcall(MySQL.query.await, "DELETE FROM sky_jobs_chat_group_members WHERE group_id = ?", { group.id })
+    pcall(MySQL.query.await, "DELETE FROM sky_jobs_chat_messages WHERE chat_id = ?", { tostring(group.id) })
+    pcall(MySQL.query.await, "DELETE FROM sky_jobs_chat_groups WHERE id = ?", { group.id })
     return { success = true }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:leaveGroup", function(source, data)
-    return { success = true, data = type(data) == "table" and data or {} }
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    data = type(data) == "table" and data or {}
+    local group = getChatGroup(data.group_id or data.groupId or data.group)
+    if not group or group.job ~= ctx.job then return { success = false, error = "group_not_found" } end
+    if group.created_by == ctx.me then
+        return { success = false, error = "The group creator cannot leave; delete the group instead." }
+    end
+    pcall(MySQL.query.await, "DELETE FROM sky_jobs_chat_group_members WHERE group_id = ? AND identifier = ?", { group.id, ctx.me })
+    return { success = true }
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:setProfilePhoto", function(source, data)
-    return { success = true, data = type(data) == "table" and data or {} }
+    return { success = false, error = "upload_not_configured" }
 end)
 
 -- -----------------------------------------------------
 --  CALENDAR
 -- -----------------------------------------------------
 
+local function validDate(value)
+    if type(value) ~= "string" then return nil end
+    local y, m, d = value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    y, m, d = tonumber(y), tonumber(m), tonumber(d)
+    if not y or m < 1 or m > 12 or d < 1 or d > 31 then return nil end
+    return value
+end
+
 Sky.Cb.Register("sky_jobs_base:calendar:addEvent", function(source, data)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local job = Sky_Jobs.GetEmployment(source)
+    if not job then return { success = false, error = "no_job" } end
+    data = type(data) == "table" and data or {}
 
-    if type(data) == "table" then
-        MySQL.insert.await([[
-            INSERT INTO sky_jobs_calendar_events (job, title, description, date, time, created_by)
-            VALUES (@job, @title, @description, @date, @time, @created_by)
-        ]], {
-            ["@job"] = jobName,
-            ["@title"] = tostring(data.title or "Event"),
-            ["@description"] = tostring(data.description or ""),
-            ["@date"] = tostring(data.date or os.date("%Y-%m-%d")),
-            ["@time"] = tostring(data.time or "12:00"),
-            ["@created_by"] = GetPlayerFullName(src)
-        })
-    end
+    local title = cleanText(data.title, 150)
+    local date = validDate(data.date)
+    if not title or not date then return { success = false, error = "invalid_event" } end
+    local time = type(data.time) == "string" and data.time:match("^%d%d:%d%d$") or nil
+    local color = type(data.color) == "string" and (data.color:match("^#%x%x%x%x%x%x$") or data.color:match("^#%x%x%x$")) or "#4f79ff"
 
-    return { success = true }
+    local ok, id = pcall(MySQL.insert.await, [[
+        INSERT INTO sky_jobs_calendar_events (job, title, description, date, time, color, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ]], { job, title, cleanText(data.description, 2000), date, time, color, cleanText(GetPlayerFullName(source), 64) })
+    if not ok or not id then return { success = false, error = "save_failed" } end
+
+    return { success = true, data = { id = id, title = title, date = date, time = time, color = color } }
 end)
 
-Sky.Cb.Register("sky_jobs_base:calendar:getEvents", function(source)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+Sky.Cb.Register("sky_jobs_base:calendar:getEvents", function(source, payload)
+    local job = Sky_Jobs.GetEmployment(source)
+    if not job then return { success = false, error = "no_job" } end
+    payload = type(payload) == "table" and payload or {}
+    local startDate = validDate(payload.start) or os.date("%Y-%m-01")
+    local endDate = validDate(payload["end"]) or os.date("%Y-%m-31")
 
-    local rows = MySQL.query.await("SELECT * FROM sky_jobs_calendar_events WHERE job = @job ORDER BY id DESC LIMIT 50", {
-        ["@job"] = jobName
-    }) or {}
-
-    return {
-        success = true,
-        data = rows
-    }
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT id, title, description, date, time, color, created_by
+        FROM sky_jobs_calendar_events WHERE job = ? AND date BETWEEN ? AND ?
+        ORDER BY date ASC, time ASC LIMIT 500
+    ]], { job, startDate, endDate })
+    if not ok then return { success = false, error = "load_failed" } end
+    return { success = true, data = rows or {} }
 end)
 
 -- -----------------------------------------------------
 --  MANAGEMENT & MEMBERS CALLBACKS
 -- -----------------------------------------------------
 
-Sky.Cb.Register("sky_jobs_base:getJobData", function(source)
-    local src = tonumber(source)
-    local job = Sky_Jobs.PlayerCache.GetJob(src)
-    local grade = Sky_Jobs.PlayerCache.GetJobGrade(src)
-    return {
-        success = true,
-        data = {
-            name = job,
-            label = job ~= "" and (job:gsub("^%l", string.upper)) or "Unemployed",
-            grade = grade,
-            grade_name = tostring(grade),
-            grade_label = "Grade " .. tostring(grade),
-            grades = {
-                { grade = 0, name = "Trainee", label = "Trainee" },
-                { grade = 1, name = "Junior", label = "Junior" },
-                { grade = 2, name = "Technician", label = "Technician" },
-                { grade = 3, name = "Specialist", label = "Specialist" },
-                { grade = 4, name = "Manager", label = "Manager" },
-                { grade = 5, name = "Boss", label = "Boss" }
-            }
-        }
-    }
-end)
-
-local function fetchOnlineJobMembers(source)
-    local src = tonumber(source)
-    local myJob = Sky_Jobs.PlayerCache.GetJob(src)
-    if not myJob or myJob == "" or myJob == "unemployed" then myJob = "mechanic" end
-
-    local members = {}
-    for _, srcStr in ipairs(GetPlayers()) do
-        local pSrc = tonumber(srcStr)
-        if pSrc then
-            local pJob = Sky_Jobs.PlayerCache.GetJob(pSrc)
-            if pJob == myJob or (myJob == "mechanic" and pJob == "unemployed") or pSrc == src then
-                local pName = GetPlayerFullName(pSrc)
-                table.insert(members, {
-                    source = pSrc,
-                    identifier = GetPlayerIdentifierStr(pSrc),
-                    name = pName,
-                    job = myJob,
-                    grade = Sky_Jobs.PlayerCache.GetJobGrade(pSrc),
-                    grade_label = "Grade " .. tostring(Sky_Jobs.PlayerCache.GetJobGrade(pSrc)),
-                    onDuty = Sky_Jobs.PlayerCache.IsOnDuty(pSrc),
-                    isOnline = true
-                })
-            end
-        end
-    end
-    return members
+local function perm(name)
+    return permissionEnum()[name]
 end
 
+-- Highest grade an actor may hand out: below their own, or up to the top grade for a
+-- boss who holds the top grade.
+local function maxAssignableGrade(actor)
+    local info = getJobInfo(actor.job)
+    if actor.boss and info and info.top and actor.grade >= info.top then return info.top end
+    return actor.grade - 1
+end
+
+local function buildManagementData(source)
+    local actor = getActor(source)
+    if not actor then return nil end
+    local canMoney = actor.can(perm("MANAGE_MONEY"))
+    local canLogs = canMoney or actor.can(perm("VIEW_LOGS"))
+    local canMembers = actor.can(perm("MANAGE_MEMBERS"))
+    local canRoles = actor.can(perm("MANAGE_ROLES"))
+    local sections = {
+        dashboard = canLogs or canMembers or canRoles,
+        finance = canLogs,
+        transactions = canMoney,
+        members = canMembers,
+        roles = canRoles,
+        logs = canLogs
+    }
+
+    local info = getJobInfo(actor.job)
+    local jobGrades = {}
+    for _, g in ipairs(info and info.grades or {}) do
+        jobGrades[#jobGrades + 1] = { grade = g.grade, label = g.label, salary = g.salary }
+    end
+
+    local dutyMembers = {}
+    if sections.dashboard then
+        for _, member in pairs(onlineJobMembers(actor.job)) do
+            dutyMembers[#dutyMembers + 1] = { name = member.name, onduty = member.onduty == true, gradeLabel = gradeLabel(info, member.grade) }
+        end
+    end
+
+    local def = Sky_Jobs.GetJobDefinition(actor.job)
+    return {
+        job = actor.job,
+        jobLabel = info and info.label or actor.job,
+        jobColor = def and def.color or nil,
+        balance = canLogs and Sky_Jobs.GetSocietyBalance(actor.job) or 0,
+        currency = "money",
+        playerGrade = actor.grade,
+        jobGrades = jobGrades,
+        sections = sections,
+        -- Grade names, salaries and the grade list belong to the framework (qbx_core
+        -- shared/jobs.lua); the menu only edits permissions.
+        editing = { roleName = false, salary = false, salaryInterval = false, roleStructure = false },
+        salaryEnabled = false,
+        dutyMembers = dutyMembers,
+        mostActiveMembers = {},
+        storageContainsWeapons = false,
+        framework = detectFramework()
+    }
+end
+
+Sky.Cb.Register("sky_jobs_base:getJobData", function(source)
+    local data = buildManagementData(source)
+    if not data then return { success = false, error = "no_job" } end
+    return { success = true, data = data }
+end)
+
 Sky.Cb.Register("sky_jobs_base:getJobMembers", function(source)
-    return fetchOnlineJobMembers(source)
+    return memberRows(tonumber(source))
 end)
 
 Sky.Cb.Register("sky_jobs_base:getAllJobMembers", function(source)
-    return fetchOnlineJobMembers(source)
+    return memberRows(tonumber(source))
 end)
+
+-- qbx_core: change the grade of the job itself (works offline and for secondary jobs).
+local function setMemberGrade(job, member, grade)
+    if GetResourceState("qbx_core") == "started" then
+        local ok, result = pcall(function()
+            return exports.qbx_core:AddPlayerToJob(member.identifier, job, grade)
+        end)
+        return ok and result == true
+    end
+    if not (Sky and Sky.FW and Sky.FW.SetJob) then return false end
+    return Sky.FW.SetJob(member.source or member.identifier, job, grade) == true
+end
+
+local function removeMemberFromJob(job, member)
+    local defaultJob = Config and Config.MultiJob and Config.MultiJob.defaultJob or "unemployed"
+    local defaultGrade = Config and Config.MultiJob and tonumber(Config.MultiJob.defaultGrade) or 0
+    if GetResourceState("qbx_core") == "started" then
+        local ok, result = pcall(function()
+            return exports.qbx_core:RemovePlayerFromJob(member.identifier, job)
+        end)
+        if not (ok and result == true) then return false end
+        -- RemovePlayerFromJob raises no job update event; this one tells the player's client.
+        if member.source and Sky_Jobs.PlayerCache.GetJob(member.source) == "unemployed" then
+            SetPlayerJob(member.source, "unemployed", 0)
+        end
+        return true
+    end
+    if not (Sky and Sky.FW and Sky.FW.SetJob) then return false end
+    return Sky.FW.SetJob(member.source or member.identifier, defaultJob, defaultGrade) == true
+end
+
+local function nextGrade(info, current, step)
+    local best = nil
+    for _, g in ipairs(info and info.grades or {}) do
+        if step > 0 and g.grade > current and (not best or g.grade < best) then best = g.grade end
+        if step < 0 and g.grade < current and (not best or g.grade > best) then best = g.grade end
+    end
+    return best
+end
 
 Sky.Cb.Register("sky_jobs_base:setMember", function(source, action, identifier)
-    local src = tonumber(source)
-    local myJob = Sky_Jobs.PlayerCache.GetJob(src)
-    if not myJob or myJob == "" or myJob == "unemployed" then myJob = "mechanic" end
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_MEMBERS")) then return { success = false, error = "no_permission" } end
 
-    local targetSrc = tonumber(identifier)
-    if not targetSrc then
-        for _, s in ipairs(GetPlayers()) do
-            local p = tonumber(s)
-            if p and GetPlayerIdentifierStr(p) == tostring(identifier) then
-                targetSrc = p
-                break
-            end
-        end
-    end
+    local member = findJobMember(actor.job, identifier)
+    if not member then return { success = false, error = "not_a_member" } end
+    if member.identifier == Sky_Jobs.GetPlayerIdentifier(actor.src) then return { success = false, error = "cannot_target_self" } end
+    if member.grade >= actor.grade then return { success = false, error = "insufficient_rank" } end
 
-    if action == "promote" then
-        if targetSrc then
-            local currentGrade = Sky_Jobs.PlayerCache.GetJobGrade(targetSrc)
-            local newGrade = currentGrade + 1
-            SetPlayerJob(targetSrc, myJob, newGrade)
-            return { success = true, newGrade = newGrade }
+    local info = getJobInfo(actor.job)
+    local actorName = GetPlayerFullName(actor.src)
+    local memberName = member.name or member.identifier
+
+    if action == "promote" or action == "demote" then
+        local newGrade = nextGrade(info, member.grade, action == "promote" and 1 or -1)
+        if not newGrade then return { success = false, error = action == "promote" and "max_grade" or "min_grade" } end
+        if action == "promote" and newGrade > maxAssignableGrade(actor) then return { success = false, error = "insufficient_rank" } end
+        if not setMemberGrade(actor.job, member, newGrade) then return { success = false, error = "update_failed" } end
+
+        logJobTransaction(actor.job, action == "promote" and "member_promoted" or "member_demoted", 0, actorName,
+            ("%s: %s -> %s"):format(memberName, gradeLabel(info, member.grade), gradeLabel(info, newGrade)))
+        if member.source then
+            TriggerClientEvent("sky_jobs_base:gradeChanged", member.source,
+                { level = member.grade, label = gradeLabel(info, member.grade) }, { level = newGrade, label = gradeLabel(info, newGrade) })
         end
-    elseif action == "demote" then
-        if targetSrc then
-            local currentGrade = Sky_Jobs.PlayerCache.GetJobGrade(targetSrc)
-            local newGrade = math.max(0, currentGrade - 1)
-            SetPlayerJob(targetSrc, myJob, newGrade)
-            return { success = true, newGrade = newGrade }
-        end
+        return { success = true, newGrade = newGrade }
     elseif action == "fire" then
-        if targetSrc then
-            SetPlayerJob(targetSrc, "unemployed", 0)
-            return { success = true }
+        if not removeMemberFromJob(actor.job, member) then return { success = false, error = "update_failed" } end
+        logJobTransaction(actor.job, "member_fired", 0, actorName, memberName)
+        if member.source then
+            notify(member.source, info and info.label or actor.job, "You have been dismissed from the job.", "error")
         end
+        return { success = true }
     end
 
-    return { success = true }
+    return { success = false, error = "invalid_action" }
 end)
 
-Sky.Cb.Register("sky_jobs_base:sendInvite", function(source, playerId, grade)
-    local src = tonumber(source)
-    local target = tonumber(playerId)
-    local gradeNum = tonumber(grade) or 0
+-- Pending job offers by target server id.
+local pendingInvites = {}
+local lastInviteSent = {}
 
-    if not target or target <= 0 or not GetPlayerName(target) then
+AddEventHandler("playerDropped", function()
+    pendingInvites[source] = nil
+    lastInviteSent[source] = nil
+end)
+
+local function closeInvite(target, invite)
+    if pendingInvites[target] == invite then pendingInvites[target] = nil end
+    TriggerClientEvent("sky_jobs_base:inviteClosed", target, { id = invite.id })
+end
+
+Sky.Cb.Register("sky_jobs_base:sendInvite", function(source, playerId, grade)
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_MEMBERS")) then return { success = false, error = "no_permission" } end
+
+    local now = GetGameTimer()
+    if lastInviteSent[actor.src] and now - lastInviteSent[actor.src] < 3000 then return { success = false, error = "too_fast" } end
+
+    local target = math.tointeger(tonumber(playerId))
+    if not target or target == actor.src or not GetPlayerName(target) or not Sky_Jobs.GetPlayerIdentifier(target) then
         return { success = false, error = "Player not found or offline" }
     end
+    if Sky_Jobs.PlayerCache.GetJob(target) == actor.job then return { success = false, error = "already_member" } end
 
-    local myJob = Sky_Jobs.PlayerCache.GetJob(src)
-    if not myJob or myJob == "" or myJob == "unemployed" then myJob = "mechanic" end
+    local info = getJobInfo(actor.job)
+    local newGrade = math.tointeger(tonumber(grade))
+    if not newGrade or not (info and info.byLevel[newGrade]) or newGrade < 0 or newGrade > maxAssignableGrade(actor) then
+        return { success = false, error = "invalid_grade" }
+    end
+    if pendingInvites[target] and os.time() < pendingInvites[target].expires then
+        return { success = false, error = "invite_pending" }
+    end
 
-    SetPlayerJob(target, myJob, gradeNum)
+    lastInviteSent[actor.src] = now
+    local ttl = math.max(10, math.floor(tonumber(Config and Config.Invites and Config.Invites.expireSeconds) or 60))
+    local invite = {
+        id = ("%d-%d-%d"):format(target, now, math.random(1000, 9999)),
+        job = actor.job,
+        grade = newGrade,
+        inviter = actor.src,
+        inviterName = GetPlayerFullName(actor.src),
+        expires = os.time() + ttl
+    }
+    pendingInvites[target] = invite
 
-    TriggerClientEvent("sky_base:client:showNotification", target, "Job Offer", ("You have been hired as %s (Grade %d)!"):format(myJob, gradeNum), "success")
-    TriggerClientEvent("sky_base:client:showNotification", src, "Management", ("Hired player %s as %s."):format(GetPlayerFullName(target), myJob), "success")
+    TriggerClientEvent("sky_jobs_base:inviteReceived", target, {
+        id = invite.id,
+        jobLabel = info.label,
+        gradeLabel = gradeLabel(info, newGrade),
+        inviterName = invite.inviterName,
+        duration = ttl
+    })
+    SetTimeout(ttl * 1000, function()
+        if pendingInvites[target] == invite then closeInvite(target, invite) end
+    end)
 
+    logJobTransaction(actor.job, "invite_sent", 0, invite.inviterName, ("%s (%s)"):format(GetPlayerFullName(target), gradeLabel(info, newGrade)))
     return { success = true }
 end)
 
 Sky.Cb.Register("sky_jobs_base:respondInvite", function(source, inviteId, accepted)
+    local src = tonumber(source)
+    local invite = src and pendingInvites[src]
+    if not invite or invite.id ~= inviteId or os.time() > invite.expires then
+        return { success = false, error = "Invite expired" }
+    end
+    closeInvite(src, invite)
+
+    local info = getJobInfo(invite.job)
+    local name = GetPlayerFullName(src)
+    if accepted ~= true then
+        logJobTransaction(invite.job, "invite_declined", 0, name, info and info.label or invite.job)
+        if GetPlayerName(invite.inviter) then
+            notify(invite.inviter, "Management", ("%s declined the job offer."):format(name), "info")
+            TriggerClientEvent("sky_jobs_base:inviteResult", invite.inviter, { accepted = false })
+        end
+        return { success = true }
+    end
+
+    if not SetPlayerJob(src, invite.job, invite.grade) then
+        return { success = false, error = "hire_failed" }
+    end
+    logJobTransaction(invite.job, "invite_accepted", 0, name, gradeLabel(info, invite.grade))
+    notify(src, info and info.label or invite.job, ("You joined as %s."):format(gradeLabel(info, invite.grade)), "success")
+    if GetPlayerName(invite.inviter) then
+        notify(invite.inviter, "Management", ("%s accepted the job offer."):format(name), "success")
+        TriggerClientEvent("sky_jobs_base:inviteResult", invite.inviter, { accepted = true })
+    end
     return { success = true }
 end)
 
@@ -959,199 +1809,372 @@ end)
 --  FINANCES, TRANSACTIONS & BONUSES
 -- -----------------------------------------------------
 
-Sky.Cb.Register("sky_jobs_base:getFinances", function(source)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+local function toLogRow(row, transactionsView)
+    local action = LEGACY_ACTIONS[row.type] or row.type or "unknown"
+    local amount = tonumber(row.amount) or 0
+    local isMoney = MONEY_CREDIT[action] or MONEY_DEBIT[action]
+    local content
+    if isMoney then
+        content = Sky.Currency.Format(amount)
+        if not transactionsView and type(row.reason) == "string" and row.reason ~= "" then
+            content = content .. " - " .. row.reason
+        end
+    else
+        content = row.reason or ""
+    end
+    return { id = row.id, timestamp = tonumber(row.ts) or os.time(), name = row.sender or "System", action = action, content = content, amount = amount }
+end
 
-    local balance = getSocietyBalance(jobName)
-    local rows = MySQL.query.await("SELECT * FROM sky_jobs_transactions WHERE job = @job ORDER BY date DESC LIMIT 20", {
-        ["@job"] = jobName
-    }) or {}
-
-    return {
-        success = true,
-        data = {
-            balance = balance,
-            transactions = rows
-        }
-    }
-end)
+local function moneyTypePlaceholders()
+    local marks = {}
+    for i = 1, #MONEY_TYPE_LIST do marks[i] = "?" end
+    return table.concat(marks, ",")
+end
 
 Sky.Cb.Register("sky_jobs_base:getFinanceSnapshot", function(source)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local actor = getActor(source)
+    if not actor or not (actor.can(perm("VIEW_LOGS")) or actor.can(perm("MANAGE_MONEY"))) then
+        return { success = false, error = "no_permission" }
+    end
 
-    local balance = getSocietyBalance(jobName)
-    local rows = MySQL.query.await("SELECT * FROM sky_jobs_transactions WHERE job = @job ORDER BY date DESC LIMIT 30", {
-        ["@job"] = jobName
-    }) or {}
+    local days = math.max(1, math.min(90, math.floor(tonumber(Config and Config.ManagementFinance and Config.ManagementFinance.historyDays) or 14)))
+    local now = os.time()
+    local since = now - (days - 1) * 86400
+    local params = { actor.job, os.time({ year = tonumber(os.date("%Y", since)), month = tonumber(os.date("%m", since)), day = tonumber(os.date("%d", since)), hour = 0 }) }
+    for _, t in ipairs(MONEY_TYPE_LIST) do params[#params + 1] = t end
+    local ok, rows = pcall(MySQL.query.await, ([[
+        SELECT type, amount, UNIX_TIMESTAMP(`date`) AS ts FROM sky_jobs_transactions
+        WHERE job = ? AND `date` >= FROM_UNIXTIME(?) AND type IN (%s)
+    ]]):format(moneyTypePlaceholders()), params)
+    if not ok then return { success = false, error = "load_failed" } end
 
-    local income = 0
-    local expenses = 0
-    local txList = {}
+    local timeline, byDate = {}, {}
+    for i = days - 1, 0, -1 do
+        local key = os.date("%Y-%m-%d", now - i * 86400)
+        local point = { date = key, revenue = 0, expenses = 0 }
+        timeline[#timeline + 1] = point
+        byDate[key] = point
+    end
 
-    for _, r in ipairs(rows) do
-        local amt = tonumber(r.amount) or 0
-        if r.type == "deposit" or r.type == "income" then
-            income = income + amt
+    local totals = { revenue = 0, expenses = 0, profit = 0 }
+    local revenue, expenses = {}, {}
+    for _, row in ipairs(rows or {}) do
+        local action = LEGACY_ACTIONS[row.type] or row.type
+        local amount = tonumber(row.amount) or 0
+        local point = byDate[os.date("%Y-%m-%d", tonumber(row.ts) or now)]
+        local category = FINANCE_CATEGORY[action] or "other"
+        if MONEY_CREDIT[action] then
+            totals.revenue = totals.revenue + amount
+            revenue[category] = (revenue[category] or 0) + amount
+            if point then point.revenue = point.revenue + amount end
         else
-            expenses = expenses + amt
+            totals.expenses = totals.expenses + amount
+            expenses[category] = (expenses[category] or 0) + amount
+            if point then point.expenses = point.expenses + amount end
         end
-        table.insert(txList, {
-            id = r.id,
-            type = r.type,
-            amount = amt,
-            sender = r.sender or "System",
-            reason = r.reason or r.type,
-            date = r.date or os.date("%Y-%m-%d %H:%M")
-        })
+    end
+    totals.profit = totals.revenue - totals.expenses
+
+    local function toList(map)
+        local list = {}
+        for key, amount in pairs(map) do list[#list + 1] = { key = key, amount = amount } end
+        table.sort(list, function(a, b) return a.amount > b.amount end)
+        return list
     end
 
     return {
         success = true,
         data = {
-            balance = balance,
-            currency = "$",
-            income = income,
-            expenses = expenses,
-            transactions = txList,
-            logs = txList
+            totals = totals,
+            timeline = timeline,
+            revenueCategories = toList(revenue),
+            expenseCategories = toList(expenses),
+            currency = "money",
+            updatedAt = now
         }
     }
 end)
 
 Sky.Cb.Register("sky_jobs_base:transactionJobMoney", function(source, transType, amount)
-    local src = tonumber(source)
-    if not src then return { success = false, error = "Invalid player" } end
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_MONEY")) then return { success = false, error = "no_permission" } end
+    amount = validAmount(amount)
+    if not amount or amount > MAX_BALANCE then return { success = false, error = "Invalid amount" } end
 
-    amount = math.floor(tonumber(amount) or 0)
-    if amount <= 0 then return { success = false, error = "Invalid amount" } end
-
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
-
-    local currentBalance = getSocietyBalance(jobName)
+    local job, src = actor.job, actor.src
     local playerName = GetPlayerFullName(src)
+    local txType
 
     if transType == "deposit" then
-        local removed = RemovePlayerMoney(src, "bank", amount)
-        if not removed then
-            removed = RemovePlayerMoney(src, "money", amount)
+        local account = "bank"
+        if not Sky_Jobs.RemovePlayerMoney(src, account, amount) then
+            account = "money"
+            if not Sky_Jobs.RemovePlayerMoney(src, account, amount) then
+                return { success = false, error = "Insufficient personal funds." }
+            end
         end
-        if not removed then
-            return { success = false, error = "Insufficient personal funds." }
+        if not creditSociety(job, amount) then
+            Sky_Jobs.AddPlayerMoney(src, account, amount)
+            return { success = false, error = "deposit_failed" }
         end
-
-        local newBalance = currentBalance + amount
-        updateSocietyBalance(jobName, newBalance)
-        addJobTransaction(jobName, "deposit", amount, playerName, "Deposit to society fund")
-
-        return {
-            success = true,
-            balance = newBalance,
-            currency = "$",
-            data = {
-                type = "deposit",
-                amount = amount,
-                sender = playerName,
-                date = os.date("%Y-%m-%d %H:%M")
-            }
-        }
+        txType = "deposited"
     elseif transType == "withdraw" then
-        if currentBalance < amount then
+        if not debitSociety(job, amount) then
             return { success = false, error = "Insufficient society funds." }
         end
-
-        local newBalance = currentBalance - amount
-        updateSocietyBalance(jobName, newBalance)
-        AddPlayerMoney(src, "bank", amount)
-        addJobTransaction(jobName, "withdraw", amount, playerName, "Withdrawal from society fund")
-
-        return {
-            success = true,
-            balance = newBalance,
-            currency = "$",
-            data = {
-                type = "withdraw",
-                amount = amount,
-                sender = playerName,
-                date = os.date("%Y-%m-%d %H:%M")
-            }
-        }
+        if not Sky_Jobs.AddPlayerMoney(src, "bank", amount) then
+            creditSociety(job, amount)
+            return { success = false, error = "payout_failed" }
+        end
+        txType = "withdrawn"
+    else
+        return { success = false, error = "Invalid transaction type" }
     end
 
-    return { success = false, error = "Invalid transaction type" }
+    logJobTransaction(job, txType, amount, playerName, nil)
+    return {
+        success = true,
+        balance = Sky_Jobs.GetSocietyBalance(job),
+        currency = "money",
+        data = toLogRow({ id = ("new-%d"):format(GetGameTimer()), type = txType, amount = amount, sender = playerName, ts = os.time() }, true)
+    }
 end)
 
 Sky.Cb.Register("sky_jobs_base:transactionLogs", function(source, limit, offset)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local actor = getActor(source)
+    if not actor or not (actor.can(perm("VIEW_LOGS")) or actor.can(perm("MANAGE_MONEY"))) then
+        return { success = false, error = "no_permission" }
+    end
+    limit = math.max(1, math.min(200, math.floor(tonumber(limit) or 50)))
+    offset = math.max(0, math.floor(tonumber(offset) or 0))
 
-    limit = tonumber(limit) or 50
-    offset = tonumber(offset) or 0
+    local params = { actor.job }
+    for _, t in ipairs(MONEY_TYPE_LIST) do params[#params + 1] = t end
+    params[#params + 1] = limit
+    params[#params + 1] = offset
+    local ok, rows = pcall(MySQL.query.await, ([[
+        SELECT id, type, amount, sender, reason, UNIX_TIMESTAMP(`date`) AS ts FROM sky_jobs_transactions
+        WHERE job = ? AND type IN (%s) ORDER BY id DESC LIMIT ? OFFSET ?
+    ]]):format(moneyTypePlaceholders()), params)
+    if not ok then return { success = false, error = "load_failed" } end
 
-    local rows = MySQL.query.await("SELECT * FROM sky_jobs_transactions WHERE job = @job ORDER BY date DESC LIMIT @limit OFFSET @offset", {
-        ["@job"] = jobName,
-        ["@limit"] = limit,
-        ["@offset"] = offset
-    }) or {}
-
-    return rows
+    local list = {}
+    for _, row in ipairs(rows or {}) do list[#list + 1] = toLogRow(row, true) end
+    return { success = true, data = list, hasMore = #list >= limit }
 end)
 
 Sky.Cb.Register("sky_jobs_base:getJobLogs", function(source, from, to)
-    local src = tonumber(source)
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local actor = getActor(source)
+    if not actor or not (actor.can(perm("VIEW_LOGS")) or actor.can(perm("MANAGE_MONEY"))) then
+        return { success = false, error = "no_permission" }
+    end
+    local now = os.time()
+    to = math.floor(tonumber(to) or now) + 86399
+    from = math.floor(tonumber(from) or (now - 7 * 86400))
+    if from > to then from, to = to, from end
+    from = math.max(from, to - 366 * 86400)
 
-    local rows = MySQL.query.await("SELECT * FROM sky_jobs_transactions WHERE job = @job ORDER BY date DESC LIMIT 50", {
-        ["@job"] = jobName
-    }) or {}
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT id, type, amount, sender, reason, UNIX_TIMESTAMP(`date`) AS ts FROM sky_jobs_transactions
+        WHERE job = ? AND `date` BETWEEN FROM_UNIXTIME(?) AND FROM_UNIXTIME(?) ORDER BY id DESC LIMIT 500
+    ]], { actor.job, from, to })
+    if not ok then return { success = false, error = "load_failed" } end
 
-    return rows
+    local list = {}
+    for _, row in ipairs(rows or {}) do list[#list + 1] = toLogRow(row, false) end
+    return { success = true, data = list }
 end)
 
 Sky.Cb.Register("sky_jobs_base:giveBonus", function(source, targetId, amount, reason)
-    local src = tonumber(source)
-    local target = tonumber(targetId)
-    amount = math.floor(tonumber(amount) or 0)
-    if not target or amount <= 0 then
-        return { success = false, error = "Invalid target or amount" }
-    end
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_MONEY")) then return { success = false, error = "no_permission" } end
+    amount = validAmount(amount)
+    if not amount or amount > MAX_BALANCE then return { success = false, error = "Invalid amount" } end
 
-    local jobName = Sky_Jobs.PlayerCache.GetJob(src)
-    if not jobName or jobName == "" or jobName == "unemployed" then jobName = "mechanic" end
+    local member = findJobMember(actor.job, targetId)
+    if not member then return { success = false, error = "not_a_member" } end
+    if not member.source then return { success = false, error = "member_offline" } end
 
-    local currentBalance = getSocietyBalance(jobName)
-    if currentBalance < amount then
+    if not debitSociety(actor.job, amount) then
         return { success = false, error = "Insufficient society funds for bonus" }
     end
+    if not Sky_Jobs.AddPlayerMoney(member.source, "bank", amount) then
+        creditSociety(actor.job, amount)
+        return { success = false, error = "payout_failed" }
+    end
 
-    updateSocietyBalance(jobName, currentBalance - amount)
-    AddPlayerMoney(target, "bank", amount)
-
-    local targetName = GetPlayerFullName(target)
-    local senderName = GetPlayerFullName(src)
-    addJobTransaction(jobName, "bonus", amount, senderName, ("Bonus to %s: %s"):format(targetName, tostring(reason or "")))
-
-    TriggerClientEvent("sky_jobs_base:bonusReceived", target, {
-        amount = amount,
-        reason = reason or "Employee performance bonus",
-        sender = senderName
-    })
-
+    local senderName = GetPlayerFullName(actor.src)
+    local note = cleanText(reason, 200)
+    logJobTransaction(actor.job, "bonus_paid", amount, senderName, ("%s%s"):format(member.name or member.identifier, note and (": " .. note) or ""))
+    TriggerClientEvent("sky_jobs_base:bonusReceived", member.source, { amount = amount, managerName = senderName, currency = "money" })
     return { success = true }
 end)
 
+-- Not used by the jobs UI and nothing reads saved specs, so saving is refused honestly.
 Sky.Cb.Register("sky_jobs_base:getBillingSpecs", function(source)
-    return {}
+    return { success = true, data = {} }
 end)
 
 Sky.Cb.Register("sky_jobs_base:saveBillingSpecs", function(source, specs)
-    return { success = true }
+    return { success = false, error = "not_implemented" }
+end)
+
+-- -----------------------------------------------------
+--  ROLES & PERMISSIONS EDITOR
+-- -----------------------------------------------------
+
+local OPTION_PERMISSIONS = {
+    MANAGE_WAREHOUSE = { options = "items", weapons = "weapons" },
+    GARAGE_VEHICLES = { options = "vehicles" },
+    TABLET_APPS = { options = "tablet_apps" },
+    DOCUMENT_CLASSIFICATIONS = { options = "document_classifications" }
+}
+
+-- The roles editor of `actor` may edit `grade`: a grade below their own, or their own
+-- when they hold the job's top grade (as the UI allows).
+local function roleEditor(source, grade)
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_ROLES")) then return nil, "no_permission" end
+    local info = getJobInfo(actor.job)
+    grade = math.tointeger(tonumber(grade))
+    if not grade or not (info and info.byLevel[grade]) then return nil, "invalid_grade" end
+    if not (grade < actor.grade or (grade == actor.grade and info.top and grade >= info.top)) then
+        return nil, "Low Job Grade"
+    end
+    return actor, grade, info
+end
+
+Sky.Cb.Register("sky_jobs_base:getJobPlayerPermissions", function(source, grade)
+    local actor, level = roleEditor(source, grade)
+    if not actor then return {} end
+    local entry = getGradeEntry(actor.job, level)
+    local map = {}
+    for id in pairs(entry and entry.perms or {}) do map[tostring(id)] = true end
+    return map
+end)
+
+local function restrictedList(key)
+    return function(source, grade)
+        local actor, level = roleEditor(source, grade)
+        if not actor then return { success = false, error = level, data = {} } end
+        local entry = getGradeEntry(actor.job, level)
+        return { success = true, data = entry and entry.restrictions[key] or {} }
+    end
+end
+
+Sky.Cb.Register("sky_jobs_base:getGradeRestrictedItems", restrictedList("items"))
+Sky.Cb.Register("sky_jobs_base:getGradeRestrictedWeapons", restrictedList("weapons"))
+Sky.Cb.Register("sky_jobs_base:getGradeRestrictedVehicles", restrictedList("vehicles"))
+Sky.Cb.Register("sky_jobs_base:getGradeRestrictedTabletApps", restrictedList("tablet_apps"))
+Sky.Cb.Register("sky_jobs_base:getGradeRestrictedDocumentClassifications", restrictedList("document_classifications"))
+
+Sky.Cb.Register("sky_jobs_base:saveGrade", function(source, data)
+    data = type(data) == "table" and data or {}
+    local actor, level, info = roleEditor(source, data.grade)
+    if not actor then return { success = false, error = level } end
+
+    local current = info.byLevel[level]
+    local roleName = cleanText(data.roleName, 100)
+    if roleName and roleName ~= current.label then
+        return { success = false, error = "Grade names come from the framework job config and cannot be changed here." }
+    end
+    if data.salary ~= nil and tonumber(data.salary) ~= current.salary then
+        return { success = false, error = "Salaries come from the framework job config and cannot be changed here." }
+    end
+
+    local enum = permissionEnum()
+    local optionKeyById = {}
+    for name, keys in pairs(OPTION_PERMISSIONS) do
+        if enum[name] then optionKeyById[enum[name]] = keys end
+    end
+
+    local old = getGradeEntry(actor.job, level) or normalizeEntry({}, {})
+    local perms, restrictions = {}, {}
+    for _, key in ipairs(RESTRICTION_KEYS) do restrictions[key] = old.restrictions[key] end
+
+    for _, p in ipairs(type(data.permissions) == "table" and data.permissions or {}) do
+        local id = type(p) == "table" and resolvePermission(p.id)
+        if id then
+            if p.enabled == true then perms[#perms + 1] = id end
+            local keys = optionKeyById[id]
+            if keys then
+                restrictions[keys.options] = p.selectedOptions
+                if keys.weapons then restrictions[keys.weapons] = p.selectedWeaponOptions end
+            end
+        end
+    end
+    local entry = normalizeEntry(perms, restrictions)
+
+    -- A non-boss may only grant or revoke permissions they hold themselves.
+    if not actor.boss then
+        for _, value in pairs(enum) do
+            if (entry.perms[value] == true) ~= (old.perms[value] == true) and not actor.can(value) then
+                return { success = false, error = "cannot_grant_permission" }
+            end
+        end
+    end
+
+    if not saveGradeEntry(actor.job, level, entry) then return { success = false, error = "save_failed" } end
+    logJobTransaction(actor.job, "permissions_updated", 0, GetPlayerFullName(actor.src), current.label)
+    return { success = true, grade = level, data = buildManagementData(actor.src) }
+end)
+
+Sky.Cb.Register("sky_jobs_base:editGrade", function(source, action, grade)
+    return { success = false, error = "Grades come from the framework job config and cannot be moved, created or deleted here." }
+end)
+
+local itemOptionsCache = nil
+
+local function oxItems(name)
+    if GetResourceState("ox_inventory") ~= "started" then return nil end
+    local ok, items = pcall(function() return exports.ox_inventory:Items(name) end)
+    return ok and items or nil
+end
+
+local function qbItems()
+    if GetResourceState("qb-core") ~= "started" then return nil end
+    local ok, core = pcall(function() return exports["qb-core"]:GetCoreObject() end)
+    return ok and type(core) == "table" and core.Shared and core.Shared.Items or nil
+end
+
+Sky.Cb.Register("sky_jobs_base:getItemOptions", function(source)
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_ROLES")) then return { success = false, error = "no_permission", data = {} } end
+    if not itemOptionsCache then
+        local list = {}
+        for name, item in pairs(oxItems() or qbItems() or {}) do
+            if type(name) == "string" and not name:upper():find("^WEAPON_") then
+                list[#list + 1] = { value = name, label = type(item) == "table" and item.label or name }
+            end
+        end
+        table.sort(list, function(a, b) return tostring(a.label) < tostring(b.label) end)
+        itemOptionsCache = list
+    end
+    return { success = true, data = itemOptionsCache }
+end)
+
+local function itemDefined(name)
+    if type(name) ~= "string" or name == "" or #name > 64 then return false end
+    if oxItems(name) then return true end
+    local items = qbItems()
+    return items ~= nil and items[name:lower()] ~= nil
+end
+
+Sky.Cb.Register("sky_jobs_base:itemExists", function(source, item)
+    local actor = getActor(source)
+    return actor ~= nil and actor.can(perm("MANAGE_ROLES")) and itemDefined(item)
+end)
+
+Sky.Cb.Register("sky_jobs_base:weaponExists", function(source, weapon)
+    local actor = getActor(source)
+    if not actor or not actor.can(perm("MANAGE_ROLES")) then return { success = false, error = "no_permission" } end
+    if type(weapon) ~= "string" then return { success = false } end
+    local name = weapon:match("^%s*(.-)%s*$"):upper():gsub("%s+", "_")
+    if not name:find("^WEAPON_") then name = "WEAPON_" .. name end
+    if itemDefined(name) or itemDefined(name:lower()) then
+        return { success = true, data = { name = name } }
+    end
+    return { success = false, error = "weapon_not_found" }
 end)
 
 -- -----------------------------------------------------
@@ -2024,58 +3047,68 @@ AddEventHandler("playerDropped", function()
 end)
 
 -- -----------------------------------------------------
---  MAP, DISPATCHES & CAMERA
+--  MAP OFFICERS & CAMERA
 -- -----------------------------------------------------
 
+local function vehicleTypeOf(ped)
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    if not vehicle or vehicle == 0 then return "foot", false end
+    local kind = type(GetVehicleType) == "function" and GetVehicleType(vehicle) or "automobile"
+    local lightsOn = type(IsVehicleSirenOn) == "function" and IsVehicleSirenOn(vehicle) == true
+    if kind == "heli" or kind == "plane" then return "heli", lightsOn end
+    if kind == "boat" or kind == "submarine" then return "boat", lightsOn end
+    return "car", lightsOn
+end
+
+-- On-duty colleagues of an on-duty employee (Config.ColleagueMapBlips.groups widens the
+-- visible jobs per viewer job).
 Sky.Cb.Register("sky_jobs_base:map:getOfficers", function(source)
+    local src = tonumber(source)
+    local myJob = src and Sky_Jobs.RequireEmployee(src, true)
+    if not myJob then return { success = false, error = "no_access" } end
+
+    local cfg = Config and Config.ColleagueMapBlips or {}
+    local visible = { [myJob] = true }
+    local groups = type(cfg.groups) == "table" and cfg.groups[myJob]
+    for _, job in ipairs(type(groups) == "table" and groups or {}) do visible[job] = true end
+    local requiredItem = cfg.requireItem == true and type(cfg.item) == "string" and cfg.item or nil
+
     local officers = {}
     for _, srcStr in ipairs(GetPlayers()) do
         local pSrc = tonumber(srcStr)
-        if pSrc then
+        local job, grade = pSrc and Sky_Jobs.RequireEmployee(pSrc, true)
+        if job and visible[job]
+            and not (Sky_Jobs.IsGpsJammed and Sky_Jobs.IsGpsJammed(pSrc))
+            and (not requiredItem or (Sky_Jobs.GetInventoryItemCount and Sky_Jobs.GetInventoryItemCount(pSrc, requiredItem) > 0)) then
             local ped = GetPlayerPed(pSrc)
-            local coords = GetEntityCoords(ped)
-            table.insert(officers, {
-                source = pSrc,
-                name = GetPlayerFullName(pSrc),
-                coords = { x = coords.x, y = coords.y, z = coords.z },
-                heading = GetEntityHeading(ped),
-                job = Sky_Jobs.PlayerCache.GetJob(pSrc),
-                onDuty = Sky_Jobs.PlayerCache.IsOnDuty(pSrc)
-            })
+            if ped and ped ~= 0 then
+                local coords = GetEntityCoords(ped)
+                local vehicleType, lightsOn = vehicleTypeOf(ped)
+                local health = GetEntityHealth(ped) or 0
+                officers[#officers + 1] = {
+                    id = pSrc,
+                    name = GetPlayerFullName(pSrc),
+                    callsign = tostring(pSrc),
+                    rank = gradeLabel(getJobInfo(job), grade),
+                    job = job,
+                    status = "available",
+                    durability = math.max(0, math.min(100, health - 100)),
+                    coords = { x = coords.x, y = coords.y, z = coords.z },
+                    heading = GetEntityHeading(ped),
+                    vehicleType = vehicleType,
+                    lightsOn = lightsOn
+                }
+            end
         end
     end
-    return {
-        success = true,
-        data = officers
-    }
+
+    return { success = true, data = { officers = officers, speedcams = {}, vehicles = {}, trackers = {} } }
 end)
 
-Sky.Cb.Register("sky_jobs_base:map:getDispatches", function(source)
-    return {
-        success = true,
-        data = {}
-    }
-end)
-
-Sky.Cb.Register("sky_jobs_base:map:getPanics", function(source)
-    return {
-        success = true,
-        data = {}
-    }
-end)
-
-Sky.Cb.Register("sky_jobs_base:map:getPings", function(source)
-    return {
-        success = true,
-        data = {}
-    }
-end)
-
+-- Photos are uploaded to a presigned URL from an upload provider; this resource has none
+-- configured, so the camera reports that instead of a fake success.
 Sky.Cb.Register("sky_jobs_base:camera:takePhoto", function(source, data)
-    return {
-        success = true,
-        url = ""
-    }
+    return { success = false, error = "upload_not_configured" }
 end)
 
 -- -----------------------------------------------------

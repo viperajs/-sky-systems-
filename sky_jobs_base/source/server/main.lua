@@ -8,20 +8,27 @@ Sky_Jobs = Sky_Jobs or {}
 
 -- ── Duty & Job Info Callbacks ─────────────────────────
 
+-- Invite picker: online players with a loaded character outside the caller's job.
 Sky.Cb.Register("sky_jobs_base:getPlayersWithNames", function(source)
+    local src = tonumber(source)
+    local job = Sky_Jobs.GetEmployment(src)
+    if not job or not Sky_Jobs.HasJobPermission(src, "MANAGE_MEMBERS") then
+        return { success = false, error = "no_permission" }
+    end
+
     local players = {}
     for _, srcStr in ipairs(GetPlayers()) do
-        local src = tonumber(srcStr)
-        if src then
-            local name = Functions and Functions.GetName and Functions.GetName(src) or GetPlayerName(src)
+        local p = tonumber(srcStr)
+        if p and p ~= src and Sky_Jobs.GetPlayerIdentifier(p) and Sky_Jobs.PlayerCache.GetJob(p) ~= job then
             players[#players + 1] = {
-                source = src,
-                name = name,
-                job = Sky_Jobs.PlayerCache.GetJob(src)
+                id = p,
+                source = p,
+                name = ("%s (%d)"):format(Sky_Jobs.GetPlayerFullName(p), p)
             }
         end
     end
-    return players
+    table.sort(players, function(a, b) return a.name < b.name end)
+    return { success = true, data = players }
 end)
 
 Sky.Cb.Register("sky_jobs_base:getJobInfo", function(source)
@@ -72,41 +79,19 @@ end)
 
 -- ── Gallery & Creator Callbacks ───────────────────────
 
+-- Photos reach the gallery through presigned upload URLs from an upload provider. None is
+-- configured in this resource, so nothing can be uploaded and every gallery is empty.
 Sky.Cb.Register("sky_jobs_base:gallery:getPhotos", function(source, data)
-    data = type(data) == "table" and data or {}
-    local limit = math.max(1, math.min(200, math.floor(tonumber(data.limit) or 80)))
-
-    local rows = {}
-    local ok = pcall(function()
-        rows = MySQL.query.await([[
-            SELECT id, url, folder, image_id, created_at
-            FROM sky_jobs_gallery_photos
-            ORDER BY created_at DESC
-            LIMIT ]] .. tostring(limit)) or {}
-    end)
-
-    if not ok then
-        rows = {}
-    end
-
-    return {
-        success = true,
-        data = rows
-    }
-end)
-
-Sky.Cb.Register("sky_jobs_base:gallery:getPresignedUrl", function(source, data)
     return { success = true, data = {} }
 end)
 
-Sky.Cb.Register("sky_jobs_base:gallery:deletePhoto", function(source, data)
-    return { success = true, data = {} }
-end)
+local function uploadNotConfigured()
+    return { success = false, error = "upload_not_configured" }
+end
 
-Sky.Cb.Register("sky_jobs_base:gallery:addPhoto", function(source, data)
-    return { success = true, data = type(data) == "table" and data or {} }
-end)
-
+Sky.Cb.Register("sky_jobs_base:gallery:getPresignedUrl", uploadNotConfigured)
+Sky.Cb.Register("sky_jobs_base:gallery:deletePhoto", uploadNotConfigured)
+Sky.Cb.Register("sky_jobs_base:gallery:addPhoto", uploadNotConfigured)
 
 CreateThread(function()
     Wait(500)

@@ -164,9 +164,12 @@ local function sanitizeRecord(rec)
     local flameLevel = math.floor(clampNumber(rec.flameScaleLevel or getDefaultFlameScaleLevel(), 1, 10))
     local volLevel = math.floor(clampNumber(rec.volumeLevel or getDefaultVolumeLevel(), 0, 10))
 
+    local enabled = rec.enabled
+    if enabled == nil then enabled = isDefaultEnabled() end
+
     return {
         installed = rec.installed == true,
-        enabled = (rec.enabled ~= nil) and (rec.enabled == true) or isDefaultEnabled(),
+        enabled = enabled == true,
         flameScaleLevel = flameLevel,
         volumeLevel = volLevel,
         installedAt = tostring(rec.installedAt or "")
@@ -381,13 +384,13 @@ function TwoStep.AddOptions(vehicle, addOptionCb)
     if type(addOptionCb) ~= "function" or not config.enabled then return end
 
     local record = getRecordByPlate(getVehiclePlate(vehicle))
-    local isInstalled = type(record) == "table"
+    local isOn = type(record) == "table" and record.installed == true and record.enabled ~= false
 
     addOptionCb(
         "performance",
         "twostep_enabled",
         getNuiLocale("option.label.twostep_enabled", "2-Step"),
-        isInstalled,
+        isOn,
         "rear",
         { sortOrder = 251 }
     )
@@ -560,10 +563,8 @@ function TwoStep.ApplyPersistedStateToVehicle(vehicle, plate, recordData)
 
     setRecordByPlate(cleanPlate, recordData)
 
-    local rec = twostepState.recordsByPlate[cleanPlate]
-    if rec and rec.installed then
-        VehicleEffects.SyncRuntimeForCurrentVehicle()
-    end
+    -- Also when the record was removed, so a running loop drops it.
+    VehicleEffects.SyncRuntimeForCurrentVehicle()
 end
 
 -- ── Net Events & Resource Lifecycle ─────────────────

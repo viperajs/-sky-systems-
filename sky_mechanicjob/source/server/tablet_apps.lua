@@ -86,25 +86,70 @@ local function getMechanicJobNames()
     return names
 end
 
-local function registerMechanicAppsWithJobsBase()
-    local state = GetResourceState("sky_jobs_base")
-    if state == "started" or state == "starting" then
-        local finalApps = {}
-        local jobNames = getMechanicJobNames()
+-- One job definition per mechanic job for sky_jobs_base's job registry (shop, props,
+-- garage vehicles). /jobconfig workshops use their Config.Jobs entry or the first one.
+local function buildJobDefinitions(jobNames)
+    local doesJobExist = Sky and Sky.FW and Sky.FW.DoesJobExist
+    local firstJob = type(Config.Jobs) == "table" and Config.Jobs[1] or {}
+    local definitions = {}
 
-        for _, app in ipairs(MECHANIC_TABLET_APPS) do
-            for _, jobName in ipairs(jobNames) do
-                local appCopy = {}
-                for k, v in pairs(app) do appCopy[k] = v end
-                appCopy.job = jobName
-                table.insert(finalApps, appCopy)
+    for _, jobName in ipairs(jobNames) do
+        local template = nil
+        for _, job in ipairs(Config.Jobs or {}) do
+            if type(job) == "table" and job.name == jobName then
+                template = job
+                break
             end
         end
+        -- Workshop display names are published next to the job keys; skip the ones that are no job.
+        if template or not doesJobExist or doesJobExist(jobName) == true then
+            template = template or firstJob
+            definitions[#definitions + 1] = {
+                name = jobName,
+                label = template.label or jobName,
+                color = template.color,
+                shop = template.shop,
+                props = template.props,
+                vehicles = template.vehicles,
+                offDutyJob = template.offDutyJob
+            }
+        end
+    end
+    return definitions
+end
+
+local function registerMechanicAppsWithJobsBase()
+    local state = GetResourceState("sky_jobs_base")
+    if state ~= "started" and state ~= "starting" then return end
+
+    local finalApps = {}
+    local jobNames = getMechanicJobNames()
+
+    for _, app in ipairs(MECHANIC_TABLET_APPS) do
+        for _, jobName in ipairs(jobNames) do
+            local appCopy = {}
+            for k, v in pairs(app) do appCopy[k] = v end
+            appCopy.job = jobName
+            table.insert(finalApps, appCopy)
+        end
+    end
+
+    local ok, err = pcall(function()
         exports['sky_jobs_base']:RegisterTabletApps("sky_mechanicjob", finalApps)
+    end)
+    if not ok then
+        Functions.Log("warn", "[tablet_apps] RegisterTabletApps failed: %s", tostring(err))
+    end
+
+    ok, err = pcall(function()
+        exports['sky_jobs_base']:RegisterJobs(GetCurrentResourceName(), buildJobDefinitions(jobNames))
+    end)
+    if not ok then
+        Functions.Log("warn", "[tablet_apps] RegisterJobs failed: %s", tostring(err))
     end
 end
 
-registerMechanicAppsWithJobsBase()
+CreateThread(registerMechanicAppsWithJobsBase)
 
 AddEventHandler("sky_jobs_base:server:ready", function()
     registerMechanicAppsWithJobsBase()

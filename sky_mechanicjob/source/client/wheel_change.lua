@@ -998,11 +998,11 @@ function getAppliedTuningRemovalPayload(vehicle, plateStr)
     }) or {}
 
     if type(res) ~= "table" or res.success ~= true then
-        return { entries = {}, itemImageBase = getItemImageBaseUrl() }
+        return nil, type(res) == "table" and res.error or "load_failed"
     end
 
     return {
-        entries = (type(res.data) == "table" and res.data.entries) or {},
+        entries = (type(res.data) == "table" and type(res.data.entries) == "table" and res.data.entries) or {},
         itemImageBase = getItemImageBaseUrl()
     }
 end
@@ -1020,7 +1020,12 @@ RegisterNUICallback("tuningRemoval:listApplied", function(data, cb)
         return
     end
 
-    cb({ success = true, data = getAppliedTuningRemovalPayload(veh, plateStr) })
+    local payload, err = getAppliedTuningRemovalPayload(veh, plateStr)
+    if not payload then
+        cb({ success = false, error = err })
+        return
+    end
+    cb({ success = true, data = payload })
 end)
 
 RegisterNUICallback("tuningRemoval:remove", function(data, cb)
@@ -1434,6 +1439,7 @@ function startDirectStanceInstall(vehicle, stancePart)
     OrderInstallState.requiredItem = "stance_kit"
     OrderInstallState.installFlow = "stance"
     OrderInstallState.directStanceInstall = true
+    OrderInstallState.directStanceRestore = StanceKit.BuildPersistedState(vehicle)
     OrderInstallState.vehicle = vehicle
     OrderInstallState.vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle)
     OrderInstallState.simpleStep = "idle"
@@ -1532,6 +1538,28 @@ function completeActiveOrderInstall(vehicle, force)
     end
 
     if OrderInstallState.directStanceInstall then
+        -- The server checks the admin permission or uses up the stance kit, then saves.
+        local props = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+        if props then
+            props._skyMechanicTuning = { stance = StanceKit.BuildPersistedState(vehicle) }
+        end
+        local res = Sky.Cb.Trigger("sky_mechanicjob:tuning:purchase", {
+            method = "cash",
+            plate = GetVehicleNumberPlateText(vehicle),
+            parts = { OrderInstallState.part },
+            adminMode = true,
+            mode = "stancing",
+            properties = props
+        }) or {}
+        if res.success ~= true then
+            local reason = res.error == "missing_item"
+                and ("%s: %s"):format(getNuiLocale("tablet.orders.missing_item", "Missing required item"), getNuiLocale("tablet.orders.items.stance_kit", "stance_kit"))
+                or ((tuningLocales and tuningLocales.NoPermission) or "You do not have permission to use this command.")
+            notify(reason, "error")
+            StanceKit.RestorePreviewState(vehicle, OrderInstallState.directStanceRestore, Sky.Math.Trim(GetVehicleNumberPlateText(vehicle)))
+            clearOrderInstallState()
+            return false, { key = "radial.errors.generic", fallback = reason }
+        end
         saveTuningForVehicle(vehicle)
         notify(getNuiLocale("tablet.orders.stance_checklist.complete", "Stance installation completed."), "success")
         clearOrderInstallState()
@@ -1799,21 +1827,8 @@ RegisterNetEvent("sky_mechanicjob:tuning:openStancing", function()
     openFromCurrentVehicle(true, "stancing")
 end)
 
-RegisterCommand("tuning", function()
-    openFromCurrentVehicle(true)
-end, false)
-
-RegisterCommand("admintuning", function()
-    openFromCurrentVehicle(true)
-end, false)
-
-RegisterCommand("stancing", function()
-    openFromCurrentVehicle(true, "stancing")
-end, false)
-
-RegisterCommand("rgb", function()
-    openFromCurrentVehicle(true, "rgb_controller")
-end, false)
+-- /admintuning, /stancing and /rgb are server commands (permission checked) that raise
+-- the events above.
 
 RegisterCommand("diagnostics", function()
     local ped = PlayerPedId()

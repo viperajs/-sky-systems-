@@ -389,8 +389,9 @@ function GetSelfServicePricingConfig()
     }
 end
 
+-- Same rule as the server (server/pricing.lua): the job's entry, else the first entry.
 function ResolveTuningCostProfile(jobKey)
-    local jobConfig = GetJobConfigByName(jobKey) or {}
+    local jobConfig = GetJobConfigByName(jobKey) or (Config and Config.Jobs and Config.Jobs[1]) or {}
     local profile = jobConfig.tuningCostProfile or {}
 
     local result = {
@@ -416,9 +417,6 @@ function ResolveSelfServicePricingContext(profileJob, isSelfService)
     local selfServiceCfg = GetSelfServicePricingConfig()
 
     if selfServiceCfg.publicUsersSeePrices then
-        if isConfigured then
-            return { hidePrices = false, profileJob = activeJobKey }
-        end
         local fallbackJob = profileJob
         if not fallbackJob and Config and Config.Jobs and Config.Jobs[1] then
             fallbackJob = Config.Jobs[1].name
@@ -427,7 +425,7 @@ function ResolveSelfServicePricingContext(profileJob, isSelfService)
     end
 
     if isConfigured then
-        return { hidePrices = false, profileJob = activeJobKey }
+        return { hidePrices = false, profileJob = profileJob or activeJobKey }
     end
 
     return { hidePrices = true, profileJob = nil }
@@ -590,9 +588,10 @@ local function parseInstantTuningConfig(data)
 
     for _, loc in ipairs(rawLocs) do
         if type(loc) == "table" then
-            local x = tonumber(loc.x)
-            local y = tonumber(loc.y)
-            local z = tonumber(loc.z)
+            local c = (type(loc.coords) == "table" or type(loc.coords) == "vector3") and loc.coords or loc
+            local x = tonumber(c.x)
+            local y = tonumber(c.y)
+            local z = tonumber(c.z)
 
             if x and y and z then
                 local locObj = {
@@ -648,7 +647,13 @@ local function applyConfigOverrides(data)
     Config.OrderInstall = Config.OrderInstall or {}
     Config.TuningWorkshopRequirement = Config.TuningWorkshopRequirement or {}
 
-    parseInstantTuningConfig(data)
+    -- Only when /jobconfig sends instant tuning settings; otherwise adv_config.lua stays.
+    for key in pairs(data) do
+        if type(key) == "string" and key:find("^instantTuning") then
+            parseInstantTuningConfig(data)
+            break
+        end
+    end
 
     for key, value in pairs(data) do
         if key == "primaryColor" then
@@ -753,11 +758,36 @@ local function applyConfigOverrides(data)
     end
 end
 
+-- /jobconfig workshops carry no shop or tuning cost profile; they keep the matching Lua job
+-- (by job key) or the first one underneath, as the server does.
+local LUA_JOBS = Config and Config.Jobs or {}
+
+local function mergeConfiguratorJobs(entries)
+    local merged = {}
+    for _, entry in ipairs(entries) do
+        if type(entry) == "table" then
+            local key = entry.jobKey or entry.job or entry.name
+            local base = LUA_JOBS[1] or {}
+            for _, job in ipairs(LUA_JOBS) do
+                if type(job) == "table" and job.name == key then
+                    base = job
+                    break
+                end
+            end
+            local job = {}
+            for k, v in pairs(base) do job[k] = v end
+            for k, v in pairs(entry) do job[k] = v end
+            merged[#merged + 1] = job
+        end
+    end
+    return merged
+end
+
 if Config and Config.UseJobConfigurator then
     RegisterNetEvent("sky_jobs_base:jobConfigurator:updated", function(resName, jobs, features, overrides)
         if resName ~= "sky_mechanicjob" then return end
         if type(jobs) ~= "table" then return end
-        Config.Jobs = jobs
+        Config.Jobs = mergeConfiguratorJobs(jobs)
         Config.ToggleFeatures = type(features) == "table" and features or Config.ToggleFeatures
         applyConfigOverrides(type(overrides) == "table" and overrides or {})
         TriggerEvent("sky_mechanicjob:jobConfigurator:updated")

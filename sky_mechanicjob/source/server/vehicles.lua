@@ -11,15 +11,44 @@ local function sanitizePlate(plate)
     return string.upper(trimmed)
 end
 
+local MAX_TAGS = 20
+local MAX_TAG_LENGTH = 32
+local MAX_NOTES_LENGTH = 2000
+
+local function decodeJson(value)
+    if type(value) ~= "string" or value == "" then return nil end
+    local ok, decoded = pcall(json.decode, value)
+    return ok and decoded or nil
+end
+
+local function decodeTags(value)
+    local decoded = decodeJson(value)
+    return type(decoded) == "table" and decoded or {}
+end
+
+-- Notes are stored as a JSON array of { text }; older rows hold plain text.
+local function decodeNotes(value)
+    if type(value) ~= "string" or value == "" then return {} end
+    local decoded = decodeJson(value)
+    if type(decoded) == "table" then return decoded end
+    return { { text = value } }
+end
+
+local function denied()
+    return { success = false, error = "not_authorized" }
+end
+
 -- ── Registry Paginated Search Callback ────────────────
 
 Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
+    if not Functions.IsMechanicOnDuty(source) then return denied() end
+
     local page = math.max(1, math.floor(tonumber(data and data.page) or 1))
     local pageSize = math.max(1, math.min(100, math.floor(tonumber(data and data.pageSize) or 20)))
-    local search = tostring(data and data.search or "")
+    local search = tostring(data and data.search or ""):sub(1, 64)
     local offset = (page - 1) * pageSize
 
-    local framework = Sky and Sky.Config and Sky.Config.framework or "qb"
+    local framework = Functions.GetFramework() or "qbox"
 
     local vehicles = {}
     local totalCount = 0
@@ -56,8 +85,8 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
                 owner = row.owner,
                 owner_name = ownerName,
                 image_url = row.image_url,
-                tags = row.tags and json.decode(row.tags) or {},
-                notes = row.notes or "",
+                tags = decodeTags(row.tags),
+                notes = decodeNotes(row.notes),
                 mileage = math.floor(tonumber(row.mileage) or 0)
             }
         end
@@ -88,8 +117,8 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
 
         for _, row in ipairs(rows) do
             local modelName = "vehicle"
-            if row.vehicle then
-                local decoded = json.decode(row.vehicle)
+            if row.model then
+                local decoded = decodeJson(row.model)
                 if type(decoded) == "table" and decoded.model then
                     modelName = tostring(decoded.model)
                 end
@@ -102,8 +131,8 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
                 owner = row.owner,
                 owner_name = ownerName,
                 image_url = row.image_url,
-                tags = row.tags and json.decode(row.tags) or {},
-                notes = row.notes or "",
+                tags = decodeTags(row.tags),
+                notes = decodeNotes(row.notes),
                 mileage = math.floor(tonumber(row.mileage) or 0)
             }
         end
@@ -113,7 +142,8 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
         success = true,
         data = {
             vehicles = vehicles,
-            total = totalCount
+            total = totalCount,
+            pagination = { page = page, pageSize = pageSize, totalItems = totalCount }
         }
     }
 end)
@@ -121,10 +151,15 @@ end)
 -- ── Registry Metadata Updates ─────────────────────────
 
 Sky.Cb.Register("sky_mechanicjob:vehicles:setImage", function(source, data)
+    if not Functions.IsMechanicOnDuty(source) then return denied() end
+
     local plate = sanitizePlate(data and data.plate)
-    local url = tostring(data and data.url or "")
+    local url = type(data) == "table" and type(data.url) == "string" and data.url or ""
 
     if plate == "" then return { success = false, error = "invalid_plate" } end
+    if url ~= "" and (#url > 512 or not url:match("^https?://[%w%-%._~:/%?#%[%]@!%$&'%(%)%*%+,;=%%]+$")) then
+        return { success = false, error = "invalid_url" }
+    end
 
     MySQL.query.await([[
         INSERT INTO sky_mechanic_vehicle_registry (plate, image_url)
@@ -132,15 +167,22 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:setImage", function(source, data)
         ON DUPLICATE KEY UPDATE image_url = @image_url
     ]], {
         ["@plate"] = plate,
-        ["@image_url"] = url
+        ["@image_url"] = url ~= "" and url or nil
     })
 
     return { success = true }
 end)
 
 Sky.Cb.Register("sky_mechanicjob:vehicles:setTags", function(source, data)
+    if not Functions.IsMechanicOnDuty(source) then return denied() end
+
     local plate = sanitizePlate(data and data.plate)
-    local tags = type(data and data.tags) == "table" and data.tags or {}
+    local tags = {}
+    for _, tag in ipairs(type(data) == "table" and type(data.tags) == "table" and data.tags or {}) do
+        if type(tag) == "string" and tag ~= "" and #tags < MAX_TAGS then
+            tags[#tags + 1] = tag:sub(1, MAX_TAG_LENGTH)
+        end
+    end
 
     if plate == "" then return { success = false, error = "invalid_plate" } end
 
@@ -153,12 +195,15 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:setTags", function(source, data)
         ["@tags"] = json.encode(tags)
     })
 
-    return { success = true }
+    return { success = true, data = { tags = tags } }
 end)
 
 Sky.Cb.Register("sky_mechanicjob:vehicles:setNotes", function(source, data)
+    if not Functions.IsMechanicOnDuty(source) then return denied() end
+
     local plate = sanitizePlate(data and data.plate)
-    local text = tostring(data and data.text or "")
+    local text = type(data) == "table" and type(data.text) == "string" and data.text:sub(1, MAX_NOTES_LENGTH) or ""
+    local notes = text ~= "" and { { text = text, author = Functions.GetName(source), updatedAt = os.time() } } or {}
 
     if plate == "" then return { success = false, error = "invalid_plate" } end
 
@@ -168,8 +213,8 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:setNotes", function(source, data)
         ON DUPLICATE KEY UPDATE notes = @notes
     ]], {
         ["@plate"] = plate,
-        ["@notes"] = text
+        ["@notes"] = json.encode(notes)
     })
 
-    return { success = true }
+    return { success = true, data = { notes = notes } }
 end)

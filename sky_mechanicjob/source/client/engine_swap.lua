@@ -70,10 +70,19 @@ local function extractHoistPoints()
     for _, entry in ipairs(data.entries) do
         local points = type(entry) == "table" and entry.points or nil
         if type(points) == "table" then
+            local entryJob = entry.jobKey or entry.job
+            local locationSettings = type(entry.locationSettings) == "table" and entry.locationSettings or {}
             for _, pt in ipairs(points) do
                 if type(pt) == "table" and pt.type == POINT_TYPE_HOIST then
                     if pt.x ~= nil and pt.y ~= nil and pt.z ~= nil then
+                        local settings = locationSettings[tostring(pt.uid)]
+                        local requiresOnDuty = nil
+                        if type(settings) == "table" and type(settings.requiresOnDuty) == "boolean" then
+                            requiresOnDuty = settings.requiresOnDuty
+                        end
                         result[#result + 1] = {
+                            jobKey = (type(entryJob) == "string" and entryJob ~= "") and entryJob or nil,
+                            requiresOnDuty = requiresOnDuty,
                             key = makePointKey(entry.id, pt.uid, pt.type),
                             coords = vector3(tonumber(pt.x) or 0.0, tonumber(pt.y) or 0.0, tonumber(pt.z) or 0.0),
                             heading = tonumber(pt.heading) or 0.0
@@ -96,8 +105,15 @@ local function spawnPointHoistProp(pointEntry)
     end
 
     Sky.Load.Model(modelHash)
+    -- Loading waits, so another sync may have spawned this hoist meanwhile.
+    if pointEntry.hoistProp ~= 0 and DoesEntityExist(pointEntry.hoistProp) then
+        pointEntry.live = true
+        return true
+    end
+
+    -- Local prop on every client; networked ones stacked one hoist per player on each point.
     local coords = pointEntry.coords
-    local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, true, true, false)
+    local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, false, false, false)
 
     if obj == 0 or not DoesEntityExist(obj) then
         print("[sky_mechanicjob][engine_hoist] failed: could not create hoist object")
@@ -110,13 +126,6 @@ local function spawnPointHoistProp(pointEntry)
     SetEntityCollision(obj, true, true)
     SetEntityCompletelyDisableCollision(obj, false, false)
     FreezeEntityPosition(obj, true)
-
-    local netId = ObjToNet(obj)
-    if netId ~= 0 then
-        SetNetworkIdExistsOnAllMachines(netId, true)
-        NetworkSetNetworkIdDynamic(netId, true)
-        SetNetworkIdCanMigrate(netId, false)
-    end
 
     SetModelAsNoLongerNeeded(modelHash)
     pointEntry.hoistProp = obj
@@ -215,6 +224,8 @@ local function syncHoistPoints()
         if existing == nil then
             local newEntry = {
                 key = pt.key,
+                jobKey = pt.jobKey,
+                requiresOnDuty = pt.requiresOnDuty,
                 coords = pt.coords,
                 heading = pt.heading,
                 hoistProp = 0,
@@ -222,7 +233,9 @@ local function syncHoistPoints()
             }
             EngineHoistState.pointsByKey[pt.key] = newEntry
         else
-            if #(existing.coords - pt.coords) > 0.01 then
+            existing.jobKey = pt.jobKey
+            existing.requiresOnDuty = pt.requiresOnDuty
+            if #(existing.coords - pt.coords) > 0.01 or math.abs(existing.heading - pt.heading) > 0.01 then
                 if existing.hoistProp ~= 0 and EngineHoistActiveState.hoistProp == existing.hoistProp then
                     clearEngineHoistState()
                 end
@@ -253,6 +266,31 @@ local function syncHoistPoints()
     EngineHoistState.pointList = list
 end
 
+local function isMechanicJobKey(jobKey)
+    if type(GetMechanicJobNames) ~= "function" then
+        return jobKey == "mechanic"
+    end
+    for _, name in ipairs(GetMechanicJobNames()) do
+        if name == jobKey then return true end
+    end
+    return false
+end
+
+-- The workshop's own job, on duty unless the location turns that off.
+local function canUseHoistPoint(point)
+    local access = type(Sky_Jobs) == "table" and Sky_Jobs.Access or nil
+    if type(access) ~= "table" or type(access.GetJobKey) ~= "function" then return false end
+
+    local jobKey = access.GetJobKey()
+    if not jobKey then return false end
+    if point.jobKey then
+        if point.jobKey ~= jobKey then return false end
+    elseif not isMechanicJobKey(jobKey) then
+        return false
+    end
+    return point.requiresOnDuty == false or (type(access.IsOnDuty) == "function" and access.IsOnDuty() == true)
+end
+
 local function findNearestHoistPoint(maxRadius)
     local radius = tonumber(maxRadius) or MAX_SEARCH_DIST
     local pedCoords = GetEntityCoords(PlayerPedId())
@@ -261,7 +299,7 @@ local function findNearestHoistPoint(maxRadius)
 
     for _, pt in ipairs(EngineHoistState.pointList) do
         local dist = #(pedCoords - pt.coords)
-        if dist <= radius and dist < bestDist then
+        if dist <= radius and dist < bestDist and canUseHoistPoint(pt) then
             bestPoint = pt
             bestDist = dist
         end
@@ -310,7 +348,7 @@ local function attachEnginePropToHoist(hoistObj)
     Sky.Load.Model(modelHash)
 
     local coords = GetEntityCoords(hoistObj)
-    local engineObj = CreateObject(modelHash, coords.x, coords.y, coords.z + 1.35, true, true, false)
+    local engineObj = CreateObject(modelHash, coords.x, coords.y, coords.z + 1.35, false, false, false)
 
     SetEntityCollision(engineObj, false, false)
     SetEntityCompletelyDisableCollision(engineObj, true, false)
@@ -448,8 +486,13 @@ AddEventHandler("gameEventTriggered", function(eventName, args)
     end
 end)
 
+-- The first getData can time out on join; retry until the workshop data arrived.
 CreateThread(function()
-    syncHoistPoints()
+    for _ = 1, 10 do
+        syncHoistPoints()
+        if EngineHoistState.creatorCache then return end
+        Wait(5000)
+    end
 end)
 
 AddEventHandler("onResourceStop", function(resName)

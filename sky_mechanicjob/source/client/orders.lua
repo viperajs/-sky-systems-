@@ -180,7 +180,7 @@ local function getMaxStageIndex(stageCfg)
 
     for k, v in pairs(stageCfg.cost) do
         local num = tonumber(k)
-        if num and isInvalidTable(v) then
+        if num and (type(v) == "table" or type(v) == "number") then
             local adjusted = isZeroBased and num or (num - 1)
             adjusted = math.floor(adjusted)
             if adjusted >= 0 and (maxIdx == nil or adjusted > maxIdx) then
@@ -236,7 +236,7 @@ end
 
 local function hasCustomWheelTypeCosts()
     for _, cost in pairs(tuningCostProfile and tuningCostProfile.wheelTypeCost or {}) do
-        if isInvalidTable(cost) then
+        if type(cost) ~= "table" or cost.enabled ~= false then
             return true
         end
     end
@@ -291,7 +291,7 @@ function getOptionValuePrice(option, val, vehicle, basePrice)
     if not valNum then return 0 end
 
     if option.kind == "stancer" then
-        return resolveOptionCost(basePrice, vehicle)
+        return resolveOptionCost(basePrice, STANCER_BUNDLE_OPTION_ID)
     end
 
     if option.kind == "mod" then
@@ -357,7 +357,7 @@ function buildOptionPriceMap(option, vehicle, basePrice)
     end
 
     if option.kind == "stancer" then
-        local price = resolveOptionCost(vehicle, basePrice)
+        local price = resolveOptionCost(basePrice, STANCER_BUNDLE_OPTION_ID)
         if allowedValues then
             for _, val in ipairs(allowedValues) do
                 priceMap[tostring(val)] = price
@@ -1024,7 +1024,6 @@ end
 
 function cleanMechanicPropsNearPlayer()
     local ped = PlayerPedId()
-    local vehIn = GetVehiclePedIsIn(ped, false)
     local propHashes = getMechanicPropHashes()
 
     local targets = {}
@@ -1039,12 +1038,16 @@ function cleanMechanicPropsNearPlayer()
 
     addTarget(OrderInstallState.heldProp)
 
+    -- Only props stuck on this player, or loose ones this client owns right next to them.
+    local pedCoords = GetEntityCoords(ped)
     for _, obj in ipairs(GetGamePool("CObject") or {}) do
         if DoesEntityExist(obj) and propHashes[GetEntityModel(obj)] then
-            if not IsEntityAttachedToEntity(obj, ped) then
-                if vehIn == 0 or not DoesEntityExist(vehIn) or not IsEntityAttachedToEntity(obj, vehIn) then
-                    addTarget(obj)
-                end
+            local attachedToMe = IsEntityAttachedToEntity(obj, ped)
+            local looseMine = not IsEntityAttached(obj)
+                and NetworkGetEntityOwner(obj) == PlayerId()
+                and #(GetEntityCoords(obj) - pedCoords) <= 5.0
+            if attachedToMe or looseMine then
+                addTarget(obj)
             end
         end
     end
@@ -1577,7 +1580,9 @@ function startSimpleInstallState()
     elseif flow == "hood_install" then
         OrderInstallState.simpleStep = hasHood and "open_hood" or "install"
     elseif flow == "oil_change" then
-        OrderInstallState.simpleStep = "lift_vehicle"
+        local veh = getVehicleFromOrderNetId()
+        local liftState = (veh ~= 0 and type(getWorkshopLiftStateForVehicle) == "function") and getWorkshopLiftStateForVehicle(veh) or nil
+        OrderInstallState.simpleStep = (liftState and liftState.raised) and "drain_oil" or "lift_vehicle"
     elseif flow == "underbody_neon" then
         local veh = getVehicleFromOrderNetId()
         local liftState = (veh ~= 0 and type(getWorkshopLiftStateForVehicle) == "function") and getWorkshopLiftStateForVehicle(veh) or nil

@@ -59,11 +59,20 @@ RegisterNetEvent("playerSpawned", function()
 end)
 
 RegisterNUICallback("getAllPlayerNames", function(data, cb)
-    local players = Sky.Cb.Trigger("sky_jobs_base:getPlayersWithNames")
-    cb({
-        success = true,
-        data = players
-    })
+    local res = Sky.Cb.Trigger("sky_jobs_base:getPlayersWithNames")
+    if type(res) == "table" and res.success ~= nil then
+        if res.success ~= true then
+            cb({ success = false, error = res.error })
+            return
+        end
+        res = res.data
+    end
+    local players = type(res) == "table" and res or {}
+    -- The recruit picker sends the selected row's id.
+    for _, p in ipairs(players) do
+        if type(p) == "table" and p.id == nil then p.id = p.source end
+    end
+    cb({ success = true, data = players })
 end)
 
 RegisterNUICallback("job:getInfo", function(data, cb)
@@ -250,28 +259,30 @@ RegisterNetEvent("sky_jobs_base:tablet:openHome", function()
     Sky_Jobs.Tablet.Open("home", "/tablet")
 end)
 
-RegisterCommand("jobtablet", function()
-    if Sky_Jobs and Sky_Jobs.Tablet and Sky_Jobs.Tablet.OpenLast then
-        Sky_Jobs.Tablet.OpenLast()
-    else
-        Sky_Jobs.Tablet.Open("home", "/tablet")
-    end
-end, false)
+-- UX gate only; every tablet callback checks the job on the server.
+local function isEmployed()
+    return Sky_Jobs.Access and Sky_Jobs.Access.IsEmployee and Sky_Jobs.Access.IsEmployee() == true
+end
 
-RegisterCommand("tablet", function()
-    if Sky_Jobs and Sky_Jobs.Tablet and Sky_Jobs.Tablet.OpenLast then
+local function openTabletCommand()
+    if not isEmployed() then
+        local langData = getNuiLanguageData()
+        Sky.Show.Notification((langData.radial and langData.radial.title) or "Duty actions", "You need a job to use the tablet.", "error")
+        return
+    end
+    if Sky_Jobs.Tablet.OpenLast then
         Sky_Jobs.Tablet.OpenLast()
     else
         Sky_Jobs.Tablet.Open("home", "/tablet")
     end
-end, false)
+end
+
+RegisterCommand("jobtablet", openTabletCommand, false)
+RegisterCommand("tablet", openTabletCommand, false)
 
 RegisterCommand("bossmenu", function()
-    if Sky_Jobs and Sky_Jobs.Tablet and Sky_Jobs.Tablet.Open then
-        Sky_Jobs.Tablet.Open("management", "/management")
-    else
-        TriggerEvent("sky_jobs_base:openBossMenu")
-    end
+    if not isEmployed() then return end
+    Sky_Jobs.Tablet.Open("management", "/tablet/management")
 end, false)
 
 RegisterNetEvent("sky_jobs_base:tabletThemeSyncRequest", function()

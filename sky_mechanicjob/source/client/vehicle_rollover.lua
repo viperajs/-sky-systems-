@@ -66,10 +66,10 @@ CreateThread(function()
 
                 local ped = PlayerPedId()
                 local vehicle = GetVehiclePedIsIn(ped, false)
-                local _driver = GetPedInVehicleSeat(vehicle, -1)
-                local rolledOver = isVehicleRolledOver(vehicle, config)
 
-                isBlocking = vehicle ~= 0 and isBlocking
+                isBlocking = vehicle ~= 0
+                    and GetPedInVehicleSeat(vehicle, -1) == ped
+                    and isVehicleRolledOver(vehicle, config)
                 if isBlocking then
                     waitMs = 0
                     disableRecoveryControls()

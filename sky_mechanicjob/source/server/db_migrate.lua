@@ -4,7 +4,7 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server
 --  Automatic Database Schema Migrations & Table Init
 -- =====================================================
 
-local SCHEMA_VERSION = "1"
+local SCHEMA_VERSION = "2"
 local SCHEMA_VERSION_KVP = "sky_mechanicjob_schema_version"
 
 local function executeSchemaMigrations()
@@ -63,6 +63,9 @@ local function executeSchemaMigrations()
                 `price` INT DEFAULT 0,
                 `status` VARCHAR(20) DEFAULT 'pending',
                 `paid` TINYINT(1) DEFAULT 1,
+                `payment_method` VARCHAR(16) DEFAULT NULL,
+                `payer_job` VARCHAR(50) DEFAULT NULL,
+                `society_revenue` INT DEFAULT 0,
                 `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX `idx_plate` (`plate`),
@@ -116,12 +119,22 @@ local function executeSchemaMigrations()
         ]]
     }
 
-    for _, query in ipairs(tables) do
-        if MySQL and MySQL.query and MySQL.query.await then
-            pcall(function() MySQL.query.await(query) end)
-        elseif MySQL and MySQL.Async and MySQL.Async.execute then
-            MySQL.Async.execute(query, {})
+    -- The version is only stored when every statement ran, so a failed first boot retries.
+    local allOk = true
+    local function run(query)
+        if not (MySQL and MySQL.query and MySQL.query.await) then
+            allOk = false
+            return
         end
+        local ok, err = pcall(function() MySQL.query.await(query) end)
+        if not ok then
+            allOk = false
+            Functions.Log("error", "[db_migrate] %s", tostring(err))
+        end
+    end
+
+    for _, query in ipairs(tables) do
+        run(query)
     end
 
     -- Run column migrations in case tables existed from older schemas
@@ -136,6 +149,9 @@ local function executeSchemaMigrations()
         "ALTER TABLE `sky_mechanic_stance_defaults` ADD COLUMN IF NOT EXISTS `stance` LONGTEXT DEFAULT NULL",
         "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `items` LONGTEXT DEFAULT NULL",
         "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `paid` TINYINT(1) DEFAULT 1",
+        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `payment_method` VARCHAR(16) DEFAULT NULL",
+        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `payer_job` VARCHAR(50) DEFAULT NULL",
+        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `society_revenue` INT DEFAULT 0",
         "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `items` LONGTEXT DEFAULT NULL",
         "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `action` VARCHAR(50) NOT NULL",
         "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `description` TEXT DEFAULT NULL",
@@ -148,13 +164,13 @@ local function executeSchemaMigrations()
     }
 
     for _, alterQuery in ipairs(alterQueries) do
-        if MySQL and MySQL.query and MySQL.query.await then
-            pcall(function() MySQL.query.await(alterQuery) end)
-        elseif MySQL and MySQL.Async and MySQL.Async.execute then
-            pcall(function() MySQL.Async.execute(alterQuery, {}) end)
-        end
+        run(alterQuery)
     end
 
+    if not allOk then
+        Functions.Log("warn", "[db_migrate] Some schema statements failed; they are retried on the next start.")
+        return
+    end
     SetResourceKvp(SCHEMA_VERSION_KVP, SCHEMA_VERSION)
 
     if Functions and Functions.Log then

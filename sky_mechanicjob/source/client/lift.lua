@@ -284,7 +284,10 @@ local function buildAutoLiftKey(setName, coords)
     return ("%s:auto:%s:%s:%s:%s"):format(LIFT_TYPE, setNameStr, gridX, gridY, gridZ)
 end
 
-local function autoDiscoverLiftPoints()
+-- ignoreEntities: props this client spawned for its own lift points. Taking them for map
+-- props left a ghost lift behind when a point was moved or deleted.
+local function autoDiscoverLiftPoints(ignoreEntities)
+    ignoreEntities = ignoreEntities or {}
     if not isAutoDiscoverEnabled() or not GetGamePool then
         return {}
     end
@@ -311,7 +314,7 @@ local function autoDiscoverLiftPoints()
         local platformEntities = {}
 
         for _, ent in ipairs(allObjects) do
-            if ent ~= 0 and DoesEntityExist(ent) then
+            if ent ~= 0 and not ignoreEntities[ent] and DoesEntityExist(ent) then
                 local modelHash = GetEntityModel(ent)
                 if modelHash == frameHash then
                     table.insert(frameEntities, ent)
@@ -1064,8 +1067,17 @@ local function collectCreatorLiftPoints()
                     local pointKey = buildCreatorPointKey(entry.id, pt.uid, pt.type)
                     local ptCoords = vector3(tonumber(pt.x) or 0.0, tonumber(pt.y) or 0.0, floorZ)
 
+                    local entryJob = entry.jobKey or entry.job
+                    local locationSettings = type(entry.locationSettings) == "table" and entry.locationSettings[tostring(pt.uid)] or nil
+                    local requiresOnDuty = nil
+                    if type(locationSettings) == "table" and type(locationSettings.requiresOnDuty) == "boolean" then
+                        requiresOnDuty = locationSettings.requiresOnDuty
+                    end
+
                     local newPoint = {
                         key = pointKey,
+                        jobKey = (type(entryJob) == "string" and entryJob ~= "") and entryJob or nil,
+                        requiresOnDuty = requiresOnDuty,
                         coords = ptCoords,
                         heading = tonumber(pt.heading) or 0.0,
                         modelSet = modelSetObj.name,
@@ -1094,7 +1106,17 @@ end
 
 local function syncLiftPoints()
     local creatorPoints = collectCreatorLiftPoints()
-    local autoPoints = autoDiscoverLiftPoints()
+
+    local ownedProps = {}
+    for _, liftPoint in pairs(State.pointsByKey) do
+        if liftPoint.frameOwned ~= false and liftPoint.frameEntity ~= 0 then
+            ownedProps[liftPoint.frameEntity] = true
+        end
+        if liftPoint.platformOwned ~= false and liftPoint.platformEntity ~= 0 then
+            ownedProps[liftPoint.platformEntity] = true
+        end
+    end
+    local autoPoints = autoDiscoverLiftPoints(ownedProps)
 
     local autoCfg = Config and Config.WorkshopLiftSystem and Config.WorkshopLiftSystem.existingProps and Config.WorkshopLiftSystem.existingProps.autoDiscover or {}
     local dedupeRadius = tonumber(autoCfg.creatorDedupeRadius) or tonumber(autoCfg.pairRadius) or 1.4
@@ -1118,6 +1140,8 @@ local function syncLiftPoints()
         if existing == nil then
             local newLift = {
                 key = pointData.key,
+                jobKey = pointData.jobKey,
+                requiresOnDuty = pointData.requiresOnDuty,
                 coords = pointData.coords,
                 heading = pointData.heading,
                 modelSet = pointData.modelSet,
@@ -1144,11 +1168,14 @@ local function syncLiftPoints()
                 tostring(newLift.key), formatCoords(newLift.coords), tonumber(newLift.heading) or 0.0,
                 tostring(newLift.frameModel), tostring(newLift.platformModel))
         else
+            existing.jobKey = pointData.jobKey
+            existing.requiresOnDuty = pointData.requiresOnDuty
+
             local isNotExistingProps = existing.usesExistingProps ~= true
             local coordsDiff = #(existing.coords - pointData.coords)
             local headingDiff = math.abs(existing.heading - pointData.heading)
 
-            if isNotExistingProps and (coordsDiff > 0.01 or headingDiff > 0.01) then
+            if isNotExistingProps and (coordsDiff > 0.01 or headingDiff > 0.01 or existing.modelSet ~= pointData.modelSet) then
                 debugLog("sync change key=%s oldCoords=(%s) newCoords=(%s) oldHeading=%.3f newHeading=%.3f oldSet=%s newSet=%s oldModels=%s/%s newModels=%s/%s",
                     tostring(existing.key), formatCoords(existing.coords), formatCoords(pointData.coords),
                     tonumber(existing.heading) or 0.0, tonumber(pointData.heading) or 0.0,
@@ -1205,6 +1232,32 @@ end
 --  QUERY & STATE RETRIEVAL
 -- ============================================================
 
+local function isMechanicJobKey(jobKey)
+    if type(GetMechanicJobNames) ~= "function" then
+        return jobKey == "mechanic"
+    end
+    for _, name in ipairs(GetMechanicJobNames()) do
+        if name == jobKey then return true end
+    end
+    return false
+end
+
+-- Same rule as the workshop's other points: the workshop's own job, on duty unless the
+-- location turns that off. Lifts found in the map (no workshop) are for any mechanic.
+local function canUseLiftPoint(liftPoint)
+    local access = type(Sky_Jobs) == "table" and Sky_Jobs.Access or nil
+    if type(access) ~= "table" or type(access.GetJobKey) ~= "function" then return false end
+
+    local jobKey = access.GetJobKey()
+    if not jobKey then return false end
+    if liftPoint.jobKey then
+        if liftPoint.jobKey ~= jobKey then return false end
+    elseif not isMechanicJobKey(jobKey) then
+        return false
+    end
+    return liftPoint.requiresOnDuty == false or (type(access.IsOnDuty) == "function" and access.IsOnDuty() == true)
+end
+
 local function getNearestLiftPoint(maxDist)
     local radius = tonumber(maxDist) or 3.0
     local pedCoords = GetEntityCoords(PlayerPedId())
@@ -1214,7 +1267,7 @@ local function getNearestLiftPoint(maxDist)
 
     for _, liftPoint in ipairs(State.pointList) do
         local dist = #(pedCoords - liftPoint.coords)
-        if dist <= radius and dist < bestDist then
+        if dist <= radius and dist < bestDist and canUseLiftPoint(liftPoint) then
             closestPoint = liftPoint
             bestDist = dist
         end
@@ -1647,6 +1700,10 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
         return
     end
 
+    -- The operator attached the platform itself; applying its own echo marked the
+    -- attachment as synced, so the car was never released at floor level.
+    if tonumber(data.source) == GetPlayerServerId(PlayerId()) then return end
+
     local liftPoint = State.pointsByKey[data.key]
     if not liftPoint then return end
 
@@ -1685,13 +1742,57 @@ AddEventHandler("gameEventTriggered", function(eventName, data)
     handleVehicleEnter(vehicle)
 end)
 
+local function isLiftFeatureEnabled()
+    return not (Config and Config.ToggleFeatures and Config.ToggleFeatures.workshopLift == false)
+end
+
+local function destroyAllLiftPoints()
+    closeLiftControlUi()
+    for key, liftPoint in pairs(State.pointsByKey) do
+        destroyLiftPoint(liftPoint)
+        State.pointsByKey[key] = nil
+    end
+    State.pointList = {}
+end
+
+-- Syncs wait while props load; two at once spawned a second set of props for a point.
+local syncRunning, syncQueued = false, false
+
+local function requestLiftSync()
+    if syncRunning then
+        syncQueued = true
+        return
+    end
+
+    syncRunning = true
+    repeat
+        syncQueued = false
+        local ok, err = pcall(function()
+            if isLiftFeatureEnabled() then
+                syncLiftPoints()
+            else
+                destroyAllLiftPoints()
+            end
+        end)
+        if not ok then
+            print(("[sky_mechanicjob][lift] failed: lift sync error: %s"):format(tostring(err)))
+        end
+    until not syncQueued
+    syncRunning = false
+end
+
 RegisterNetEvent("sky_jobs_base:creatorUpdated", function(creatorKey, payload)
     if creatorKey == CREATOR_KEY then
         local entryCount = (type(payload) == "table" and type(payload.entries) == "table") and #payload.entries or "nil"
         debugLog("creatorUpdated creatorKey=%s entries=%s payloadType=%s", tostring(creatorKey), tostring(entryCount), type(payload))
         State.creatorCache = payload
-        syncLiftPoints()
+        requestLiftSync()
     end
+end)
+
+-- The workshop lift toggle in /jobconfig.
+AddEventHandler("sky_mechanicjob:jobConfigurator:updated", function()
+    requestLiftSync()
 end)
 
 -- ============================================================
@@ -1699,21 +1800,28 @@ end)
 -- ============================================================
 
 CreateThread(function()
-    if Config and Config.ToggleFeatures and Config.ToggleFeatures.workshopLift == false then
+    if not isLiftFeatureEnabled() then
         return
     end
 
-    syncLiftPoints()
+    requestLiftSync()
     Wait(1000)
 
     for _, liftPoint in ipairs(State.pointList) do
         recoverFloatingVehicle(liftPoint)
     end
+
+    -- The first getData can time out on join; retry until the workshop data arrived.
+    for _ = 1, 10 do
+        if State.creatorCache or not isLiftFeatureEnabled() then break end
+        Wait(5000)
+        requestLiftSync()
+    end
 end)
 
 CreateThread(function()
     local existingCfg = Config and Config.WorkshopLiftSystem and Config.WorkshopLiftSystem.existingProps or {}
-    if Config and Config.ToggleFeatures and Config.ToggleFeatures.workshopLift == false or existingCfg.enabled ~= true then
+    if existingCfg.enabled ~= true then
         return
     end
 
@@ -1724,7 +1832,9 @@ CreateThread(function()
 
     while true do
         Wait(interval)
-        syncLiftPoints()
+        if isLiftFeatureEnabled() then
+            requestLiftSync()
+        end
     end
 end)
 

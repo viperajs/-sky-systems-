@@ -28,10 +28,12 @@ local currentOxTargetSignature = nil
 local actionRegistry = {}
 local actionProviderMap = {}
 
+local RADIAL_HOTKEY = (type(radialCfg.key) == "string" and radialCfg.key ~= "") and radialCfg.key:lower() or "g"
+
 local radialState = {
     open = false,
-    hotkey = "g",
-    hotkeyLabel = "G",
+    hotkey = RADIAL_HOTKEY,
+    hotkeyLabel = RADIAL_HOTKEY:upper(),
     mode = "hold",
     selectedId = nil,
     sequence = 0,
@@ -61,11 +63,19 @@ local function addUniqueName(list, map, name)
     table.insert(list, name)
 end
 
+-- The server sends an array of job names; a map keyed by job name is accepted as well.
 local function setRegisteredJobs(jobsList)
     registeredJobMap = {}
     if type(jobsList) ~= "table" then return end
-    for _, j in ipairs(jobsList) do
-        local norm = normalizeString(j)
+    if jobsList.success ~= nil then
+        jobsList = type(jobsList.data) == "table" and jobsList.data or {}
+    end
+    for k, j in pairs(jobsList) do
+        local name = (type(j) == "string" and j)
+            or (type(j) == "table" and (j.name or j.jobKey))
+            or (type(k) == "string" and k)
+            or nil
+        local norm = normalizeString(name)
         if norm then
             registeredJobMap[norm] = true
         end
@@ -137,6 +147,15 @@ local function resolveExternalProviders()
     if not jobGroup then return providersList end
 
     addUniqueName(providersList, providerMap, string.format("sky_%sjob", jobGroup))
+
+    -- Workshop jobs from the job configurator are not named after their resource; the resource
+    -- that registered tablet apps for the job provides its radial actions.
+    local appResources = Sky_Jobs.TabletApps and Sky_Jobs.TabletApps.GetProviderResources and Sky_Jobs.TabletApps.GetProviderResources() or {}
+    for _, resourceName in ipairs(appResources) do
+        if resourceName ~= GetCurrentResourceName() then
+            addUniqueName(providersList, providerMap, resourceName)
+        end
+    end
 
     local cfgProviders = radialCfg.providers or radialCfg.externalProviders
     if type(cfgProviders) == "table" then
@@ -336,7 +355,7 @@ local function buildAllRadialActions()
         table.insert(actions, buildTabletAction())
     end
 
-    if IS_PANIC_ENABLED and isPlayerAuthorizedForPanic() then
+    if IS_PANIC_ENABLED and panicCfg.useRadial == true and isPlayerAuthorizedForPanic() then
         table.insert(actions, buildPanicAction())
     end
 
@@ -634,6 +653,21 @@ local function triggerPanicAlert()
     return true
 end
 
+local jobColorCache = { jobKey = nil, color = nil }
+
+local function getJobColor()
+    local jobState = GetJobState and GetJobState()
+    local jobKey = jobState and jobState.jobKey
+    if jobColorCache.color and jobColorCache.jobKey == jobKey then
+        return jobColorCache.color
+    end
+
+    local color = Sky.Cb.Trigger("sky_jobs_base:getJobColor")
+    if type(color) ~= "string" or color == "" then return nil end
+    jobColorCache.jobKey, jobColorCache.color = jobKey, color
+    return color
+end
+
 local function openTabletFromRadial()
     closeRadialMenu()
     if not IS_TABLET_ENABLED then
@@ -828,6 +862,9 @@ function openRadialMenu()
         return
     end
 
+    local jobColor = getJobColor()
+    if radialState.open then return end
+
     radialState.open = true
     radialState.actions = actions
     radialState.mode = isHoldMode() and "hold" or "toggle"
@@ -857,7 +894,7 @@ function openRadialMenu()
         mode = radialState.mode,
         sequence = seq,
         actions = actions,
-        jobColor = getJobColor()
+        jobColor = jobColor
     })
 end
 
@@ -934,12 +971,8 @@ RegisterNUICallback("radial:select", function(data, cb)
     cb({ success = false, errorKey = errKey, error = errFallback })
 end)
 
-RegisterNetEvent("sky_jobs_base:jobs:registered", function(jobName)
-    local norm = normalizeString(jobName)
-    if norm then
-        registeredJobMap[norm] = true
-    end
-end)
+RegisterNetEvent("sky_jobs_base:jobs:registered", fetchRegisteredJobs)
+RegisterNetEvent("sky_jobs_base:jobs:unregistered", fetchRegisteredJobs)
 
 RegisterNetEvent("sky_base:playerLoaded", fetchRegisteredJobs)
 AddEventHandler("playerSpawned", fetchRegisteredJobs)

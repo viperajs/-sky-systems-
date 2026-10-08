@@ -59,12 +59,7 @@ local function setOpenState(isOpen, opts, isServerSync)
         lastState.route = route
     end
 
-    local snapshot = getStateSnapshot()
-    TriggerEvent("sky_jobs_base:tablet:stateChanged", snapshot)
-
-    if not isServerSync then
-        TriggerServerEvent("sky_jobs_base:tablet:setState", snapshot)
-    end
+    TriggerEvent("sky_jobs_base:tablet:stateChanged", getStateSnapshot())
 end
 
 --- Gets snapshot of current tablet open state.

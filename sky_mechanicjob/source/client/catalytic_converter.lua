@@ -58,7 +58,8 @@ local function isCatalyticMissing(vehicle)
     if WearState and WearState.active then
         local wearPlate = normalizeplate(WearState.plate)
         if wearPlate == plate then
-            return tonumber(WearState.wear and WearState.wear[FEATURE_KEY]) ~= nil
+            local wearValue = tonumber(WearState.wear and WearState.wear[FEATURE_KEY])
+            return wearValue ~= nil and wearValue <= 0.0
         end
     end
 
@@ -78,6 +79,20 @@ end
 
 local function showNotify(message, notifyType)
     notify(message, notifyType or "info")
+end
+
+local function getStealErrorMessage(res)
+    local err = type(res) == "table" and res.error or nil
+    if err == "missing_item" then
+        return tuningLocales.CatalyticMissingItem or "You need a lug wrench."
+    elseif err == "already_missing" then
+        return tuningLocales.CatalyticAlreadyMissing or "This vehicle is already missing its catalytic converter."
+    elseif err == "vehicle_too_far" then
+        return tuningLocales.CatalyticTooFar or "Move closer to the vehicle."
+    elseif err == "inventory_full" then
+        return tuningLocales.CatalyticInventoryFull or "You cannot carry the catalytic converter."
+    end
+    return tuningLocales.CatalyticMinigameFailed or "You failed to remove all bolts."
 end
 
 -- ── Checklist UI ─────────────────────────────────────
@@ -202,15 +217,15 @@ local function completeSteal(vehicle)
         plate = normalizeplate(GetVehicleNumberPlateText(vehicle))
     })
 
-    if not res then res = {} end
-
     if type(res) == "table" and res.success == true then
         showNotify(tuningLocales.CatalyticRemoved or "Catalytic converter removed.", "success")
         clearCatalyticState(false)
         return true
     end
 
-    showNotify(tuningLocales.CatalyticMissingItem or "You need a lug wrench.", "error")
+    -- The jack is already removed and the started theft is gone on the server.
+    showNotify(getStealErrorMessage(res), "error")
+    clearCatalyticState(false)
     return false
 end
 
@@ -219,11 +234,8 @@ local function completeInstall(vehicle)
         plate = CatalyticInstallState.plate,
         part = FEATURE_KEY,
         requiredItem = OrderInstallState.requiredItem,
-        removeRequiredItemAfterUse = OrderInstallState.removeRequiredItemAfterUse == true,
         vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle)
     })
-
-    if not res then res = {} end
 
     if type(res) == "table" and res.success == true then
         showNotify(tuningLocales.CatalyticInstallSuccess or "Catalytic converter installed.", "success")
@@ -231,7 +243,16 @@ local function completeInstall(vehicle)
         return true
     end
 
-    showNotify(getNuiLocale("tablet.diagnostics.repairFailed", "Repair failed. Try again."), "error")
+    if type(res) == "table" and res.error == "missing_item" then
+        local reqItem = tostring(res.requiredItem or OrderInstallState.requiredItem or FEATURE_KEY)
+        showNotify(("%s: %s"):format(
+            getNuiLocale("tablet.orders.missing_item", "Missing required item"),
+            getNuiLocale(("tablet.orders.items.%s"):format(reqItem), reqItem)
+        ), "error")
+    else
+        showNotify(getNuiLocale("tablet.diagnostics.repairFailed", "Repair failed. Try again."), "error")
+    end
+    clearOrderInstallState()
     return false
 end
 
@@ -356,18 +377,8 @@ RegisterNetEvent("sky_mechanicjob:catalytic:startSteal", function()
         vehicleNetId = netId,
         plate = plate
     })
-    if not res then res = {} end
-
     if not (type(res) == "table" and res.success == true) then
-        local errMsg = tuningLocales.CatalyticMissingItem or "You need a lug wrench."
-
-        if type(res) == "table" and res.error == "already_missing" then
-            errMsg = tuningLocales.CatalyticAlreadyMissing or "This vehicle is already missing its catalytic converter."
-        elseif type(res) == "table" and res.error == "vehicle_too_far" then
-            errMsg = tuningLocales.CatalyticTooFar or "Move closer to the vehicle."
-        end
-
-        showNotify(errMsg, "error")
+        showNotify(getStealErrorMessage(res), "error")
         return
     end
 
@@ -439,7 +450,7 @@ local function startSmokeFxPoolLoop()
                 local fxVehicle = fxEntry.vehicle
                 local expiresAt = fxEntry.expiresAt or 0
                 local expired = now >= expiresAt
-                local gone = fxVehicle == 0 or DoesEntityExist(fxVehicle)
+                local gone = fxVehicle == 0 or not DoesEntityExist(fxVehicle)
 
                 if gone or expired then
                     if fxEntry.handle and fxEntry.handle ~= 0 then
