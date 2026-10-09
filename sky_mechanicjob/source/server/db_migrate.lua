@@ -4,7 +4,8 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server
 --  Automatic Database Schema Migrations & Table Init
 -- =====================================================
 
-local SCHEMA_VERSION = "2"
+-- 3: parts deliveries tables from older versions get every column parts_delivery.lua uses.
+local SCHEMA_VERSION = "3"
 local SCHEMA_VERSION_KVP = "sky_mechanicjob_schema_version"
 
 local function executeSchemaMigrations()
@@ -153,6 +154,12 @@ local function executeSchemaMigrations()
         "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `payer_job` VARCHAR(50) DEFAULT NULL",
         "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `society_revenue` INT DEFAULT 0",
         "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `items` LONGTEXT DEFAULT NULL",
+        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `job` VARCHAR(50) DEFAULT 'mechanic'",
+        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `identifier` VARCHAR(64) DEFAULT NULL",
+        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `delivery_point` LONGTEXT DEFAULT NULL",
+        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `total_price` INT DEFAULT 0",
+        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `status` VARCHAR(20) DEFAULT 'ready'",
+        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
         "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `action` VARCHAR(50) NOT NULL",
         "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `description` TEXT DEFAULT NULL",
         "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `mechanic_identifier` VARCHAR(64) DEFAULT NULL",
