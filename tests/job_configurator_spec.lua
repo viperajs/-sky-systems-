@@ -271,6 +271,25 @@ assert(stored.partsTheftItem == Config.PartsTheft.item)
 local sync = jobs.clientEvents[#jobs.clientEvents]
 assert(sync.name == "sky_jobs_base:jobConfigurator:updated" and sync.args[1] == "sky_mechanicjob")
 assert(type(sync.args[5]) == "table")
+assert(jobs.saved.settingsVersion == 2)
+
+-- Older saves stored sky_jobs_base's former built-in defaults; the ones that contradict
+-- config.lua are dropped once (settings version 2), other saved values stay.
+local loadData = jobs.env.Sky_Jobs.Configurator.LoadWorkshopData
+jobs.encoded = { entries = {}, settings = {
+    partsTheftItem = "lockpick", partsTheftDispatchJobs = { "police" }, partsTheftDealerAccount = "bank",
+    wheelDamageOffroadWheelsMultiplier = 0.5,
+} }
+jobs.row = { data = "<json>" }
+local cleaned, dropped = loadData()
+assert(dropped == true and cleaned.settingsVersion == 2)
+assert(cleaned.settings.partsTheftItem == Config.PartsTheft.item and cleaned.settings.partsTheftDealerAccount == "bank")
+assert(table.concat(cleaned.settings.partsTheftDispatchJobs, ",") == table.concat(defaults.partsTheftDispatchJobs, ","))
+assert(cleaned.settings.wheelDamageOffroadWheelsMultiplier == defaults.wheelDamageOffroadWheelsMultiplier)
+-- From version 2 on the same value was chosen in the configurator and stays.
+jobs.encoded = { entries = {}, settingsVersion = 2, settings = { partsTheftItem = "lockpick" } }
+cleaned, dropped = loadData()
+assert(dropped == false and cleaned.settings.partsTheftItem == "lockpick")
 
 -- Without the mechanic resource the configurator still opens (workshops and features only).
 jobs.external = nil

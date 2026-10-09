@@ -2774,6 +2774,45 @@ local function getDefaultWorkshopData()
     }
 end
 
+-- Saves made before the configurator showed its settings sections stored sky_jobs_base's old
+-- built-in defaults with every save. Where these disagree with sky_mechanicjob's config.lua
+-- (e.g. "lockpick" as the theft tool) nobody chose them in the UI, so settings version 2
+-- drops them once and config.lua applies again.
+local SETTINGS_VERSION = 2
+local STALE_DEFAULT_SETTINGS = {
+    partsTheftItem = "lockpick",
+    partsTheftStolenWheelItem = "stolen_wheel",
+    partsTheftCatalyticConverterItem = "stolen_catalytic_converter",
+    partsTheftDealerSellDistance = 3.0,
+    partsTheftDispatchJobs = { "police" },
+    wheelDamageOffroadWheelsMultiplier = 0.5
+}
+
+local function isStaleDefault(value, stale)
+    if type(stale) ~= "table" then
+        return value == stale
+    end
+    if type(value) ~= "table" or #value ~= #stale then return false end
+    for i, item in ipairs(stale) do
+        if value[i] ~= item then return false end
+    end
+    return true
+end
+
+local function dropStaleDefaultSettings(data)
+    if (tonumber(data.settingsVersion) or 1) >= SETTINGS_VERSION then return false end
+    local dropped = false
+    for key, stale in pairs(STALE_DEFAULT_SETTINGS) do
+        if data.settings[key] ~= nil and isStaleDefault(data.settings[key], stale) then
+            data.settings[key] = nil
+            dropped = true
+        end
+    end
+    data.settingsVersion = SETTINGS_VERSION
+    return dropped
+end
+
+-- Returns the data and whether stale defaults were dropped from the saved settings.
 local function loadWorkshopCreatorData()
     local row = MySQL.single.await("SELECT data FROM sky_jobs_creator_data WHERE creator_key = 'workshopcreator' LIMIT 1")
     local data = nil
@@ -2792,6 +2831,7 @@ local function loadWorkshopCreatorData()
     data.features = type(data.features) == "table" and data.features or {}
     data.settings = type(data.settings) == "table" and data.settings or {}
     data.interactions = type(data.interactions) == "table" and data.interactions or {}
+    local droppedStale = dropStaleDefaultSettings(data)
 
     -- Unsaved values come from the mechanic's config.lua (its schema), so the game behaves
     -- like the Lua config until something is changed in the configurator.
@@ -2825,7 +2865,7 @@ local function loadWorkshopCreatorData()
         end
     end
 
-    return data
+    return data, droppedStale
 end
 
 -- Job names used by the workshop entries (jobKey and name), for sky_mechanicjob's server
@@ -2898,9 +2938,13 @@ local SAVE_FAILED = { success = false, error = "save_failed" }
 -- Retried because the database or the creator table (creator.lua) may not be ready yet.
 CreateThread(function()
     for _ = 1, 20 do
-        local ok, data = pcall(loadWorkshopCreatorData)
+        local ok, data, droppedStale = pcall(loadWorkshopCreatorData)
         if ok and type(data) == "table" then
-            publishWorkshopJobNames(data.entries)
+            -- Store dropped stale settings at once: sky_mechanicjob's server reads the saved
+            -- row itself. Saving also publishes the job names.
+            if not (droppedStale and saveWorkshopCreatorData(data)) then
+                publishWorkshopJobNames(data.entries)
+            end
             return
         end
         Wait(3000)
