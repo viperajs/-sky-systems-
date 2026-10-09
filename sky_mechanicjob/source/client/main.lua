@@ -859,6 +859,8 @@ OPTION_ID_CATEGORY_RULES = {
     }
 }
 
+-- Parts fitted at one spot of the vehicle; the mechanic stands there (2.8 m) to install them.
+-- Every other part is installed from anywhere next to the vehicle (4 m, radial_actions.lua).
 local bodyworkBoneMap = {
     mod_0 = { "spoiler", "boot", "boot_dummy" }
 }
@@ -871,15 +873,20 @@ function getBodyworkInstallTargetCoords(vehicle, option)
     local optionId = tostring(option and option.id or "")
     local bones = bodyworkBoneMap[optionId]
 
-    if type(bones) == "table" then
-        for _, boneName in ipairs(bones) do
-            local boneIdx = GetEntityBoneIndexByName(vehicle, boneName)
-            if boneIdx ~= -1 then
-                return GetWorldPositionOfEntityBone(vehicle, boneIdx), 2.8
-            end
+    -- The spoiler spot used to be returned for every part, so a front bumper, headlights or a
+    -- turbo (after opening the hood) could only be installed from behind the car.
+    if type(bones) ~= "table" then
+        return nil
+    end
+
+    for _, boneName in ipairs(bones) do
+        local boneIdx = GetEntityBoneIndexByName(vehicle, boneName)
+        if boneIdx ~= -1 then
+            return GetWorldPositionOfEntityBone(vehicle, boneIdx), 2.8
         end
     end
 
+    -- No spoiler or boot bone: above the rear end of the vehicle.
     local minDim, maxDim = GetModelDimensions(GetEntityModel(vehicle))
     local yOffset = minDim.y - 0.25
     local zOffset = math.max(minDim.z + 0.75, maxDim.z - 0.45)
