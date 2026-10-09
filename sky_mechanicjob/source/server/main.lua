@@ -851,27 +851,37 @@ end)
 
 -- ── Usable Items Setup ────────────────────────────────
 
--- The theft tool can be changed in /jobconfig (Parts Theft); server/pricing.lua applies it
--- over Config.PartsTheft once the saved settings are read.
-local function registerTheftTool()
-    local theftItem = Config and Config.PartsTheft and Config.PartsTheft.item or "lug_wrench"
-    Functions.RegisterUsableItem(theftItem, function(source)
+local function configuredItem(section, key, fallback)
+    local cfg = type(section) == "table" and section[key] or nil
+    local item = type(cfg) == "table" and cfg.item or cfg
+    return (type(item) == "string" and item ~= "") and item or fallback
+end
+
+-- The theft tool and the wash, wax and repair items can be changed in /jobconfig (Parts
+-- Theft, Vehicle Care); server/pricing.lua applies them over Config once the saved settings
+-- are read, so they are registered again then.
+local function registerConfiguredItems()
+    local care = Config and Config.VehicleCare
+    Functions.RegisterUsableItem(configuredItem(care, "wash", "wash_sponge"), function(source)
+        TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "wash")
+    end)
+
+    Functions.RegisterUsableItem(configuredItem(care, "wax", "vehicle_wax"), function(source)
+        TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "wax")
+    end)
+
+    local repairItem = configuredItem(care, "repair", "fix_kit")
+    Functions.RegisterUsableItem(repairItem, function(source)
+        TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "repair", repairItem)
+    end)
+
+    Functions.RegisterUsableItem(configuredItem(Config, "PartsTheft", "lug_wrench"), function(source)
         TriggerClientEvent("sky_mechanicjob:lugWrench:chooseTheft", source)
     end)
 end
 
 local function setupUsableItems()
-    Functions.RegisterUsableItem("wash_sponge", function(source)
-        TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "wash")
-    end)
-
-    Functions.RegisterUsableItem("vehicle_wax", function(source)
-        TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "wax")
-    end)
-
-    Functions.RegisterUsableItem("fix_kit", function(source)
-        TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "repair", "fix_kit")
-    end)
+    registerConfiguredItems()
 
     Functions.RegisterUsableItem("repair_kit", function(source)
         TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "repair", "repair_kit")
@@ -890,8 +900,6 @@ local function setupUsableItems()
     Functions.RegisterUsableItem("nitro_kit", function(source)
         TriggerClientEvent("sky_mechanicjob:nitro:beginInstall", source)
     end)
-
-    registerTheftTool()
 end
 
 CreateThread(function()
@@ -903,7 +911,7 @@ CreateThread(function()
     setupUsableItems()
 end)
 
-AddEventHandler("sky_mechanicjob:server:jobConfiguratorLoaded", registerTheftTool)
+AddEventHandler("sky_mechanicjob:server:jobConfiguratorLoaded", registerConfiguredItems)
 
 AddEventHandler("playerDropped", function()
     local src = tonumber(source)
