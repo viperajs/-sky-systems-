@@ -851,6 +851,15 @@ end)
 
 -- ── Usable Items Setup ────────────────────────────────
 
+-- The theft tool can be changed in /jobconfig (Parts Theft); server/pricing.lua applies it
+-- over Config.PartsTheft once the saved settings are read.
+local function registerTheftTool()
+    local theftItem = Config and Config.PartsTheft and Config.PartsTheft.item or "lug_wrench"
+    Functions.RegisterUsableItem(theftItem, function(source)
+        TriggerClientEvent("sky_mechanicjob:lugWrench:chooseTheft", source)
+    end)
+end
+
 local function setupUsableItems()
     Functions.RegisterUsableItem("wash_sponge", function(source)
         TriggerClientEvent("sky_mechanicjob:vehicleCare:start", source, "wash")
@@ -882,10 +891,7 @@ local function setupUsableItems()
         TriggerClientEvent("sky_mechanicjob:nitro:beginInstall", source)
     end)
 
-    local theftItem = Config and Config.PartsTheft and Config.PartsTheft.item or "lug_wrench"
-    Functions.RegisterUsableItem(theftItem, function(source)
-        TriggerClientEvent("sky_mechanicjob:lugWrench:chooseTheft", source)
-    end)
+    registerTheftTool()
 end
 
 CreateThread(function()
@@ -896,6 +902,8 @@ CreateThread(function()
     end
     setupUsableItems()
 end)
+
+AddEventHandler("sky_mechanicjob:server:jobConfiguratorLoaded", registerTheftTool)
 
 AddEventHandler("playerDropped", function()
     local src = tonumber(source)

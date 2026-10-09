@@ -44,28 +44,6 @@ local zoneMarkerOptions = {
     r = 255, g = 140, b = 0, a = 160
 }
 
-local defaultCreatorSections = {
-    { key = "general", label = "General", icon = "sliders" },
-    { key = "shop", label = "Shop", icon = "shopping-cart" },
-    { key = "props", label = "Props", icon = "box" },
-    { key = "vehicles", label = "Vehicles", icon = "car" },
-    { key = "locations", label = "Locations", icon = "map-pin" },
-    { key = "partsDelivery", label = "Parts Delivery", icon = "truck" },
-    { key = "tuningPrices", label = "Tuning Prices", icon = "wrench" }
-}
-
-local defaultExtensions = {
-    { key = "workshops", label = "Workshops", icon = "map-pin" },
-    { key = "partsTheft", label = "Parts Theft", icon = "wrench" },
-    { key = "vehicleCare", label = "Vehicle Care", icon = "sparkles" },
-    { key = "wear", label = "Wear", icon = "activity" },
-    { key = "wheelDamage", label = "Wheel Damage", icon = "gauge" },
-    { key = "mileageHud", label = "Mileage HUD", icon = "hash" },
-    { key = "carryItems", label = "Carry Items", icon = "box" },
-    { key = "features", label = "Features", icon = "sliders" },
-    { key = "interactions", label = "Interactions", icon = "mouse-pointer" }
-}
-
 local function getLocales()
     local localeKey = (Sky and Sky.Config and Sky.Config.locale) or "en"
     local current = Locales and Locales[localeKey]
@@ -202,19 +180,29 @@ local function buildContext(serverData, options, optionsFirst)
     local locationDefinitions = pick("locationDefinitions") or {}
     cacheLocationDefinitions(locationDefinitions)
 
+    -- The settings sections of the sidebar come from settingDefinitions (their section
+    -- field), the Parts Delivery / Tuning Prices tabs of a workshop from extensions.
+    -- creatorSections are separate creators (none for the mechanic job).
     return {
         configKey = serverData.configKey or currentConfigKey,
+        -- The header translates titleKey first; without it the NUI showed its generic
+        -- "Job Configurator" title.
         title = options.title or serverData.title or "Mechanic Jobs",
+        titleKey = options.titleKey or serverData.titleKey or "workshopConfig.configs.sky_mechanicjob.title",
         subtitle = options.subtitle or serverData.subtitle or "Configure mechanic jobs, shops, vehicles, and workshop locations.",
+        subtitleKey = options.subtitleKey or serverData.subtitleKey,
+        entityLabel = pick("entityLabel"),
+        entityPluralLabel = pick("entityPluralLabel"),
         primaryColor = options.primaryColor or DEFAULT_PRIMARY_COLOR,
         lang = options.lang or (Sky and Sky.Config and Sky.Config.locale) or "en",
         entries = entries,
         locationDefinitions = locationDefinitions,
-        creatorSections = options.creatorSections or serverData.creatorSections or defaultCreatorSections,
-        extensions = options.extensions or serverData.extensions or defaultExtensions,
+        creatorSections = pick("creatorSections") or {},
+        extensions = pick("extensions") or {},
         featureDefinitions = pick("featureDefinitions") or {},
         features = pick("features") or {},
         settingDefinitions = pick("settingDefinitions") or {},
+        defaultSettings = pick("defaultSettings") or {},
         settings = pick("settings") or {},
         interactionDefinitions = pick("interactionDefinitions") or {},
         interactions = pick("interactions") or {},

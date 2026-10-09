@@ -2491,9 +2491,12 @@ Locales["en"] = {
       header = {
         title = "Job Configurator"
       },
+      -- Entry wording (sidebar.entries, editor.editTitle/newTitle, actions.newEntry,
+      -- overview.subtitle/emptySubtitle, messages.empty/loading/nameExists) is left to the
+      -- UI, which names it after the configured script: "Workshops" / "Edit workshop" for
+      -- sky_mechanicjob. Add those keys here to use the same wording for every script.
       sidebar = {
         features = "Features",
-        entries = "Jobs",
         interactions = "Interactions"
       },
       sections = {
@@ -2515,7 +2518,6 @@ Locales["en"] = {
         close = "Close",
         done = "Done",
         edit = "Edit",
-        newEntry = "New job",
         pickColor = "Pick",
         reset = "Reset",
         save = "Save",
@@ -2523,13 +2525,7 @@ Locales["en"] = {
         teleport = "Teleport",
         unset = "Unset"
       },
-      editor = {
-        editTitle = "Edit job",
-        newTitle = "New job"
-      },
       overview = {
-        subtitle = "Select a job to edit or create a new one from the last saved settings.",
-        emptySubtitle = "Create the first job to start moving this config into the database.",
         counts = "{shop} shop / {vehicles} vehicles / {props} props"
       },
       features = {
@@ -2635,11 +2631,8 @@ Locales["en"] = {
         allowedVehicleClasses = "Select the vehicle classes this workshop specializes in. No selection allows every class."
       },
       messages = {
-        empty = "No jobs configured yet.",
         featuresSaved = "Features saved.",
         invalidJson = "Correct invalid JSON fields before saving.",
-        loading = "Loading jobs...",
-        nameExists = "A job with this job name already exists.",
         noTuningOptions = "No options configured in this category.",
         saved = "Settings saved.",
         saveFailed = "Unable to save changes."

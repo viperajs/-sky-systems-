@@ -1099,6 +1099,12 @@ RegisterNetEvent("sky_jobs_base:managementAccessChanged", function()
     triggerDebouncedRebuild()
 end)
 
+-- Raised locally by a job resource whose point definitions changed, e.g. sky_mechanicjob
+-- after applying the interactions saved in the job configurator.
+AddEventHandler("sky_jobs_base:creator:refreshPoints", function()
+    triggerDebouncedRebuild()
+end)
+
 RegisterNetEvent("sky_jobs_base:creator:updatePlayerJob", function(jobData)
     updatePlayerJob(jobData)
 end)

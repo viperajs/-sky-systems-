@@ -21,6 +21,31 @@ local TOGGLE_OPTION_IDS = { antilag_enabled = true, twostep_enabled = true }
 
 local configuratorData = nil
 
+-- /jobconfig workshops over the config.lua job of their job key (else the first one),
+-- the way the clients merge them into Config.Jobs (client/main.lua). Their Tuning Prices
+-- and Parts Delivery tabs are saved on the workshop.
+local function mergeWorkshopEntries(entries)
+    local luaJobs = Config and Config.Jobs or {}
+    local merged = {}
+    for _, entry in ipairs(type(entries) == "table" and entries or {}) do
+        if type(entry) == "table" then
+            local key = entry.jobKey or entry.job or entry.name
+            local base = type(luaJobs[1]) == "table" and luaJobs[1] or {}
+            for _, job in ipairs(luaJobs) do
+                if type(job) == "table" and job.name == key then
+                    base = job
+                    break
+                end
+            end
+            local job = {}
+            for k, v in pairs(base) do job[k] = v end
+            for k, v in pairs(entry) do job[k] = v end
+            merged[#merged + 1] = job
+        end
+    end
+    return merged
+end
+
 local function loadConfiguratorData()
     if not (Config and Config.UseJobConfigurator) then
         configuratorData = nil
@@ -40,8 +65,19 @@ local function loadConfiguratorData()
 
     configuratorData = {
         settings = decoded and type(decoded.settings) == "table" and decoded.settings or {},
-        features = decoded and type(decoded.features) == "table" and decoded.features or {}
+        features = decoded and type(decoded.features) == "table" and decoded.features or {},
+        jobs = mergeWorkshopEntries(decoded and decoded.entries)
     }
+
+    -- The settings the clients apply over config.lua, so the server checks the same items,
+    -- locations and prices (parts theft, vehicle care, wear, carry items, instant tuning).
+    local applied, err = pcall(ApplyJobConfiguratorSettings, configuratorData.settings)
+    if not applied then
+        print(("[sky_mechanicjob] applying the /jobconfig settings failed: %s"):format(tostring(err)))
+    end
+
+    -- tablet_apps.lua registers the workshops' shop, props and vehicles from these.
+    TriggerEvent("sky_mechanicjob:server:jobConfiguratorLoaded")
 end
 
 CreateThread(function()
@@ -84,16 +120,35 @@ end
 --  Profiles and vehicle prices
 -- -----------------------------------------------------
 
---- Config.Jobs entry of a workshop job; /jobconfig workshops use the first entry.
+-- The /jobconfig workshops when there are any (as the clients' Config.Jobs), else config.lua.
+local function getWorkshopJobs()
+    local workshops = configuratorData and configuratorData.jobs
+    if type(workshops) == "table" and #workshops > 0 then
+        return workshops
+    end
+    return Config and Config.Jobs or {}
+end
+
+--- Workshop of a job (jobKey, job or name, like GetJobConfigByName on the client), or nil
 ---@param jobName string|nil
----@return table
-function Pricing.GetJobConfig(jobName)
-    local jobs = Config and Config.Jobs or {}
-    for _, job in ipairs(jobs) do
-        if type(job) == "table" and job.name == jobName then
+---@return table|nil
+function Pricing.FindJobConfig(jobName)
+    if type(jobName) ~= "string" or jobName == "" then return nil end
+    for _, job in ipairs(getWorkshopJobs()) do
+        if type(job) == "table" and (job.jobKey == jobName or job.job == jobName or job.name == jobName) then
             return job
         end
     end
+    return nil
+end
+
+--- Workshop of a job, else the first one
+---@param jobName string|nil
+---@return table
+function Pricing.GetJobConfig(jobName)
+    local job = Pricing.FindJobConfig(jobName)
+    if job then return job end
+    local jobs = getWorkshopJobs()
     return type(jobs[1]) == "table" and jobs[1] or {}
 end
 
@@ -260,7 +315,7 @@ local function isToggleOption(optionId)
 end
 
 --- Pricing context for one purchase
----@param jobName string|nil workshop job (its Config.Jobs profile, else the first entry)
+---@param jobName string|nil workshop job (its tuning cost profile, else the first workshop's)
 ---@param modelHash number|nil
 ---@param options table|nil { instant = bool, free = bool }
 function Pricing.NewContext(jobName, modelHash, options)

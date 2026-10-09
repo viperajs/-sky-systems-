@@ -10,7 +10,8 @@ escrow_ignore 'config/**'
 
 shared_scripts {
 	'source/diagnostics.lua',
-	'source/import.lua'
+	'source/import.lua',
+	'source/config_overrides.lua'
 }
 
 client_scripts {
@@ -81,6 +82,7 @@ server_scripts {
 	'source/server/antilag.lua',
 	'source/server/twostep.lua',
 	'source/server/tablet_apps.lua',
+	'source/server/job_configurator.lua',
 	'source/server/debug.lua',
 }
 

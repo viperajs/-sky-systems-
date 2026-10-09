@@ -664,6 +664,8 @@ local function copyEntries(list, fields, required)
             local entry, valid = {}, true
             for field, kind in pairs(fields) do
                 local value = item[field]
+                -- /jobconfig text inputs left empty (e.g. a vehicle's livery) mean unset.
+                if kind == "number" and value == "" then value = nil end
                 if kind == "number" and value ~= nil then
                     value = tonumber(value)
                     if not value or value ~= value or value < 0 or value == math.huge then valid = false end
@@ -2515,33 +2517,6 @@ local defaultFeatures = {
     workshopLift = true
 }
 
-local defaultSettings = {
-    primaryColor = "#EDC001",
-    addRevenueToSociety = true,
-    publicUsersSeePrices = true,
-    fallbackVehicleValue = 50000,
-    priceType = "percentage",
-    freeVehicles = {},
-    partsTheftItem = "lockpick",
-    partsTheftRemoveItemAfterUse = false,
-    partsTheftStolenWheelItem = "stolen_wheel",
-    partsTheftCatalyticConverterItem = "stolen_catalytic_converter",
-    partsTheftDealerAccount = "money",
-    partsTheftDealerSellDistance = 3.0,
-    partsTheftDispatchEnabled = true,
-    partsTheftDispatchJobs = { "police" },
-    vehicleCareWashItem = "wash_sponge",
-    vehicleCareWaxItem = "vehicle_wax",
-    vehicleCareRepairItem = "fix_kit",
-    wheelDamageDefaultMultiplier = 1.0,
-    wheelDamageOffroadWheelsMultiplier = 0.5,
-    mileageHudDigits = 6,
-    partsDeliveryTimeSeconds = 60,
-    partsDeliveryTimerHudEnabled = true,
-    partsDeliveryOwnCard = true,
-    partsDeliveryCompanyCard = true
-}
-
 local defaultFeatureDefinitions = {
     { key = "instantTuning", label = "Instant Tuning", description = "Allow direct tuning at configured public tuning locations.", default = false },
     { key = "partsDelivery", label = "Parts Delivery", description = "Enable workshop parts delivery orders and delivery bays.", default = true },
@@ -2555,30 +2530,178 @@ local defaultFeatureDefinitions = {
     { key = "workshopLift", label = "Workshop Lift", description = "Enable usable lift points configured in workshops.", default = true }
 }
 
-local defaultSettingDefinitions = {
-    { key = "primaryColor", label = "Primary Color", type = "color", default = "#EDC001" },
-    { key = "addRevenueToSociety", label = "Add Revenue To Society", type = "boolean", default = true },
-    { key = "publicUsersSeePrices", label = "Public Users See Prices", type = "boolean", default = true },
-    { key = "fallbackVehicleValue", label = "Fallback Vehicle Value", type = "number", default = 50000 },
-    { key = "priceType", label = "Price Type", type = "select", options = { { value = "percentage", label = "Percentage" }, { value = "fixed", label = "Fixed" } }, default = "percentage" },
-    { key = "partsTheftItem", label = "Parts Theft Tool Item", type = "string", default = "lockpick" },
-    { key = "partsTheftRemoveItemAfterUse", label = "Remove Theft Item After Use", type = "boolean", default = false },
-    { key = "partsTheftStolenWheelItem", label = "Stolen Wheel Item Name", type = "string", default = "stolen_wheel" },
-    { key = "partsTheftCatalyticConverterItem", label = "Stolen Converter Item Name", type = "string", default = "stolen_catalytic_converter" },
-    { key = "partsTheftDealerAccount", label = "Parts Dealer Account", type = "string", default = "money" },
-    { key = "partsTheftDealerSellDistance", label = "Dealer Sell Distance", type = "number", default = 3.0 },
-    { key = "partsTheftDispatchEnabled", label = "Dispatch Alert On Theft", type = "boolean", default = true },
-    { key = "vehicleCareWashItem", label = "Wash Sponge Item", type = "string", default = "wash_sponge" },
-    { key = "vehicleCareWaxItem", label = "Vehicle Wax Item", type = "string", default = "vehicle_wax" },
-    { key = "vehicleCareRepairItem", label = "Fix Kit Item", type = "string", default = "fix_kit" },
-    { key = "wheelDamageDefaultMultiplier", label = "Wheel Damage Multiplier", type = "number", default = 1.0 },
-    { key = "wheelDamageOffroadWheelsMultiplier", label = "Offroad Wheel Damage Multiplier", type = "number", default = 0.5 },
-    { key = "mileageHudDigits", label = "Mileage HUD Digits", type = "number", default = 6 },
-    { key = "partsDeliveryTimeSeconds", label = "Parts Delivery Time (Seconds)", type = "number", default = 60 },
-    { key = "partsDeliveryTimerHudEnabled", label = "Show Delivery Timer HUD", type = "boolean", default = true },
-    { key = "partsDeliveryOwnCard", label = "Allow Own Card Checkout", type = "boolean", default = true },
-    { key = "partsDeliveryCompanyCard", label = "Allow Company Card Checkout", type = "boolean", default = true }
+-- The settings, interactions and workshop tabs come from the mechanic resource
+-- (sky_mechanicjob/source/server/job_configurator.lua), which takes every default from its
+-- config.lua. Without it only the workshops and features can be edited.
+local CONFIGURATOR_OWNER = "sky_mechanicjob"
+local cachedSchema = nil
+
+local function getConfiguratorSchema()
+    if cachedSchema then
+        return cachedSchema
+    end
+    if GetResourceState(CONFIGURATOR_OWNER) ~= "started" then
+        return nil
+    end
+
+    local ok, schema = pcall(function()
+        return exports[CONFIGURATOR_OWNER]:GetJobConfiguratorSchema()
+    end)
+    if ok and type(schema) == "table" and type(schema.settingDefinitions) == "table" then
+        cachedSchema = schema
+        return schema
+    end
+    return nil
+end
+
+-- A restart of the mechanic resource can change its config.lua defaults.
+AddEventHandler("onResourceStart", function(resourceName)
+    if resourceName == CONFIGURATOR_OWNER then cachedSchema = nil end
+end)
+
+AddEventHandler("onResourceStop", function(resourceName)
+    if resourceName == CONFIGURATOR_OWNER then cachedSchema = nil end
+end)
+
+local function copyConfigValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for k, v in pairs(value) do
+        copy[k] = copyConfigValue(v)
+    end
+    return copy
+end
+
+-- The NUI keeps number fields as text ("50000.0") and sends them back like that; the
+-- game compares and multiplies these values, so each one is stored with its type.
+local function toSettingNumber(value, definition, integer)
+    local number = tonumber(value)
+    if number == nil or number ~= number or number == math.huge or number == -math.huge then
+        return nil
+    end
+    local min = tonumber(definition.min)
+    if min and number < min then
+        number = min
+    end
+    if integer then
+        number = math.floor(number)
+    end
+    return number
+end
+
+local function toSettingString(value)
+    if value == nil then return nil end
+    if type(value) == "string" then return value end
+    if type(value) == "number" or type(value) == "boolean" then return tostring(value) end
+    return nil
+end
+
+local function toStringList(value)
+    local list, seen = {}, {}
+    for _, entry in ipairs(type(value) == "table" and value or {}) do
+        local text = toSettingString(entry)
+        text = text and text:match("^%s*(.-)%s*$") or ""
+        if text ~= "" and not seen[text] then
+            seen[text] = true
+            list[#list + 1] = text
+        end
+    end
+    return list
+end
+
+local normalizeSettingValue
+
+local function normalizeRows(rows, columns)
+    local result = {}
+    for _, row in ipairs(type(rows) == "table" and rows or {}) do
+        if type(row) == "table" then
+            for _, column in ipairs(type(columns) == "table" and columns or {}) do
+                if type(column) == "table" and column.key ~= nil and column.readonly ~= true and row[column.key] ~= nil then
+                    row[column.key] = normalizeSettingValue(column, row[column.key])
+                end
+            end
+            result[#result + 1] = row
+        end
+    end
+    return result
+end
+
+local LOCATION_ROW_COLUMNS = {
+    { key = "label", type = "string" },
+    { key = "x", type = "number" }, { key = "y", type = "number" }, { key = "z", type = "number" },
+    { key = "heading", type = "number" },
+    { key = "interactionDistance", type = "number", min = 0 },
+    { key = "forceMarkerInteraction", type = "boolean" },
+    { key = "mechanicOnly", type = "boolean" },
+    { key = "allowedJobs", type = "stringList" }
 }
+
+function normalizeSettingValue(definition, value)
+    local valueType = definition.type
+    if valueType == "boolean" then
+        return value == true or value == 1 or value == "true" or value == "1"
+    elseif valueType == "number" or valueType == "integer" then
+        return toSettingNumber(value, definition, valueType == "integer")
+    elseif valueType == "stringList" then
+        return toStringList(value)
+    elseif valueType == "table" or valueType == "itemList" then
+        return normalizeRows(value, definition.columns or definition.fields)
+    elseif valueType == "locationList" then
+        return normalizeRows(value, LOCATION_ROW_COLUMNS)
+    elseif valueType == "select" then
+        -- Option values keep their type (bone ids are numbers, install flows are strings).
+        local options = type(definition.options) == "table" and definition.options or {}
+        local first = type(options[1]) == "table" and options[1].value or nil
+        if type(first) == "number" then
+            return tonumber(value)
+        end
+        return toSettingString(value)
+    elseif valueType == "string" or valueType == "color" then
+        return toSettingString(value)
+    end
+    return value
+end
+
+-- Settings without a definition (the HUD position keys, values of older versions) are
+-- stored as sent.
+local function normalizeSettings(settings)
+    if type(settings) ~= "table" then
+        return {}
+    end
+
+    local schema = getConfiguratorSchema()
+    local definitions = {}
+    for _, definition in ipairs(schema and schema.settingDefinitions or {}) do
+        if type(definition) == "table" and type(definition.key) == "string" then
+            definitions[definition.key] = definition
+        end
+    end
+
+    local result = {}
+    for key, value in pairs(settings) do
+        if key ~= "configKey" and key ~= "_resource" then
+            local definition = definitions[key]
+            if definition then
+                result[key] = normalizeSettingValue(definition, value)
+            else
+                result[key] = value
+            end
+        end
+    end
+    return result
+end
+
+local function normalizeFeatures(features)
+    local result = {}
+    for key, value in pairs(type(features) == "table" and features or {}) do
+        if type(key) == "string" and key ~= "configKey" and key ~= "_resource" then
+            result[key] = value == true
+        end
+    end
+    return result
+end
 
 local defaultLocationDefinitions = {
     { key = "duty", label = "Duty Station", icon = "briefcase", placementType = "marker", allowMultiple = true, canPlace = true, enabled = true },
@@ -2670,36 +2793,29 @@ local function loadWorkshopCreatorData()
     data.settings = type(data.settings) == "table" and data.settings or {}
     data.interactions = type(data.interactions) == "table" and data.interactions or {}
 
-    for k, v in pairs(defaultFeatures) do
+    -- Unsaved values come from the mechanic's config.lua (its schema), so the game behaves
+    -- like the Lua config until something is changed in the configurator.
+    local schema = getConfiguratorSchema()
+    local featureDefaults = schema and type(schema.defaultFeatures) == "table" and schema.defaultFeatures or defaultFeatures
+    local settingDefaults = schema and type(schema.defaultSettings) == "table" and schema.defaultSettings or {}
+
+    for k, v in pairs(featureDefaults) do
         if data.features[k] == nil then
             data.features[k] = v
         end
     end
 
-    for k, v in pairs(defaultSettings) do
+    for k, v in pairs(settingDefaults) do
         if data.settings[k] == nil then
-            data.settings[k] = v
+            data.settings[k] = copyConfigValue(v)
         end
     end
 
     for _, entry in ipairs(data.entries) do
-        if type(entry.settings) ~= "table" then
-            entry.settings = {}
-        end
-        for k, v in pairs(data.settings) do
-            if entry.settings[k] == nil then
-                entry.settings[k] = v
-            end
-        end
-
-        if type(entry.features) ~= "table" then
-            entry.features = {}
-        end
-        for k, v in pairs(data.features) do
-            if entry.features[k] == nil then
-                entry.features[k] = v
-            end
-        end
+        -- Older saves copied every global setting and feature into each workshop; nothing
+        -- reads those copies and they made every sync carry the settings once per workshop.
+        entry.settings = nil
+        entry.features = nil
 
         if type(entry.interactions) ~= "table" then
             entry.interactions = {}
@@ -2763,10 +2879,11 @@ local function saveWorkshopCreatorData(data)
     TriggerClientEvent("sky_jobs_base:creatorUpdated", -1, "workshopcreator", data)
 
     local features = type(data.features) == "table" and data.features or defaultFeatures
-    local settings = type(data.settings) == "table" and data.settings or defaultSettings
+    local settings = type(data.settings) == "table" and data.settings or {}
     local entries = type(data.entries) == "table" and data.entries or {}
+    local interactions = type(data.interactions) == "table" and data.interactions or {}
 
-    TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", -1, "sky_mechanicjob", entries, features, settings)
+    TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", -1, "sky_mechanicjob", entries, features, settings, interactions)
     publishWorkshopJobNames(entries)
     return true
 end
@@ -2791,24 +2908,37 @@ CreateThread(function()
     print("[sky_jobs_base][job_configurator] could not load the workshop jobs at start; they are published again on the next save.")
 end)
 
+-- The complete configurator context: the NUI resets every section that is missing.
 registerConfiguratorCallback("sky_jobs_base:jobConfigurator:list", function(source, data)
     local configKey = tostring(data and data.configKey or "sky_mechanicjob")
     local creatorData = loadWorkshopCreatorData()
+    local schema = getConfiguratorSchema() or {}
+
+    if not schema.settingDefinitions then
+        print("[sky_jobs_base][job_configurator] sky_mechanicjob is not running; only workshops and features can be edited.")
+    end
 
     return {
         success = true,
         data = {
             configKey = configKey,
-            title = "Mechanic Jobs",
-            subtitle = "Configure mechanic jobs, shops, vehicles, and workshop locations.",
+            title = schema.title or "Mechanic Jobs",
+            titleKey = schema.titleKey or "workshopConfig.configs.sky_mechanicjob.title",
+            subtitle = schema.subtitle or "Configure mechanic jobs, shops, vehicles, and workshop locations.",
+            subtitleKey = schema.subtitleKey or "workshopConfig.configs.sky_mechanicjob.subtitle",
+            entityLabel = schema.entityLabel or "Workshop",
+            entityPluralLabel = schema.entityPluralLabel or "Workshops",
             locationDefinitions = defaultLocationDefinitions,
-            featureDefinitions = defaultFeatureDefinitions,
-            settingDefinitions = defaultSettingDefinitions,
-            interactionDefinitions = {},
-            features = creatorData.features or defaultFeatures,
-            settings = creatorData.settings or defaultSettings,
-            interactions = creatorData.interactions or {},
-            configs = creatorData.entries or {}
+            featureDefinitions = schema.featureDefinitions or defaultFeatureDefinitions,
+            settingDefinitions = schema.settingDefinitions or {},
+            defaultSettings = schema.defaultSettings or {},
+            interactionDefinitions = schema.interactionDefinitions or {},
+            extensions = schema.extensions or {},
+            creatorSections = {},
+            features = creatorData.features,
+            settings = creatorData.settings,
+            interactions = creatorData.interactions,
+            configs = creatorData.entries
         }
     }
 end)
@@ -2874,12 +3004,8 @@ registerConfiguratorCallback("sky_jobs_base:jobConfigurator:setLocation", functi
             nitroAccess = true,
             workshopVehicleClasses = {},
             points = {},
-            settings = {},
-            features = {},
             interactions = {}
         }
-        for k, v in pairs(creatorData.settings or defaultSettings) do targetEntry.settings[k] = v end
-        for k, v in pairs(creatorData.features or defaultFeatures) do targetEntry.features[k] = v end
         table.insert(creatorData.entries, targetEntry)
     end
 
@@ -3103,11 +3229,13 @@ registerConfiguratorCallback("sky_jobs_base:jobConfigurator:save", function(sour
 
     if type(data.features) == "table" then
         creatorData.features = creatorData.features or {}
-        for k, v in pairs(data.features) do creatorData.features[k] = v end
+        for k, v in pairs(normalizeFeatures(data.features)) do creatorData.features[k] = v end
     end
+    -- The workshop editor sends the global settings of its Parts Delivery and Tuning
+    -- Prices tabs with the workshop.
     if type(data.settings) == "table" then
         creatorData.settings = creatorData.settings or {}
-        for k, v in pairs(data.settings) do creatorData.settings[k] = v end
+        for k, v in pairs(normalizeSettings(data.settings)) do creatorData.settings[k] = v end
     end
     if type(data.interactions) == "table" then
         creatorData.interactions = data.interactions
@@ -3161,13 +3289,8 @@ registerConfiguratorCallback("sky_jobs_base:jobConfigurator:createCreatorEntry",
         nitroAccess = true,
         workshopVehicleClasses = {},
         points = {},
-        settings = {},
-        features = {},
         interactions = {}
     }
-    
-    for k, v in pairs(creatorData.settings or defaultSettings) do newEntry.settings[k] = v end
-    for k, v in pairs(creatorData.features or defaultFeatures) do newEntry.features[k] = v end
 
     table.insert(creatorData.entries, newEntry)
     if not saveWorkshopCreatorData(creatorData) then
@@ -3246,10 +3369,8 @@ registerConfiguratorCallback("sky_jobs_base:jobConfigurator:saveFeatures", funct
 
     local creatorData = loadWorkshopCreatorData()
     creatorData.features = creatorData.features or {}
-    for k, v in pairs(featuresPayload) do
-        if k ~= "configKey" and k ~= "_resource" then
-            creatorData.features[k] = v
-        end
+    for k, v in pairs(normalizeFeatures(featuresPayload)) do
+        creatorData.features[k] = v
     end
 
     if not saveWorkshopCreatorData(creatorData) then
@@ -3267,10 +3388,8 @@ registerConfiguratorCallback("sky_jobs_base:jobConfigurator:saveSettings", funct
 
     local creatorData = loadWorkshopCreatorData()
     creatorData.settings = creatorData.settings or {}
-    for k, v in pairs(settingsPayload) do
-        if k ~= "configKey" and k ~= "_resource" then
-            creatorData.settings[k] = v
-        end
+    for k, v in pairs(normalizeSettings(settingsPayload)) do
+        creatorData.settings[k] = v
     end
 
     if not saveWorkshopCreatorData(creatorData) then
@@ -3332,7 +3451,7 @@ RegisterServerEvent("sky_jobs_base:jobConfigurator:requestSync", function()
         print(("[sky_jobs_base][job_configurator] sync for %s failed: %s"):format(tostring(src), tostring(creatorData)))
         return
     end
-    TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", src, "sky_mechanicjob", creatorData.entries, creatorData.features, creatorData.settings)
+    TriggerClientEvent("sky_jobs_base:jobConfigurator:updated", src, "sky_mechanicjob", creatorData.entries, creatorData.features, creatorData.settings, creatorData.interactions)
 end)
 
 AddEventHandler("playerDropped", function()

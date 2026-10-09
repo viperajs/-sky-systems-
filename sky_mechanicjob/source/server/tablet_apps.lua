@@ -86,32 +86,38 @@ local function getMechanicJobNames()
     return names
 end
 
+local function hasRows(list)
+    return type(list) == "table" and #list > 0
+end
+
 -- One job definition per mechanic job for sky_jobs_base's job registry (shop, props,
--- garage vehicles). /jobconfig workshops use their Config.Jobs entry or the first one.
+-- garage vehicles). They come from the Shop, Props and Vehicles tabs of the job's
+-- /jobconfig workshop; an empty tab keeps the list of its Config.Jobs entry or the first one.
 local function buildJobDefinitions(jobNames)
     local doesJobExist = Sky and Sky.FW and Sky.FW.DoesJobExist
     local firstJob = type(Config.Jobs) == "table" and Config.Jobs[1] or {}
     local definitions = {}
 
     for _, jobName in ipairs(jobNames) do
-        local template = nil
+        local luaJob = nil
         for _, job in ipairs(Config.Jobs or {}) do
             if type(job) == "table" and job.name == jobName then
-                template = job
+                luaJob = job
                 break
             end
         end
         -- Workshop display names are published next to the job keys; skip the ones that are no job.
-        if template or not doesJobExist or doesJobExist(jobName) == true then
-            template = template or firstJob
+        if luaJob or not doesJobExist or doesJobExist(jobName) == true then
+            local base = luaJob or firstJob
+            local workshop = Pricing and Pricing.FindJobConfig and Pricing.FindJobConfig(jobName) or base
             definitions[#definitions + 1] = {
                 name = jobName,
-                label = template.label or jobName,
-                color = template.color,
-                shop = template.shop,
-                props = template.props,
-                vehicles = template.vehicles,
-                offDutyJob = template.offDutyJob
+                label = workshop.label or jobName,
+                color = workshop.color or base.color,
+                shop = hasRows(workshop.shop) and workshop.shop or base.shop,
+                props = hasRows(workshop.props) and workshop.props or base.props,
+                vehicles = hasRows(workshop.vehicles) and workshop.vehicles or base.vehicles,
+                offDutyJob = workshop.offDutyJob
             }
         end
     end
@@ -167,6 +173,9 @@ AddEventHandler("sky_jobs_base:jobConfigurator:jobNamesUpdated", function(config
         registerMechanicAppsWithJobsBase()
     end
 end)
+
+-- pricing.lua reloaded the saved workshops (at start and after every /jobconfig save).
+AddEventHandler("sky_mechanicjob:server:jobConfiguratorLoaded", registerMechanicAppsWithJobsBase)
 
 registerExport("GetMechanicTabletApps", function()
     return MECHANIC_TABLET_APPS

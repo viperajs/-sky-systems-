@@ -148,18 +148,9 @@ end
 
 -- ── Catalogue ────────────────────────────────────────
 
-local function getJobConfig(job)
-    local jobs = Config.Jobs or {}
-    for _, jobCfg in ipairs(jobs) do
-        if type(jobCfg) == "table" and jobCfg.name == job then
-            return jobCfg
-        end
-    end
-    return jobs[1]
-end
-
+-- The workshop's Parts Delivery tab in /jobconfig, else its config.lua job (server/pricing.lua).
 local function getShopCatalog(job)
-    local jobCfg = getJobConfig(job) or {}
+    local jobCfg = Pricing.GetJobConfig(job)
     local catalog = {}
     for _, item in ipairs(jobCfg.partsDeliveryShop or jobCfg.shop or {}) do
         if type(item) == "table" and type(item.name) == "string" and item.name ~= "" then
