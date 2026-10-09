@@ -38,6 +38,6 @@ for root in roots:
         assert result.returncode == 0, f"{path}: {result.stderr}"
         js_count += 1
 assert "'source/diagnostics.lua'" in (roots[0] / "fxmanifest.lua").read_text()
-assert marked == 229, f"Update the documented coverage count if scripts are added or removed: {marked}"
+assert marked == 230, f"Update the documented coverage count if scripts are added or removed: {marked}"
 print(f"PASS: {marked} startup markers, {lua_count} Lua scripts/manifests, {js_count} JS files, and diagnostic load order.")
 print("One pre-existing CfxLua optional-chain expression was normalized in-memory for the stock Lua syntax check.")

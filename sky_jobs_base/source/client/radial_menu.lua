@@ -550,7 +550,9 @@ local function buildOxTargetOption(act)
             if not validateTargetEntityType(entity, targetTypes) then
                 return false
             end
-            return actionRegistry[act.id] ~= nil
+            -- Unavailable actions stay in the radial menu greyed out; the target menu hides them.
+            local registered = actionRegistry[act.id]
+            return registered ~= nil and registered.disabled ~= true
         end,
         onSelect = function(data)
             local ok, err = triggerRadialActionDirectly(act.id, data)
