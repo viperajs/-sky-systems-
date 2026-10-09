@@ -12,6 +12,12 @@ registerExport("Get", function()
     return Sky
 end)
 
+-- The target system in use after auto-detection ("ox", "qb" or "none"). sky_jobs_base loads
+-- config/target for its job actions (workshop lift, engine hoist, ...) and needs the same one.
+registerExport("GetTargetSystem", function()
+    return Sky.Config.target
+end)
+
 registerExport("FormatCurrency", function(amount, currency)
     return Sky.Currency.Format(amount, currency)
 end)

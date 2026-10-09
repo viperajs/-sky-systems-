@@ -69,7 +69,7 @@ The jobs callback proxy also prevents a second response after jobs base has alre
 
 ## Coverage and limits
 
-- All 229 existing Lua/config scripts have a `file.started` marker. A marker means chunk execution began; it does not certify successful initialization. Duplicate executions log `loadCount` and a warning.
+- All 230 existing Lua/config scripts have a `file.started` marker. A marker means chunk execution began; it does not certify successful initialization. Duplicate executions log `loadCount` and a warning.
 - Shared instrumentation covers local/network event handlers, commands, exports, threads, timers, state-bag handlers, Sky callbacks, NUI requests/replies/messages/focus, SQL `await` methods, and HTTP callbacks.
 - All three UIs report script/style loads, failed resource/media loads, uncaught JavaScript errors, rejected promises and Vue errors. Both tablet routers and callback transports are instrumented.
 - Event arguments, NUI request bodies, SQL parameters, HTTP bodies and authorization headers are not dumped by the new instrumentation. Error messages can still contain details supplied by the underlying library.
