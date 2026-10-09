@@ -495,6 +495,10 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:createOrder", function(source, da
         ["@total_price"] = totalPrice,
         ["@status"] = deliveryTimeSeconds > 0 and "pending" or "ready"
     })
+    if not inserted then
+        -- Usually a sky_mechanic_parts_deliveries table from an older version (db_migrate.lua).
+        print(("[sky_mechanicjob][parts_delivery] saving the order failed, the payment was refunded: %s"):format(tostring(deliveryId)))
+    end
     deliveryId = inserted and tonumber(deliveryId) or nil
     if not deliveryId or deliveryId <= 0 then
         if refund then refund() end
