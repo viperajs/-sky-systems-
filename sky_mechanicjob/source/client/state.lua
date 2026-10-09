@@ -344,6 +344,27 @@ OrderTabletState = OrderTabletState or {
     connectedVehicleNetId = 0
 }
 
+-- A connection is dropped once its vehicle is gone or left this far behind.
+TABLET_VEHICLE_MAX_DISTANCE = 50.0
+
+--- The vehicle connected in the mechanic tablet. Only the mechanic connects one (Connect
+--- Vehicle); opening an app or reading diagnostics never picks a vehicle by itself.
+---@return number|nil vehicle, number netId
+function GetTabletConnectedVehicle()
+    local netId = math.floor(tonumber(OrderTabletState and OrderTabletState.connectedVehicleNetId) or 0)
+    if netId <= 0 then
+        return nil, 0
+    end
+
+    local vehicle = NetworkDoesNetworkIdExist(netId) and NetworkGetEntityFromNetworkId(netId) or 0
+    if vehicle == 0 or not DoesEntityExist(vehicle) or not IsEntityAVehicle(vehicle)
+        or #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(vehicle)) > TABLET_VEHICLE_MAX_DISTANCE then
+        OrderTabletState.connectedVehicleNetId = 0
+        return nil, 0
+    end
+    return vehicle, netId
+end
+
 CarJackState = CarJackState or {
     active = false,
     lifted = false,

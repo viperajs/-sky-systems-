@@ -234,6 +234,8 @@ local function runDynoSweep(vehicle, animMs)
         local elapsed = GetGameTimer() - startTime
         if elapsed > sweepDuration then break end
         if not DoesEntityExist(vehicle) then break end
+        -- Stop when the driver gets out; the vehicle is restored below.
+        if GetPedInVehicleSeat(vehicle, -1) ~= myPed then break end
 
         local progress = clamp(elapsed / math.max(1, sweepDuration), 0.0, 1.0)
 
@@ -296,36 +298,18 @@ RegisterNUICallback("dyno:run", function(data, cb)
         return
     end
 
-    local netId = math.floor(tonumber(OrderTabletState and OrderTabletState.connectedVehicleNetId) or 0)
-    if netId <= 0 then
-        local ped = PlayerPedId()
-        local veh = GetVehiclePedIsIn(ped, false)
-        if veh == 0 or not DoesEntityExist(veh) then
-            local pCoords = GetEntityCoords(ped)
-            veh = GetClosestVehicle(pCoords.x, pCoords.y, pCoords.z, 10.0, 0, 71)
-        end
-        if veh ~= 0 and DoesEntityExist(veh) then
-            netId = NetworkGetNetworkIdFromEntity(veh)
-            if OrderTabletState then OrderTabletState.connectedVehicleNetId = netId end
-        end
-    end
-
-    if netId <= 0 then
+    -- The connected vehicle only (it used to fall back to the closest car within 10 m).
+    local vehicle = GetTabletConnectedVehicle()
+    if not vehicle then
         cb({ success = false, error = "no_vehicle" })
         return
     end
 
-    local vehicle = NetworkGetEntityFromNetworkId(netId)
-    if vehicle == 0 or not DoesEntityExist(vehicle) then
-        if OrderTabletState then OrderTabletState.connectedVehicleNetId = 0 end
-        cb({ success = false, error = "no_vehicle" })
-        return
-    end
-
-    local pedCoords = GetEntityCoords(PlayerPedId())
-    local vehCoords = GetEntityCoords(vehicle)
-    if #(pedCoords - vehCoords) > 25.0 then
-        cb({ success = false, error = "vehicle_too_far" })
+    -- The test ran on any connected car, also an empty parked one: its engine was started
+    -- and it was pushed forward with gravity off. The mechanic drives it onto the dyno.
+    local ped = PlayerPedId()
+    if GetVehiclePedIsIn(ped, false) ~= vehicle or GetPedInVehicleSeat(vehicle, -1) ~= ped then
+        cb({ success = false, error = "not_in_vehicle" })
         return
     end
 

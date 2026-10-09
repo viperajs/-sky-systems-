@@ -854,27 +854,11 @@ function getNearbyVehicles(radius)
     return list
 end
 
+-- Every tablet view reads this when it opens. It used to connect the closest vehicle when
+-- none was connected, so a disconnect never stuck; it only reports the connection now.
 function getConnectedVehiclePayload()
-    local netId = math.floor(tonumber(OrderTabletState and OrderTabletState.connectedVehicleNetId) or 0)
-    if netId <= 0 then
-        local ped = PlayerPedId()
-        local veh = GetVehiclePedIsIn(ped, false)
-        if veh == 0 or not DoesEntityExist(veh) then
-            local pCoords = GetEntityCoords(ped)
-            veh = GetClosestVehicle(pCoords.x, pCoords.y, pCoords.z, 6.0, 0, 71)
-        end
-        if veh ~= 0 and DoesEntityExist(veh) then
-            netId = NetworkGetNetworkIdFromEntity(veh)
-            if OrderTabletState then OrderTabletState.connectedVehicleNetId = netId end
-        end
-    end
-    if netId <= 0 then return nil end
-
-    local veh = NetworkGetEntityFromNetworkId(netId)
-    if veh == 0 or not DoesEntityExist(veh) then
-        if OrderTabletState then OrderTabletState.connectedVehicleNetId = 0 end
-        return nil
-    end
+    local veh, netId = GetTabletConnectedVehicle()
+    if not veh then return nil end
 
     local pedCoords = GetEntityCoords(PlayerPedId())
     local dist = #(pedCoords - GetEntityCoords(veh))
@@ -1835,17 +1819,12 @@ end)
 -- /admintuning, /stancing and /rgb are server commands (permission checked) that raise
 -- the events above.
 
+-- Run from inside a vehicle, /diagnostics connects that vehicle; otherwise the mechanic
+-- picks one with Connect Vehicle (it no longer grabs a parked car nearby).
 RegisterCommand("diagnostics", function()
-    local ped = PlayerPedId()
-    local veh = GetVehiclePedIsIn(ped, false)
-    if veh == 0 or not DoesEntityExist(veh) then
-        local pCoords = GetEntityCoords(ped)
-        veh = GetClosestVehicle(pCoords.x, pCoords.y, pCoords.z, 6.0, 0, 71)
-    end
-    if veh ~= 0 and DoesEntityExist(veh) then
-        if OrderTabletState then
-            OrderTabletState.connectedVehicleNetId = NetworkGetNetworkIdFromEntity(veh)
-        end
+    local veh = GetVehiclePedIsIn(PlayerPedId(), false)
+    if veh ~= 0 and DoesEntityExist(veh) and OrderTabletState then
+        OrderTabletState.connectedVehicleNetId = NetworkGetNetworkIdFromEntity(veh)
     end
     TriggerEvent("sky_mechanicjob:tablet:openApp", { key = "diagnostics", route = "/tablet/mechanic-diagnostics" })
 end, false)
@@ -1880,9 +1859,27 @@ RegisterNUICallback("uiReady", function(data, cb)
     cb({ success = true })
 end)
 
+-- The UI hides itself before it asks Lua to close. setTuningClosed saves or restores the
+-- vehicle before it releases the focus, so an error there left the player stuck on an
+-- invisible, focused UI.
+local function closeTuningSafely()
+    local ok, err = pcall(setTuningClosed, false)
+    if ok then return end
+
+    print(("[sky_mechanicjob][tuning] closing the tuning menu failed: %s"):format(tostring(err)))
+    if TuningState.camera then
+        pcall(function() TuningState.camera:Remove() end)
+        TuningState.camera = nil
+    end
+    TuningState.active = false
+    TuningState.nuiFocused = false
+    releaseNuiFocus()
+    sendUi("close")
+end
+
 RegisterNUICallback("close", function(data, cb)
     if TuningState.active then
-        setTuningClosed(false)
+        closeTuningSafely()
     else
         releaseNuiFocus()
         TriggerEvent("sky_jobs_base:tablet:setOpenState", false)
@@ -1900,6 +1897,9 @@ RegisterNUICallback("tablet:setOpenState", function(data, cb)
     cb({ success = true })
 end)
 
+-- The back arrow of every mechanic app. It closed the whole tablet, and the next open
+-- resumed the same mechanic app (the jobs tablet reopens the last app), so the home
+-- screen and the other apps could not be reached any more. Go back to the home screen.
 RegisterNUICallback("tablet:returnHome", function(data, cb)
     TuningState.active = false
     SetNuiFocus(false, false)
@@ -1907,6 +1907,15 @@ RegisterNUICallback("tablet:returnHome", function(data, cb)
     sendUi("close")
     TriggerEvent("sky_jobs_base:tablet:setOpenState", false)
     cb({ success = true })
+
+    if GetResourceState("sky_jobs_base") == "started" then
+        local ok, err = pcall(function()
+            exports.sky_jobs_base:OpenOnJobsBase("home", "/tablet", { noAnimation = true })
+        end)
+        if not ok then
+            print(("[sky_mechanicjob][tablet] opening the tablet home screen failed: %s"):format(tostring(err)))
+        end
+    end
 end)
 
 RegisterNUICallback("orders:getAll", function(data, cb)
@@ -1982,6 +1991,9 @@ RegisterNUICallback("tablet:getNearbyVehicles", function(data, cb)
     cb({ success = true, data = { vehicles = getNearbyVehicles(12.0) } })
 end)
 
+-- The picker lists the vehicles within 12 m (tablet:getNearbyVehicles).
+local CONNECT_VEHICLE_MAX_DISTANCE = 15.0
+
 RegisterNUICallback("tablet:setConnectedVehicle", function(data, cb)
     local netId = math.floor(tonumber(data and (data.vehicleNetId or data.netId)) or 0)
     if netId <= 0 then
@@ -1990,10 +2002,14 @@ RegisterNUICallback("tablet:setConnectedVehicle", function(data, cb)
         return
     end
 
-    local veh = NetworkGetEntityFromNetworkId(netId)
-    if veh == 0 or not DoesEntityExist(veh) then
-        OrderTabletState.connectedVehicleNetId = 0
+    local veh = NetworkDoesNetworkIdExist(netId) and NetworkGetEntityFromNetworkId(netId) or 0
+    if veh == 0 or not DoesEntityExist(veh) or not IsEntityAVehicle(veh) then
         cb({ success = false, error = "vehicle_not_found" })
+        return
+    end
+
+    if #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(veh)) > CONNECT_VEHICLE_MAX_DISTANCE then
+        cb({ success = false, error = "vehicle_too_far" })
         return
     end
 
@@ -2194,13 +2210,13 @@ CreateThread(function()
                 EnableControlAction(2, 1, true)
                 EnableControlAction(2, 2, true)
 
+                -- ESC/BACKSPACE was only read during the 250 ms cooldown after a focus toggle,
+                -- so in the free camera (SPACE) the menu could not be left until SPACE again.
                 if canToggleTuningFocus() then
                     if IsDisabledControlJustPressed(0, 22) then -- SPACE
                         setNuiFocusState(true)
-                    end
-                else
-                    if IsDisabledControlJustPressed(0, 200) or IsDisabledControlJustPressed(0, 202) then -- ESC / BACKSPACE
-                        setTuningClosed(false)
+                    elseif IsDisabledControlJustPressed(0, 200) or IsDisabledControlJustPressed(0, 202) then -- ESC / BACKSPACE
+                        closeTuningSafely()
                     end
                 end
                 Wait(0)

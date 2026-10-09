@@ -64,31 +64,22 @@ local function getNuiLanguagePayload()
     }
 end
 
-local function connectNearbyVehicle()
-    local ped = PlayerPedId()
-    if ped == 0 or not DoesEntityExist(ped) then
-        tabletLog("warn", "player_missing", { ped = ped })
-        return
-    end
-    local veh = GetVehiclePedIsIn(ped, false)
-    local detection = "current vehicle"
-    if veh == 0 or not DoesEntityExist(veh) then
-        detection = "nearby search"
-        local pCoords = GetEntityCoords(ped)
-        veh = GetClosestVehicle(pCoords.x, pCoords.y, pCoords.z, 6.0, 0, 71)
-    end
-    if not OrderTabletState then
+-- Opening an app used to connect the closest vehicle within 6 m, replacing the one the
+-- mechanic had picked, so the diagnostics and the dyno showed cars nobody had connected.
+-- The mechanic connects a vehicle with "Connect Vehicle"; opening only reports it.
+local function checkConnectedVehicle()
+    if not OrderTabletState or type(GetTabletConnectedVehicle) ~= "function" then
         tabletLog("error", "vehicle_state_missing", { message = "OrderTabletState is unavailable. Check state.lua/main.lua startup errors." })
         return
     end
-    if veh == 0 or not DoesEntityExist(veh) then
-        tabletLog("warn", "no_nearby_vehicle", { radius = 6.0, previousNetId = OrderTabletState.connectedVehicleNetId,
-            message = "No vehicle found. Tablet will open; diagnostics may have no vehicle connected." })
-        return
+    local previousNetId = OrderTabletState.connectedVehicleNetId
+    local vehicle, netId = GetTabletConnectedVehicle()
+    if vehicle then
+        tabletLog("info", "vehicle_connected", { vehicle = vehicle, netId = netId, detection = "connected by the mechanic" })
+    else
+        tabletLog("debug", "no_connected_vehicle", { previousNetId = previousNetId,
+            message = "No vehicle connected. Use Connect Vehicle in the app." })
     end
-    local netId = NetworkGetNetworkIdFromEntity(veh)
-    OrderTabletState.connectedVehicleNetId = netId
-    tabletLog(netId ~= 0 and "info" or "warn", "vehicle_connected", { vehicle = veh, netId = netId, detection = detection })
 end
 
 local function openMechanicTabletRoute(route, extra)
@@ -113,7 +104,7 @@ local function openMechanicTabletRoute(route, extra)
     else
         tabletLog("warn", "tuning_state_missing", { message = "TuningState is unavailable. Check state.lua/main.lua startup errors." })
     end
-    connectNearbyVehicle()
+    checkConnectedVehicle()
 
     TriggerEvent("sky_jobs_base:tablet:setOpenState", true, {
         appKey = extra.appKey,

@@ -173,10 +173,21 @@ local function mechanicFixture(skipDiagnostics)
     e.TuningState, e.OrderTabletState = { active = true }, { connectedVehicleNetId = 0 }
     e.PlayerPedId = function() return 1 end
     e.DoesEntityExist = function(id) return id ~= 0 end
-    e.GetVehiclePedIsIn = function() return f.vehicle or 2 end
-    e.GetEntityCoords = function() return { x = 1, y = 2, z = 3 } end
-    e.GetClosestVehicle = function() return f.nearby or 0 end
-    e.NetworkGetNetworkIdFromEntity = function(vehicle) return vehicle + 100 end
+    -- Vehicle netIds are the entity + 100; f.coords moves an entity (the player stands at 1, 2, 3).
+    local function vec(x, y, z)
+        return setmetatable({ x = x, y = y, z = z }, {
+            __sub = function(a, b) return vec(a.x - b.x, a.y - b.y, a.z - b.z) end,
+            __len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end,
+        })
+    end
+    e.GetEntityCoords = function(entity)
+        local c = (f.coords or {})[entity] or { 1, 2, 3 }
+        return vec(c[1], c[2], c[3])
+    end
+    e.NetworkDoesNetworkIdExist = function(netId) return netId > 100 end
+    e.NetworkGetEntityFromNetworkId = function(netId) return netId - 100 end
+    e.IsEntityAVehicle = function(entity) return entity ~= 0 end
+    f.load("sky_mechanicjob/source/client/state.lua")
     f.external.sky_jobs_base = { OpenOnJobsBase = function(_, key, route, options)
         f.fallback = { key = key, route = route, options = options }
         return true
@@ -185,7 +196,7 @@ local function mechanicFixture(skipDiagnostics)
     return f
 end
 
--- Exercise the real bridge: all aliases, nearby vehicle, delayed open, fallback and failure paths.
+-- Exercise the real bridge: all aliases, connected vehicle, delayed open, fallback and failure paths.
 do
     local f = mechanicFixture()
     local e = f.env
@@ -195,7 +206,9 @@ do
     end
     assert(f.exports.ResolveMechanicTabletRoute(nil, "/tablet") == nil)
     f.run(f.events["sky_mechanicjob:tablet:openApp"][1], { key = "orders", openDelayMs = 350, jobColor = "#123456", noAnimation = true })
-    assert(e.OrderTabletState.connectedVehicleNetId == 102 and e.TuningState.active == false)
+    -- Opening an app never connects a vehicle by itself; the mechanic uses Connect Vehicle.
+    assert(e.OrderTabletState.connectedVehicleNetId == 0 and e.TuningState.active == false)
+    assert(f.has("no_connected_vehicle"))
     assert(f.messages[1].route == "/tablet/mechanic-orders" and f.messages[1].jobColor == "#123456")
     assert(f.messages[1].noAnimation and #f.messages == 3)
     assert(f.messages[1].diagnosticId == f.messages[3].diagnosticId)
@@ -214,11 +227,13 @@ do
     f.external.sky_jobs_base.OpenOnJobsBase = function() error("export unavailable") end
     f.run(f.events["sky_mechanicjob:tablet:openApp"][1], "/tablet")
     assert(f.has("export unavailable"))
-    f.vehicle = 0; f.nearby = 9
+    -- A connected vehicle stays connected; one that was left behind is dropped.
+    e.OrderTabletState.connectedVehicleNetId = 109
     assert(f.exports.OpenMechanicTabletRoute("/diagnostics"))
-    assert(e.OrderTabletState.connectedVehicleNetId == 109)
-    f.nearby = 0
-    assert(f.exports.OpenMechanicTabletRoute("/dyno") and f.has("no_nearby_vehicle"))
+    assert(e.OrderTabletState.connectedVehicleNetId == 109 and f.has("vehicle_connected"))
+    f.coords = { [9] = { 500, 2, 3 } }
+    assert(f.exports.OpenMechanicTabletRoute("/dyno"))
+    assert(e.OrderTabletState.connectedVehicleNetId == 0)
     e.OrderTabletState = nil
     assert(f.exports.OpenMechanicTabletRoute("/vehicles") and f.has("vehicle_state_missing"))
     f.nui["tablet:releaseFocus"]({}, function(res) assert(res.success) end)

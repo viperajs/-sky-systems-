@@ -962,54 +962,12 @@ end)
 
 RegisterNUICallback("wear:getDiagnostics", function(data, cb)
     local cdnBase, cdnFallback = getNuiImageBases()
-    local tabletNetId = math.floor(tonumber(OrderTabletState and OrderTabletState.connectedVehicleNetId) or 0)
 
-    if tabletNetId <= 0 then
-        local ped = PlayerPedId()
-        local veh = GetVehiclePedIsIn(ped, false)
-        if veh == 0 or not DoesEntityExist(veh) then
-            local pCoords = GetEntityCoords(ped)
-            veh = GetClosestVehicle(pCoords.x, pCoords.y, pCoords.z, 12.0, 0, 71)
-        end
-        if veh ~= 0 and DoesEntityExist(veh) then
-            tabletNetId = NetworkGetNetworkIdFromEntity(veh)
-            if OrderTabletState then
-                OrderTabletState.connectedVehicleNetId = tabletNetId
-            end
-        end
-    end
-
-    if tabletNetId <= 0 then
-        cb({
-            success = true,
-            data = {
-                plate = "N/A",
-                mileage = 0,
-                wear = {},
-                wearParts = {},
-                noVehicle = true,
-                cdnBase = cdnBase,
-                cdnFallback = cdnFallback
-            }
-        })
-        return
-    end
-
-    local veh = NetworkGetEntityFromNetworkId(tabletNetId)
-    if veh == 0 or not DoesEntityExist(veh) then
-        if OrderTabletState then OrderTabletState.connectedVehicleNetId = 0 end
-        cb({
-            success = true,
-            data = {
-                plate = "N/A",
-                mileage = 0,
-                wear = {},
-                wearParts = {},
-                noVehicle = true,
-                cdnBase = cdnBase,
-                cdnFallback = cdnFallback
-            }
-        })
+    -- Only the vehicle the mechanic connected; this used to connect the closest one. The
+    -- view clears its "Connected Vehicle" on no_vehicle (it showed N/A data before).
+    local veh = GetTabletConnectedVehicle()
+    if not veh then
+        cb({ success = false, error = "no_vehicle" })
         return
     end
 
@@ -1078,15 +1036,8 @@ RegisterNUICallback("wear:repairPart", function(data, cb)
     local targetPlate = sanitizePlate(tostring(data and data.plate or ""))
     local targetPart = tostring(data and data.part or "")
 
-    local tabletNetId = math.floor(tonumber(OrderTabletState and OrderTabletState.connectedVehicleNetId) or 0)
-    if tabletNetId <= 0 then
-        cb({ success = false, error = "no_vehicle" })
-        return
-    end
-
-    local veh = NetworkGetEntityFromNetworkId(tabletNetId)
-    if veh == 0 or not DoesEntityExist(veh) then
-        OrderTabletState.connectedVehicleNetId = 0
+    local veh, tabletNetId = GetTabletConnectedVehicle()
+    if not veh then
         cb({ success = false, error = "no_vehicle" })
         return
     end
