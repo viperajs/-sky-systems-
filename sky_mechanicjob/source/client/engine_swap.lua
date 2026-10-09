@@ -377,7 +377,7 @@ function takeNearestEngineHoistForOrderInstall()
         print("[sky_mechanicjob][engine_hoist] take failed: no workshopcreator hoist location nearby")
         return false, {
             key = "radial.errors.generic",
-            fallback = tuningLocales.EngineSwapNoHoistNearby or "No engine hoist location nearby. Add one in workshopcreator and move closer."
+            fallback = tuningLocales.EngineSwapNoHoistNearby or "No engine hoist nearby. Place an Engine Hoist location for this workshop in /jobconfig and move closer."
         }
     end
 
