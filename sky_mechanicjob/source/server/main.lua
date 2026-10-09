@@ -24,6 +24,8 @@ local function shortText(value, maxLength)
 end
 
 local function decodeItems(raw)
+    -- A JSON-typed column can arrive already decoded.
+    if type(raw) == "table" then return raw end
     if type(raw) ~= "string" or raw == "" then return {} end
     local ok, decoded = pcall(json.decode, raw)
     return ok and type(decoded) == "table" and decoded or {}
@@ -744,8 +746,9 @@ Sky.Cb.Register("sky_mechanicjob:orders:delete", function(source, data)
     local orderId = math.floor(tonumber(data and (data.orderId or data.id or data.order or data.orderUID or data.uid)) or 0)
     if orderId <= 0 then return { success = false, error = "invalid_id" } end
 
+    -- Orders without parts (left by older versions) can neither be installed nor refunded.
     local affected = MySQL.update.await(
-        "DELETE FROM sky_mechanic_orders WHERE id = ? AND job = ? AND status IN ('completed', 'refunded')",
+        "DELETE FROM sky_mechanic_orders WHERE id = ? AND job = ? AND (status IN ('completed', 'refunded') OR items IS NULL OR TRIM(items) IN ('', '[]', '{}', 'null'))",
         { orderId, jobName }
     )
     if affected == 1 then
