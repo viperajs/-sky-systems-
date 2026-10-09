@@ -605,24 +605,46 @@ end
 --  VEHICLE ATTACHMENT MANAGEMENT
 -- ============================================================
 
+-- The vehicle standing on the lift: the one closest to the lift's center within the attach
+-- radius, at the height of the lift. GetClosestVehicle skipped vehicles depending on its
+-- search flags (and on what was inside them), so the lift reported "No vehicle on lift".
 local function getVehicleForLift(liftPoint)
     local attachCfg = Config and Config.WorkshopLiftSystem and Config.WorkshopLiftSystem.vehicleAttach or {}
     local searchRadius = tonumber(attachCfg.searchRadius) or 2.6
 
-    local veh = getClosestVehicleWithPoliceFallback(
-        liftPoint.coords.x, liftPoint.coords.y, liftPoint.coords.z,
-        searchRadius + 0.5, 0, 70
-    )
+    if not GetGamePool then
+        local veh = getClosestVehicleWithPoliceFallback(
+            liftPoint.coords.x, liftPoint.coords.y, liftPoint.coords.z,
+            searchRadius + 0.5, 0, 70
+        )
+        if veh ~= 0 and DoesEntityExist(veh) and not IsEntityDead(veh) then
+            local vehCoords = GetEntityCoords(veh)
+            local planarDist = #(vector2(vehCoords.x, vehCoords.y) - vector2(liftPoint.coords.x, liftPoint.coords.y))
+            if planarDist <= searchRadius then
+                return veh
+            end
+        end
+        return 0
+    end
 
-    if veh ~= 0 and DoesEntityExist(veh) and not IsEntityDead(veh) then
-        local vehCoords = GetEntityCoords(veh)
-        local planarDist = #(vector2(vehCoords.x, vehCoords.y) - vector2(liftPoint.coords.x, liftPoint.coords.y))
-        if planarDist <= searchRadius then
-            return veh
+    local minZ = liftPoint.floorZ - 1.0
+    local maxZ = math.max(tonumber(liftPoint.topZ) or liftPoint.floorZ, tonumber(liftPoint.positionZ) or liftPoint.floorZ) + 2.5
+    local center = vector2(liftPoint.coords.x, liftPoint.coords.y)
+    local bestVeh, bestDist = 0, searchRadius + 0.001
+
+    for _, veh in ipairs(GetGamePool("CVehicle") or {}) do
+        if veh ~= 0 and DoesEntityExist(veh) and not IsEntityDead(veh) then
+            local vehCoords = GetEntityCoords(veh)
+            if vehCoords.z >= minZ and vehCoords.z <= maxZ then
+                local planarDist = #(vector2(vehCoords.x, vehCoords.y) - center)
+                if planarDist < bestDist then
+                    bestVeh, bestDist = veh, planarDist
+                end
+            end
         end
     end
 
-    return 0
+    return bestVeh
 end
 
 local function recoverFloatingVehicle(liftPoint)
@@ -1248,7 +1270,8 @@ local function canUseLiftPoint(liftPoint)
     local access = type(Sky_Jobs) == "table" and Sky_Jobs.Access or nil
     if type(access) ~= "table" or type(access.GetJobKey) ~= "function" then return false end
 
-    local jobKey = access.GetJobKey()
+    -- GetActiveJobKey asks the server when this resource has not heard the job yet.
+    local jobKey = type(GetActiveJobKey) == "function" and GetActiveJobKey() or access.GetJobKey()
     if not jobKey then return false end
     if liftPoint.jobKey then
         if liftPoint.jobKey ~= jobKey then return false end
@@ -1321,6 +1344,27 @@ end
 --  MOTION & WORKER THREAD
 -- ============================================================
 
+-- Same thresholds as getWorkshopLiftStateForVehicle (raised / atFloor).
+local LIFT_RAISED_HEIGHT = 0.45
+local LIFT_FLOOR_TOLERANCE = 0.08
+
+-- The oil change and the other installs under a lift continue when the lift stops raised
+-- or at the floor. They only heard about stops at the very top or bottom, so a car raised
+-- in steps (letting go of the button on the way) stayed at "Raise the vehicle".
+local function reportLiftStopped(liftPoint)
+    if type(handleOilChangeLiftMotionComplete) ~= "function" then return end
+
+    local height = (tonumber(liftPoint.positionZ) or liftPoint.floorZ) - liftPoint.floorZ
+    local atFloor = height <= LIFT_FLOOR_TOLERANCE
+    local veh = liftPoint.attachedVehicle
+    if (veh == 0 or not DoesEntityExist(veh)) and atFloor then
+        veh = getVehicleForLift(liftPoint)
+    end
+    if veh ~= 0 and DoesEntityExist(veh) then
+        handleOilChangeLiftMotionComplete(veh, height >= LIFT_RAISED_HEIGHT, atFloor)
+    end
+end
+
 local function processLiftMotionTick()
     local motionCfg = Config and Config.WorkshopLiftSystem and Config.WorkshopLiftSystem.motion or {}
     local tickMs = tonumber(motionCfg.tickMs) or 10
@@ -1338,11 +1382,12 @@ local function processLiftMotionTick()
                 destroyLiftPoint(liftPoint)
                 spawnLiftPoint(liftPoint)
             else
+                -- Moving now or in the last tick: the operator's release sets motion to 0
+                -- between ticks.
+                local wasMoving = liftPoint.wasMoving == true or liftPoint.motion ~= 0
+
                 if liftPoint.motion ~= 0 then
                     hasActiveMotion = true
-                    local prevMotion = liftPoint.motion
-                    local reachedTop = false
-                    local reachedFloor = false
 
                     if liftPoint.attachedVehicle == 0 or not DoesEntityExist(liftPoint.attachedVehicle) then
                         autoAttachVehicleIfNearby(liftPoint)
@@ -1360,11 +1405,9 @@ local function processLiftMotionTick()
                         if targetZ >= liftPoint.topZ then
                             targetZ = liftPoint.topZ
                             liftPoint.motion = 0
-                            reachedTop = true
                         elseif targetZ <= liftPoint.floorZ then
                             targetZ = liftPoint.floorZ
                             liftPoint.motion = 0
-                            reachedFloor = true
                         end
 
                         local deltaZ = targetZ - liftPoint.positionZ
@@ -1373,21 +1416,12 @@ local function processLiftMotionTick()
                         local vehCoords = GetEntityCoords(liftPoint.attachedVehicle)
                         SetEntityCoordsNoOffset(liftPoint.attachedVehicle, vehCoords.x, vehCoords.y, vehCoords.z + deltaZ, false, false, false)
                     end
-
-                    if prevMotion ~= 0 and liftPoint.motion == 0 then
-                        if type(handleOilChangeLiftMotionComplete) == "function" then
-                            local veh = liftPoint.attachedVehicle
-                            if veh == 0 or not DoesEntityExist(veh) then
-                                if reachedFloor then
-                                    veh = getVehicleForLift(liftPoint)
-                                end
-                            end
-                            if veh ~= 0 and DoesEntityExist(veh) then
-                                handleOilChangeLiftMotionComplete(veh, reachedTop, reachedFloor)
-                            end
-                        end
-                    end
                 end
+
+                if wasMoving and liftPoint.motion == 0 then
+                    reportLiftStopped(liftPoint)
+                end
+                liftPoint.wasMoving = liftPoint.motion ~= 0
 
                 if liftPoint.attachedVehicle ~= 0 and not DoesEntityExist(liftPoint.attachedVehicle) then
                     print(("[sky_mechanicjob][lift] failed: attached vehicle missing for point '%s'"):format(liftPoint.key))
@@ -1406,7 +1440,8 @@ local function processLiftMotionTick()
                     end
                 end
 
-                if liftPoint.motion == 0 and liftPoint.positionZ <= (liftPoint.floorZ + 0.08) then
+                if liftPoint.motion == 0 and liftPoint.positionZ <= (liftPoint.floorZ + LIFT_FLOOR_TOLERANCE)
+                    and OrderInstallState and OrderInstallState.active then
                     if type(handleOilChangeLiftMotionComplete) == "function" then
                         local veh = liftPoint.attachedVehicle
                         if veh == 0 or not DoesEntityExist(veh) then
@@ -1523,7 +1558,14 @@ local function openLiftControlUi(liftPoint)
     return true
 end
 
+-- Holding a button sends its direction, letting go sends 0. Attaching the vehicle can wait
+-- up to ~2 s for network control; a release that arrived meanwhile was overwritten by the
+-- press, and the lift kept moving to the end of its travel.
+local directionRequest = 0
+
 local function setLiftDirection(direction)
+    directionRequest = directionRequest + 1
+    local request = directionRequest
     local liftPoint = getActiveUiLiftPoint()
     if not liftPoint then
         return false, {
@@ -1576,6 +1618,10 @@ local function setLiftDirection(direction)
                 fallback = getTuningLocale("LiftNoVehicle", "No vehicle on lift.")
             }
         end
+    end
+
+    if request ~= directionRequest then
+        return true
     end
 
     liftPoint.motion = dirNum
@@ -1649,11 +1695,19 @@ function getWorkshopLiftStateForVehicle(vehicle)
     local zTolerance = 1.5
 
     for _, liftPoint in ipairs(State.pointList) do
-        local heightDiff = liftPoint.positionZ - liftPoint.floorZ
-        local isAttached = liftPoint.attachedVehicle ~= 0 and DoesEntityExist(liftPoint.attachedVehicle)
+        -- The platform rides on the vehicle on every client; positionZ only moves for the
+        -- player operating the lift, so a second mechanic saw a raised car as lowered.
+        local platformZ = liftPoint.positionZ
+        if liftPoint.attachedVehicle ~= 0 and liftPoint.platformEntity ~= 0 and DoesEntityExist(liftPoint.platformEntity) then
+            platformZ = GetEntityCoords(liftPoint.platformEntity).z
+        end
+        local heightDiff = platformZ - liftPoint.floorZ
+
+        -- This vehicle's lift: the state of any lift that held some other car was returned.
+        local isAttached = liftPoint.attachedVehicle == vehicle
 
         local planarDist = #(vector2(vehCoords.x, vehCoords.y) - vector2(liftPoint.coords.x, liftPoint.coords.y))
-        local zDiff = math.abs(vehCoords.z - liftPoint.positionZ)
+        local zDiff = math.abs(vehCoords.z - platformZ)
         local inRange = planarDist <= searchRadius and zDiff <= zTolerance
 
         if isAttached or inRange then
@@ -1661,11 +1715,11 @@ function getWorkshopLiftStateForVehicle(vehicle)
                 key = liftPoint.key,
                 coords = liftPoint.coords,
                 floorZ = liftPoint.floorZ,
-                platformZ = liftPoint.positionZ,
+                platformZ = platformZ,
                 travelHeight = heightDiff,
                 attached = isAttached,
-                raised = heightDiff >= 0.45,
-                atFloor = heightDiff <= 0.08
+                raised = heightDiff >= LIFT_RAISED_HEIGHT,
+                atFloor = heightDiff <= LIFT_FLOOR_TOLERANCE
             }
         end
     end
