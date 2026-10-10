@@ -870,7 +870,12 @@ function holdCarryItemProp(itemName, metadata)
     local propModelName = tostring(itemCfg.prop or ORDER_ITEM_PROPS[tostring(itemName or "")] or "prop_cs_cardbox_01")
     local modelHash = GetHashKey(propModelName)
 
+    -- Nothing is held when the prop fails; a part left "held" blocked every later delivery
+    -- and install (parts_delivery.lua canInteractWithDelivery).
     if not requestModelLoaded(modelHash, 2500) then
+        print(("[sky_mechanicjob][carry_item] failed: carry prop '%s' did not load"):format(propModelName))
+        OrderInstallState.heldCarryItem = nil
+        OrderInstallState.heldCarryTransportMode = "hand"
         return false
     end
 
@@ -881,6 +886,8 @@ function holdCarryItemProp(itemName, metadata)
     if propObj == 0 or not DoesEntityExist(propObj) then
         print(("[sky_mechanicjob][carry_item] failed: could not create carry prop '%s'"):format(propModelName))
         SetModelAsNoLongerNeeded(modelHash)
+        OrderInstallState.heldCarryItem = nil
+        OrderInstallState.heldCarryTransportMode = "hand"
         return false
     end
 

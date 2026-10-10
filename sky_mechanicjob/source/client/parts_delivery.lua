@@ -52,6 +52,12 @@ local function isPartsDeliveryEnabled()
 end
 
 local function getPlayerJobKey()
+    -- GetActiveJobKey (client/main.lua) asks sky_jobs_base while the job has not arrived yet;
+    -- the tablet opened in that moment otherwise found no workshop and never asked again.
+    if type(GetActiveJobKey) == "function" then
+        local jobKey = GetActiveJobKey()
+        if type(jobKey) == "string" and jobKey ~= "" then return jobKey end
+    end
     local access = type(Sky_Jobs) == "table" and Sky_Jobs.Access or nil
     if type(access) ~= "table" or type(access.GetJobKey) ~= "function" then return nil end
     return access.GetJobKey()
@@ -103,19 +109,23 @@ end
 
 -- ─── Get Delivery Points Of The Player's Workshop ──
 -- Without a delivery bay the tablet shows that none is configured instead of dropping the
--- parts at some other point.
+-- parts at some other point; the second value says why there is none.
 local function getAllDeliveryPoints()
     local creatorData = getCreatorData()
-    local jobKey = getPlayerJobKey()
-    local points = {}
-
-    if not jobKey or type(creatorData) ~= "table" or type(creatorData.entries) ~= "table" then
-        return points
+    if type(creatorData) ~= "table" or type(creatorData.entries) ~= "table" then
+        return {}, "no_workshop_data"
     end
 
+    local jobKey = getPlayerJobKey()
+    if not jobKey then
+        return {}, "no_job"
+    end
+
+    local points, hasWorkshop = {}, false
     for _, entry in ipairs(creatorData.entries) do
         local entryJob = type(entry) == "table" and (entry.jobKey or entry.job) or nil
         if type(entry) == "table" and type(entry.points) == "table" and (entryJob == nil or entryJob == jobKey) then
+            hasWorkshop = true
             for _, point in ipairs(entry.points) do
                 if type(point) == "table" and isDeliveryPointType(point.type) and point.x and point.y and point.z then
                     points[#points + 1] = {
@@ -129,6 +139,9 @@ local function getAllDeliveryPoints()
         end
     end
 
+    if #points == 0 then
+        return points, hasWorkshop and "no_bay" or "no_workshop", jobKey
+    end
     return points
 end
 
@@ -137,14 +150,52 @@ local function findNearestDeliveryPoint()
     local playerCoords = GetEntityCoords(PlayerPedId())
     local nearest, nearestDist = nil, nil
 
-    for _, point in ipairs(getAllDeliveryPoints()) do
+    local points, missingReason, jobKey = getAllDeliveryPoints()
+    for _, point in ipairs(points) do
         local dist = #(playerCoords - point.coords)
         if not nearestDist or dist < nearestDist then
             nearest = point
             nearestDist = dist
         end
     end
-    return nearest, nearestDist
+    return nearest, nearestDist, missingReason, jobKey
+end
+
+-- Tells why the Parts Shop cannot deliver; the tablet itself only greys out checkout.
+local MISSING_POINT_MESSAGES = {
+    no_workshop_data = { "PartsDeliveryNoWorkshopData", "The workshop locations could not be loaded. Open the Parts Shop again in a moment." },
+    no_job = { "PartsDeliveryNoJob", "Your job has not loaded yet. Open the Parts Shop again in a moment." },
+    no_workshop = { "PartsDeliveryNoWorkshop", "No workshop in /jobconfig belongs to your job (%s)." },
+    no_bay = { "PartsDeliveryNoBay", "Your workshop has no Parts Delivery Drop. Place one in /jobconfig (Edit workshop > Locations)." },
+}
+
+local function notifyMissingDeliveryPoint(reason, jobKey)
+    local message = MISSING_POINT_MESSAGES[reason] or MISSING_POINT_MESSAGES.no_bay
+    local text = getLocale(message[1], message[2])
+    if text:find("%s", 1, true) then
+        text = text:gsub("%%s", (tostring(jobKey or "-"):gsub("%%", "%%%%")))
+    end
+    print(("[sky_mechanicjob][parts_delivery] no delivery point for the Parts Shop: %s (job: %s)"):format(tostring(reason), tostring(jobKey)))
+    Sky.Show.Notification(getLocale("PartsDeliveryTitle", "Parts Delivery"), text, "error")
+end
+
+-- Order errors the tablet only shows as "Failed to place parts order." (it explains funds,
+-- permissions and a missing bay itself).
+local ORDER_ERROR_MESSAGES = {
+    not_on_duty = { "PartsDeliveryOrderNotOnDuty", "You must be on duty to order parts." },
+    payment_method_disabled = { "PartsDeliveryPaymentDisabled", "This payment method is turned off for parts orders." },
+    invalid_items = { "PartsDeliveryInvalidItems", "The parts shop changed. Open it again and refill your basket." },
+    feature_disabled = { "PartsDeliveryDisabled", "Parts delivery is turned off." },
+    order_failed = { "PartsDeliveryOrderFailed", "The order could not be saved and your money was refunded. The server console shows why." },
+    no_response = { "PartsDeliveryNoResponse", "The server did not answer. Try again in a moment." },
+}
+
+local function notifyOrderFailed(errorCode)
+    local message = ORDER_ERROR_MESSAGES[tostring(errorCode)]
+    print(("[sky_mechanicjob][parts_delivery] parts order rejected: %s"):format(tostring(errorCode)))
+    if message then
+        Sky.Show.Notification(getLocale("PartsDeliveryTitle", "Parts Delivery"), getLocale(message[1], message[2]), "error")
+    end
 end
 
 -- ─── Get Delivery Points As Lookup ─────────────────
@@ -164,12 +215,13 @@ local function deleteDeliveryEntity(deliveryId)
     end
     State.entities[deliveryId] = nil
     State.entityModels[deliveryId] = nil
+    State.entityPlaced[deliveryId] = nil
 end
 
 -- ─── Cleanup Orphaned Entities ─────────────────────
 local function cleanupOrphanedEntities(activeIds)
     for deliveryId in pairs(State.entities) do
-        if activeIds[deliveryId] ~= true then
+        if not activeIds[deliveryId] then
             deleteDeliveryEntity(deliveryId)
         end
     end
@@ -382,12 +434,13 @@ local function resolveDeliveryCoords(delivery, pointLookup)
 end
 
 -- ─── Place Entity At Position ──────────────────────
-local function placeEntityAt(entity, coords, heading)
+-- A pallet stays frozen until the ground under it has loaded; it fell through the map.
+local function placeEntityAt(entity, coords, heading, groundLoaded)
     SetEntityHeading(entity, heading)
     SetEntityCoordsNoOffset(entity, coords.x, coords.y, coords.z, false, false, false)
     PlaceObjectOnGroundProperly(entity)
 
-    if getDeliveryPalletConfig() then
+    if getDeliveryPalletConfig() and groundLoaded then
         SetEntityDynamic(entity, true)
         ActivatePhysics(entity)
         FreezeEntityPosition(entity, false)
@@ -399,15 +452,21 @@ end
 -- ─── Spawn / Update Delivery Entity ────────────────
 -- Each client spawns its own local box (or pallet); networked ones from every client
 -- stacked one copy per player on each delivery.
+-- Boxes are created only near the player and placed again once the ground has loaded. One
+-- created when the delivery became ready, often while the player was across the map,
+-- had nothing under it: it floated, stayed invisible inside an interior or (a pallet) fell
+-- through the map, and was never placed again.
+local SPAWN_DISTANCE = 60.0
+State.spawnTargets = {}       -- deliveryId -> { coords, heading } of the boxes to show
+State.entityPlaced = {}       -- deliveryId -> placed on loaded ground
+State.interiorRespawned = {}  -- deliveryId -> already recreated inside its interior
+
 local function hasDeliveryEntity(deliveryId)
     local entity = State.entities[deliveryId]
     return entity ~= nil and entity ~= 0 and DoesEntityExist(entity)
 end
 
-local function spawnOrUpdateDeliveryEntity(delivery, pointLookup)
-    local deliveryId = tonumber(delivery.id) or 0
-    if deliveryId <= 0 then return end
-
+local function spawnDeliveryEntity(deliveryId, target)
     local modelName = getBoxModel()
     if hasDeliveryEntity(deliveryId) then
         if State.entityModels[deliveryId] == modelName then
@@ -423,12 +482,13 @@ local function spawnOrUpdateDeliveryEntity(delivery, pointLookup)
     end
 
     Sky.Load.Model(modelHash)
-    -- Loading waits, so another refresh may have spawned this delivery meanwhile.
-    if hasDeliveryEntity(deliveryId) then
+    -- Loading waits, so another refresh may have spawned or claimed this delivery meanwhile.
+    if hasDeliveryEntity(deliveryId) or State.spawnTargets[deliveryId] ~= target then
         return
     end
 
-    local coords, heading = resolveDeliveryCoords(delivery, pointLookup)
+    local coords, heading = target.coords, target.heading
+    RequestCollisionAtCoord(coords.x, coords.y, coords.z)
     local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, false, false, false)
 
     if obj == 0 or not DoesEntityExist(obj) then
@@ -438,18 +498,51 @@ local function spawnOrUpdateDeliveryEntity(delivery, pointLookup)
 
     SetEntityAsMissionEntity(obj, true, true)
     SetEntityCanBeDamaged(obj, false)
-    placeEntityAt(obj, coords, heading)
+    local groundLoaded = HasCollisionLoadedAroundEntity(obj) == true
+    placeEntityAt(obj, coords, heading, groundLoaded)
 
     SetModelAsNoLongerNeeded(modelHash)
     State.entities[deliveryId] = obj
     State.entityModels[deliveryId] = modelName
+    State.entityPlaced[deliveryId] = groundLoaded
+end
+
+-- A box created before its interior had loaded is not part of it and cannot be seen
+-- from inside; it is created again once, after the interior is ready.
+local function isOutsideItsInterior(entity, coords)
+    local interior = GetInteriorAtCoords(coords.x, coords.y, coords.z)
+    if not interior or interior == 0 or not IsInteriorReady(interior) then
+        return false
+    end
+    return GetInteriorFromEntity(entity) ~= interior
+end
+
+-- Spawns the boxes the player is near and places them once the ground is there.
+local function updateNearbyDeliveryEntities()
+    local playerCoords = GetEntityCoords(PlayerPedId())
+    for deliveryId, target in pairs(State.spawnTargets) do
+        if #(playerCoords - target.coords) <= SPAWN_DISTANCE then
+            if not hasDeliveryEntity(deliveryId) then
+                spawnDeliveryEntity(deliveryId, target)
+            elseif not State.entityPlaced[deliveryId] then
+                local entity = State.entities[deliveryId]
+                RequestCollisionAtCoord(target.coords.x, target.coords.y, target.coords.z)
+                if HasCollisionLoadedAroundEntity(entity) then
+                    placeEntityAt(entity, target.coords, target.heading, true)
+                    State.entityPlaced[deliveryId] = true
+                end
+            elseif not State.interiorRespawned[deliveryId] and isOutsideItsInterior(State.entities[deliveryId], target.coords) then
+                State.interiorRespawned[deliveryId] = true
+                deleteDeliveryEntity(deliveryId)
+            end
+        end
+    end
 end
 
 -- ─── Refresh All Delivery Entities ─────────────────
 local function refreshDeliveryEntities()
     local groupedByPoint = {}
-    local activeIds = {}
-    local spawnQueue = {}
+    local targets = {}
     local pointLookup = getDeliveryPointLookup()
 
     -- Group deliveries by delivery point key
@@ -467,18 +560,26 @@ local function refreshDeliveryEntities()
             return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
         end)
         local first = group[1]
-        if first then
-            local id = tonumber(first.id) or 0
-            activeIds[id] = true
-            spawnQueue[#spawnQueue + 1] = { delivery = first, amount = #group }
+        local id = first and tonumber(first.id) or 0
+        if id > 0 then
+            local coords, heading = resolveDeliveryCoords(first, pointLookup)
+            local previous = State.spawnTargets[id]
+            if previous and #(previous.coords - coords) < 0.5 and previous.heading == heading then
+                targets[id] = previous
+            else
+                -- New, or its bay was moved in /jobconfig: (re)place it there.
+                targets[id] = { coords = coords, heading = heading }
+                State.entityPlaced[id] = nil
+            end
         end
     end
 
-    cleanupOrphanedEntities(activeIds)
-
-    for _, entry in ipairs(spawnQueue) do
-        spawnOrUpdateDeliveryEntity(entry.delivery, pointLookup)
+    State.spawnTargets = targets
+    for deliveryId in pairs(State.interiorRespawned) do
+        if not targets[deliveryId] then State.interiorRespawned[deliveryId] = nil end
     end
+    cleanupOrphanedEntities(targets)
+    updateNearbyDeliveryEntities()
 end
 
 -- Set the creator update callback
@@ -787,11 +888,20 @@ local function openDelivery(delivery)
             return
         end
 
-        Sky.Show.Notification(
-            getLocale("PartsDeliveryTitle", "Parts Delivery"),
-            getLocale("PartsDeliveryClaimed", "Delivery unpacked."),
-            "success"
-        )
+        if data.emptyDelivery == true then
+            -- Every part of it was taken out of the parts shop after it was ordered.
+            Sky.Show.Notification(
+                getLocale("PartsDeliveryTitle", "Parts Delivery"),
+                getLocale("PartsDeliveryEmpty", "This delivery held no parts the shop still sells, so nothing was added."),
+                "error"
+            )
+        else
+            Sky.Show.Notification(
+                getLocale("PartsDeliveryTitle", "Parts Delivery"),
+                getLocale("PartsDeliveryClaimed", "Delivery unpacked."),
+                "success"
+            )
+        end
 
         if data.deliveryClaimed == true then
             deleteDeliveryEntity(tonumber(delivery.id) or 0)
@@ -947,9 +1057,12 @@ RegisterNUICallback("partsShop:getConfig", function(payload, cb)
 
     local result = Sky.Cb.Trigger("sky_mechanicjob:partsDelivery:getCatalog", {}) or {}
 
-    local nearestPoint, nearestDist = findNearestDeliveryPoint()
+    local nearestPoint, nearestDist, missingReason, jobKey = findNearestDeliveryPoint()
 
     if type(result) == "table" and result.success == true then
+        if not nearestPoint then
+            notifyMissingDeliveryPoint(missingReason, jobKey)
+        end
         local data = result.data or {}
         result.data = data
         data.itemImageBase = getItemImageBase()
@@ -1013,13 +1126,15 @@ RegisterNUICallback("partsShop:placeOrder", function(payload, cb)
             },
             heading = matchedPoint.heading,
         },
-    }) or {}
+    })
 
+    -- Answer first: the tablet shows "Placing..." until it hears back.
+    cb(result or { success = false, error = "no_response" })
     if type(result) == "table" and result.success == true then
         fetchReadyDeliveries()
+    else
+        notifyOrderFailed(type(result) == "table" and result.error or "no_response")
     end
-
-    cb(result)
 end)
 
 -- ─── NUI Callback: Get Order History ───────────────
@@ -1078,8 +1193,15 @@ end
 
 -- ─── Main Interaction Loop ─────────────────────────
 CreateThread(function()
+    local nextEntityCheck = 0
     while true do
         local sleepMs = 500
+
+        -- Boxes appear as the player comes near their bay (updateNearbyDeliveryEntities).
+        if GetGameTimer() >= nextEntityCheck then
+            nextEntityCheck = GetGameTimer() + 1000
+            updateNearbyDeliveryEntities()
+        end
 
         if not State.opening and canInteractWithDelivery() then
             local delivery = findNearestReadyDelivery()
