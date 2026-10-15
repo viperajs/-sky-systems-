@@ -834,6 +834,36 @@ local function findNearestDeliveryForStorage()
     return nearest, nearestDist
 end
 
+-- ─── Carried Delivery (Carry Items Mode) ───────────
+-- The delivery the player carries to the workshop storage, or nil.
+local function getCarriedDelivery()
+    local held = OrderInstallState and OrderInstallState.heldCarryItem or nil
+    if type(held) == "table" and type(held.metadata) == "table" and held.metadata.deliveryId ~= nil then
+        return held
+    end
+    return nil
+end
+
+local STORAGE_WAYPOINT_DISTANCE = 15.0
+
+-- A carried delivery is unpacked at the workshop storage, which nothing said: the player was
+-- told "Delivery unpacked." with the box still in their hands, and E at the delivery bay did
+-- nothing. Says where to take it and marks the storage on the map when it is not in sight.
+local function showCarryHint(localeKey, fallback)
+    Sky.Show.Notification(getLocale("PartsDeliveryTitle", "Parts Delivery"), getLocale(localeKey, fallback), "info")
+
+    local held = getCarriedDelivery()
+    local storage = held and held.metadata.storage or nil
+    local coords = type(storage) == "table" and storage.coords or nil
+    local x, y, z = tonumber(type(coords) == "table" and coords.x), tonumber(type(coords) == "table" and coords.y), tonumber(type(coords) == "table" and coords.z)
+    if x and y and z and #(GetEntityCoords(PlayerPedId()) - vector3(x, y, z)) > STORAGE_WAYPOINT_DISTANCE then
+        SetNewWaypoint(x, y)
+    end
+end
+
+local CARRY_TO_STORAGE = { "PartsDeliveryCarryToStorage", "Delivery picked up. Carry it to your workshop's storage and press E there to unpack the parts." }
+local CARRYING_DELIVERY = { "PartsDeliveryCarrying", "You are carrying a delivery. Take it to your workshop's storage and press E there to unpack the parts." }
+
 -- ─── Can Player Interact With Delivery ─────────────
 local function canInteractWithDelivery()
     if not isPartsDeliveryEnabled() or not isPlayerOnDuty() then
@@ -888,7 +918,10 @@ local function openDelivery(delivery)
             return
         end
 
-        if data.emptyDelivery == true then
+        if type(data.carryItem) == "table" then
+            -- Nothing is unpacked yet; the parts come out at the storage.
+            showCarryHint(CARRY_TO_STORAGE[1], CARRY_TO_STORAGE[2])
+        elseif data.emptyDelivery == true then
             -- Every part of it was taken out of the parts shop after it was ordered.
             Sky.Show.Notification(
                 getLocale("PartsDeliveryTitle", "Parts Delivery"),
@@ -947,27 +980,17 @@ registerExport("TryDepositCarryItemToStorage", function(stationId)
     if isDeliveryCarry then
         local itemName = tostring(heldItem.name or "")
         if itemName ~= "" then
-            -- Check if transport vehicle is required
-            if type(isCarryItemTransportNearCoords) == "function" then
-                local nearTransport = isCarryItemTransportNearCoords(heldItem.name, GetEntityCoords(PlayerPedId()))
-                if not nearTransport then
-                    local transportMode = "hand"
-                    if type(getCarryItemTransportMode) == "function" then
-                        transportMode = getCarryItemTransportMode(heldItem.name) or "hand"
-                    end
-
-                    local msg = getLocale("CarryItemTransportRequired", "Bring the part transport closer to storage.")
-                    if transportMode == "forklift" then
-                        msg = getLocale("CarryItemForkliftRequired", "Bring the loaded forklift closer to storage.")
-                    end
-
-                    Sky.Show.Notification(
-                        getLocale("PartsDeliveryTitle", "Parts Delivery"),
-                        msg,
-                        "error"
-                    )
-                    return true
-                end
+            -- Only a forklift has to be brought along. A part carried by hand is checked by the
+            -- server; its prop is only shown, and one that was cleaned away (/mechanicprop) left
+            -- the delivery impossible to put down.
+            if OrderInstallState.heldCarryTransportMode == "forklift" and type(isCarryItemTransportNearCoords) == "function"
+                and not isCarryItemTransportNearCoords(heldItem.name, GetEntityCoords(PlayerPedId())) then
+                Sky.Show.Notification(
+                    getLocale("PartsDeliveryTitle", "Parts Delivery"),
+                    getLocale("CarryItemForkliftRequired", "Bring the loaded forklift closer to storage."),
+                    "error"
+                )
+                return true
             end
 
             -- Deposit carry item
@@ -991,7 +1014,9 @@ registerExport("TryDepositCarryItemToStorage", function(stationId)
             if depositError == "inventory_full" then
                 failMsg = getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery.")
             elseif depositError == "too_far" then
-                failMsg = getLocale("CarryItemTransportRequired", "Bring the part transport closer to storage.")
+                -- Not a storage of the player's workshop (another job's, or a locker).
+                showCarryHint(CARRYING_DELIVERY[1], CARRYING_DELIVERY[2])
+                return true
             else
                 -- The server no longer has this delivery as carried by the player.
                 clearHeldDeliveryCarry()
@@ -1231,7 +1256,15 @@ local function registerJobInteraction(jobName)
 
     local eventName = string.format("sky_jobs_base:interaction:%s:parts_drop", jobName)
     RegisterNetEvent(eventName, function(interactionData)
-        if State.opening or not canInteractWithDelivery() then
+        if State.opening then
+            return
+        end
+        -- The bay's prompt stays while the player carries a delivery; E did nothing there.
+        if getCarriedDelivery() then
+            showCarryHint(CARRYING_DELIVERY[1], CARRYING_DELIVERY[2])
+            return
+        end
+        if not canInteractWithDelivery() then
             return
         end
 

@@ -280,7 +280,10 @@ PartsDeliveryInvalidItems = "La boutique de pièces a changé. Rouvrez-la et rem
 PartsDeliveryDisabled = "La livraison de pièces est désactivée.",
 PartsDeliveryOrderFailed = "La commande n'a pas pu être enregistrée et votre argent a été remboursé. La console du serveur indique pourquoi.",
 PartsDeliveryNoResponse = "Le serveur n'a pas répondu. Réessayez dans un instant.",
-PartsDeliveryEmpty = "Cette livraison ne contenait aucune pièce encore vendue par la boutique, rien n'a été ajouté."
+PartsDeliveryEmpty = "Cette livraison ne contenait aucune pièce encore vendue par la boutique, rien n'a été ajouté.",
+PartsDeliveryCarryToStorage = "Livraison récupérée. Portez-la jusqu'au stockage de votre atelier et appuyez sur E pour déballer les pièces.",
+PartsDeliveryCarrying = "Vous portez une livraison. Apportez-la au stockage de votre atelier et appuyez sur E pour déballer les pièces.",
+PartsDeliveryReturned = "La livraison que vous portiez a été remise à la zone de livraison."
     },
 Nui = {
     app = {

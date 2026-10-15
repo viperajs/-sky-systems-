@@ -280,7 +280,10 @@ Locales["se"] = {
         PartsDeliveryDisabled = "Leverans av delar är avstängd.",
         PartsDeliveryOrderFailed = "Beställningen kunde inte sparas och dina pengar har återbetalats. Serverkonsolen visar varför.",
         PartsDeliveryNoResponse = "Servern svarade inte. Försök igen om en stund.",
-        PartsDeliveryEmpty = "Leveransen innehöll inga delar som butiken fortfarande säljer, så inget lades till."
+        PartsDeliveryEmpty = "Leveransen innehöll inga delar som butiken fortfarande säljer, så inget lades till.",
+        PartsDeliveryCarryToStorage = "Leveransen upplockad. Bär den till verkstadens lager och tryck E där för att packa upp delarna.",
+        PartsDeliveryCarrying = "Du bär en leverans. Ta den till verkstadens lager och tryck E där för att packa upp delarna.",
+        PartsDeliveryReturned = "Leveransen du bar lades tillbaka vid leveransplatsen."
     },
     Nui = {
         app = {

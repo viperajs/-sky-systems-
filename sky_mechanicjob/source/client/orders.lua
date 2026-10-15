@@ -856,6 +856,12 @@ function holdCarryItemProp(itemName, metadata)
     releaseOrderHeldProp()
 
     local transportMode = getCarryItemTransportMode(itemName)
+    -- A delivery is carried to the storage by hand. An engine (engine_lift: the hoist moves it
+    -- when it is installed) was held without any prop, so the player carried it invisibly and
+    -- could not tell why no other delivery opened.
+    if transportMode == "engine_lift" and type(metadata) == "table" and metadata.deliveryId ~= nil then
+        transportMode = "hand"
+    end
     OrderInstallState.heldCarryItem = { name = tostring(itemName or ""), metadata = metadata }
     OrderInstallState.heldCarryTransportMode = transportMode
 
@@ -921,6 +927,20 @@ function holdOrderRequiredItem(itemName)
 end
 
 function clearOrderInstallState()
+    -- A delivery carried to the storage was dropped here while the server still had it as
+    -- carried: it vanished from the bay until the player left the server. Starting other work
+    -- now puts it back at its delivery bay.
+    local carried = OrderInstallState.heldCarryItem
+    if type(carried) == "table" and type(carried.metadata) == "table" and carried.metadata.deliveryId ~= nil
+        and GetResourceState(GetCurrentResourceName()) == "started" then
+        TriggerServerEvent("sky_mechanicjob:partsDelivery:returnCarried")
+        Sky.Show.Notification(
+            (tuningLocales and tuningLocales.PartsDeliveryTitle) or "Parts Delivery",
+            (tuningLocales and tuningLocales.PartsDeliveryReturned) or "The delivery you were carrying was put back at the delivery bay.",
+            "info"
+        )
+    end
+
     releaseOrderHeldProp()
     stopNonMinigameInstallProgress()
 
