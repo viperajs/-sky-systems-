@@ -519,6 +519,11 @@ registerExport("triggerRadialMenuAction", function(actionId)
 
         local ok, err = runTuningMinigame("engine_swap", veh, OrderInstallState.part)
         if not ok then
+            -- The hood could not be opened again: offer the Open Hood step once more.
+            if type(err) == "table" and err.code == "hood_closed" then
+                OrderInstallState.simpleStep = "open_hood"
+                sendSimpleInstallChecklistUpdate()
+            end
             return false, err
         end
 
@@ -649,7 +654,8 @@ registerExport("triggerRadialMenuAction", function(actionId)
             return true
         end
 
-        SetVehicleDoorOpen(veh, 4, false, false)
+        -- With network control, so the open hood syncs instead of snapping shut again.
+        ensureVehicleHoodOpen(veh)
         OrderInstallState.simpleStep = nextStepName
         sendSimpleInstallChecklistUpdate()
 
@@ -819,6 +825,11 @@ registerExport("triggerRadialMenuAction", function(actionId)
 
         local ok, err = runTuningMinigame("oil_pour", veh, OrderInstallState.part)
         if not ok then
+            -- The hood could not be opened again: offer the Open Hood step once more.
+            if type(err) == "table" and err.code == "hood_closed" then
+                OrderInstallState.simpleStep = "open_hood"
+                sendSimpleInstallChecklistUpdate()
+            end
             return false, err
         end
 

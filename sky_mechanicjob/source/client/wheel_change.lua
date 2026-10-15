@@ -1297,6 +1297,13 @@ function applyOrderPartToVehicle(vehicle, partPayload)
         return (StanceKit.ResetToDefault(vehicle, true) == true)
     end
 
+    -- Mods only sync from the vehicle's network owner. Applied without control, an installed
+    -- engine showed on the mechanic's screen and vanished with the next sync; the server also
+    -- hands the part to the owner (sky_mechanicjob:orders:applyInstalledPart).
+    if not requestVehicleControl(vehicle, 1500) then
+        print(("[sky_mechanicjob][orders] apply warning: no network control of the vehicle for '%s'; its owner applies the part"):format(optionId))
+    end
+
     local curVeh = TuningState.vehicle
     local curOpts = TuningState.options
     local curMap = TuningState.optionMap
@@ -1417,6 +1424,22 @@ function applyOrderPartToVehicle(vehicle, partPayload)
 
     return ok
 end
+
+-- The server hands every installed order part to the vehicle's network owner (the customer in
+-- the car, or a player standing closer than the mechanic); the mod syncs from that client.
+RegisterNetEvent("sky_mechanicjob:orders:applyInstalledPart", function(netId, part)
+    local id = math.floor(tonumber(netId) or 0)
+    if id <= 0 or type(part) ~= "table" then return end
+    -- The installer applied it already (completeActiveOrderInstall).
+    if OrderInstallState.finalizing and OrderInstallState.vehicleNetId == id then return end
+
+    local vehicle = NetworkDoesNetworkIdExist(id) and NetworkGetEntityFromNetworkId(id) or 0
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return end
+
+    if not applyOrderPartToVehicle(vehicle, part) then
+        print(("[sky_mechanicjob][orders] owner apply failed for '%s'"):format(tostring(part.id)))
+    end
+end)
 
 function runStanceWheelInstallAnim(vehicle)
     return runLiftOverheadWorkAnim(vehicle, getNuiLocale("tablet.orders.stance_checklist.adjusting", "Adjusting wheel joint"))

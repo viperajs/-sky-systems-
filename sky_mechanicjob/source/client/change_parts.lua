@@ -18,7 +18,6 @@ local SIMPLE_BODYWORK_MODS = {
 local ARMOR_MOD_KEY = "mod_16"
 local ARMOR_CUT_RADIUS = 2.8
 local MINIGAME_TIMEOUT_MS = 45000
-local HOOD_ANGLE_THRESHOLD = 0.08
 
 local ANIM_REPAIR_DICT = "mini@repair"
 local ANIM_REPAIR_CLIP = "fixing_a_ped"
@@ -306,12 +305,6 @@ function restoreArmorPanelAfterInstall(vehicle, partData)
     return true
 end
 
-local function isEngineHoodOpen(vehicle)
-    if not HasVehicleHood(vehicle) then return true end
-    if IsVehicleDoorDamaged(vehicle, 4) then return true end
-    return GetVehicleDoorAngleRatio(vehicle, 4) > HOOD_ANGLE_THRESHOLD
-end
-
 -- ── Animation Control During Minigames ───────────────
 
 local function startEngineSwapAnim()
@@ -363,10 +356,12 @@ function runEngineSwapInstallMinigame(vehicle, partData)
         }
     end
 
-    if not isEngineHoodOpen(vehicle) then
+    -- The hood may have been synced shut again since the Open Hood step (ensureVehicleHoodOpen).
+    if not ensureVehicleHoodOpen(vehicle) then
         print("[sky_mechanicjob][engine_swap] failed: hood is not open")
         return false, {
             key = "radial.errors.generic",
+            code = "hood_closed",
             fallback = tuningLocales.EngineSwapHoodClosed or "Open the hood from the radial menu before swapping the engine.",
             messageType = "error"
         }
