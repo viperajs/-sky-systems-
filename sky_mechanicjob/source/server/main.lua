@@ -801,7 +801,9 @@ Sky.Cb.Register("sky_mechanicjob:orders:prepareInstall", function(source, data)
             part = part,
             requiredItem = reqItem,
             removeRequiredItemAfterUse = reqItem ~= "" and part.removeAfterUse ~= false,
-            flow = part.flow or "performance"
+            flow = part.flow or "performance",
+            -- The client installs on the order's own vehicle, found by this plate.
+            plate = order.plate
         }
     }
 end)
