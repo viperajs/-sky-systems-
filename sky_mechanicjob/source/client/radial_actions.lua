@@ -344,9 +344,13 @@ registerExport("getRadialActions", function()
         return { cancelWheelAction }
     end
 
+    -- Replacing every wheel: only at a wheel that still has its old tyre.
+    local jobWheel = WheelOrderInstallState.allWheels and getNearestJobWheelPosition(veh) or nil
+    local jobWheelPending = not WheelOrderInstallState.allWheels or (jobWheel ~= nil and not jobWheel.done)
+
     if wheelActionId == "detach_wheel" then
         local targetVeh, targetBone = getNearestDetachWheelTarget()
-        if targetVeh == veh and targetBone ~= nil then
+        if targetVeh == veh and targetBone ~= nil and jobWheelPending then
             return {
                 {
                     id = "detach_wheel",
@@ -362,7 +366,9 @@ registerExport("getRadialActions", function()
 
     if wheelActionId == "attach_wheel" then
         local nearestVeh = select(1, getNearestDetachWheelTarget())
-        if nearestVeh == veh then
+        local atJobWheel = not WheelOrderInstallState.allWheels
+            or (jobWheelPending and (WheelOrderInstallState.currentWheel == nil or WheelOrderInstallState.currentWheel == jobWheel))
+        if nearestVeh == veh and atJobWheel then
             return {
                 {
                     id = "attach_wheel",
@@ -990,7 +996,11 @@ registerExport("triggerRadialMenuAction", function(actionId)
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use this action on the connected order vehicle." }
         end
 
-        WheelOrderInstallState.step = WheelOrderInstallState.skipDetach and "attach" or "detach"
+        if WheelOrderInstallState.allWheels then
+            WheelOrderInstallState.step = "wheels"
+        else
+            WheelOrderInstallState.step = WheelOrderInstallState.skipDetach and "attach" or "detach"
+        end
         sendWheelChecklistUpdate()
         notify((tuningLocales and tuningLocales.CarJackSuccess) or "Vehicle side lifted.", "success")
         return true
@@ -1021,6 +1031,10 @@ registerExport("triggerRadialMenuAction", function(actionId)
         local nearestVeh, targetBone = getNearestDetachWheelTarget()
         if nearestVeh ~= targetVeh or targetBone == nil then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use this action on the connected order vehicle." }
+        end
+
+        if WheelOrderInstallState.allWheels then
+            return runJobWheelDetach(targetVeh)
         end
 
         local detachOk, detachErr, detachedIdxs = tryDetachNearestVehicleWheel()
@@ -1083,6 +1097,10 @@ registerExport("triggerRadialMenuAction", function(actionId)
                 tostring(nearestVeh), tostring(targetVeh)
             ))
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use this action on the connected order vehicle." }
+        end
+
+        if WheelOrderInstallState.allWheels then
+            return runJobWheelAttach(targetVeh, { attachUsesDirtyWheel = false })
         end
 
         local attachOk, attachErr = tryAttachNearestVehicleWheel(targetVeh, WheelOrderInstallState.detachedWheelIndexes, {

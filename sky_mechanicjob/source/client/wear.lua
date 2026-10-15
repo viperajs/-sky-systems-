@@ -1127,10 +1127,11 @@ RegisterNUICallback("wear:repairPart", function(data, cb)
     OrderInstallState.simpleStep = "idle"
 
     if flowType == "wheel" then
-        local detachedIndexes = (targetPart == "tyres") and getDetachedWheelDamageIndexes(veh) or nil
+        -- New tyres go on every wheel (taken off one by one, or put on where a wheel is
+        -- missing); one wheel used to count as all of them.
         startWheelInstallState(targetPart == "brake_pads", targetPart == "suspension", {
-            skipDetach = (targetPart == "tyres"),
-            detachedWheelIndexes = (detachedIndexes and #detachedIndexes > 0) and detachedIndexes or nil
+            allWheels = (targetPart == "tyres"),
+            vehicle = veh
         })
         notify(("%s: %s. %s"):format(
             getNuiLocale("tablet.orders.installing", "Installing part"),

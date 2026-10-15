@@ -1243,7 +1243,13 @@ RegisterNUICallback("tuningRemoval:remove", function(data, cb)
     OrderTabletState.connectedVehicleNetId = NetworkGetNetworkIdFromEntity(veh)
 
     if isWheelOrderPart(partPayload, OrderInstallState.requiredItem) or isBrakeWheelWorkflowPart(partPayload, OrderInstallState.requiredItem) or isSuspensionWheelWorkflowPart(partPayload, OrderInstallState.requiredItem) then
-        startWheelInstallState(isBrakeWheelWorkflowPart(partPayload, OrderInstallState.requiredItem), isSuspensionWheelWorkflowPart(partPayload, OrderInstallState.requiredItem))
+        local requiresBrakes = isBrakeWheelWorkflowPart(partPayload, OrderInstallState.requiredItem)
+        local requiresSuspension = isSuspensionWheelWorkflowPart(partPayload, OrderInstallState.requiredItem)
+        startWheelInstallState(requiresBrakes, requiresSuspension, {
+            allWheels = not requiresBrakes and not requiresSuspension,
+            vehicle = veh,
+            partId = partPayload.id
+        })
         notify(("%s: %s. %s"):format(
             getNuiLocale("tablet.tuningRemoval.removing", "Removing..."),
             tostring(partPayload.label or opt.id),
@@ -2110,7 +2116,15 @@ RegisterNUICallback("orders:startInstall", function(data, cb)
     local isWheel = isWheelOrderPart(partPayload, OrderInstallState.requiredItem) or isBrakeWheelWorkflowPart(partPayload, OrderInstallState.requiredItem) or isSuspensionWheelWorkflowPart(partPayload, OrderInstallState.requiredItem)
 
     if isWheel then
-        startWheelInstallState(isBrakeWheelWorkflowPart(partPayload, OrderInstallState.requiredItem), isSuspensionWheelWorkflowPart(partPayload, OrderInstallState.requiredItem))
+        -- New rims or tyres go on every wheel (a motorcycle's rim on its wheel); brake and
+        -- suspension parts need one opened wheel.
+        local requiresBrakes = isBrakeWheelWorkflowPart(partPayload, OrderInstallState.requiredItem)
+        local requiresSuspension = isSuspensionWheelWorkflowPart(partPayload, OrderInstallState.requiredItem)
+        startWheelInstallState(requiresBrakes, requiresSuspension, {
+            allWheels = not requiresBrakes and not requiresSuspension,
+            vehicle = veh,
+            partId = partPayload.id
+        })
         local partLbl = tostring(partPayload.label or ("Part " .. tostring(partIndex)))
         notify(("%s: %s. %s"):format(
             getNuiLocale("tablet.orders.installing", "Installing part"),

@@ -114,6 +114,17 @@ function tryAttachNearestVehicleWheel(vehicle, detachedIndexes, options)
     SetVehiclePetrolTankHealth(vehicle, tankHealth)
     SetVehicleDirtLevel(vehicle, dirtLevel)
 
+    -- SetVehicleFixed put every wheel back: the ones a job still has to replace keep their
+    -- missing wheel or burst tyre (runJobWheelAttach).
+    for _, wheel in ipairs(type(options) == "table" and type(options.restoreWheels) == "table" and options.restoreWheels or {}) do
+        for _, idx in ipairs(wheel.detached or {}) do
+            BreakOffVehicleWheel(vehicle, idx, false, true, false, false)
+        end
+        for _, idx in ipairs(wheel.burst or {}) do
+            SetVehicleTyreBurst(vehicle, idx, true, 1000.0)
+        end
+    end
+
     logDebug(("[sky_mechanicjob][wheel_attach][check] tyres fixed for indexes=%s"):format(json.encode(targetIndexes)))
     return true
 end
@@ -133,6 +144,12 @@ function detachNearestVehicleWheel()
     if nearestVeh ~= OrderInstallState.vehicle then
         notify((tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use the radial action on the connected order vehicle.", "error")
         return false
+    end
+
+    if WheelOrderInstallState.allWheels then
+        local jobOk, jobErr = runJobWheelDetach(OrderInstallState.vehicle)
+        if not jobOk then notify(type(jobErr) == "table" and jobErr.fallback or tostring(jobErr), "error") end
+        return jobOk
     end
 
     local detachOk, detachErr, detachedIdxs = tryDetachNearestVehicleWheel()
@@ -167,6 +184,12 @@ function attachNearestVehicleWheel()
     if nearestVeh ~= OrderInstallState.vehicle then
         notify((tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use the radial action on the connected order vehicle.", "error")
         return false
+    end
+
+    if WheelOrderInstallState.allWheels then
+        local jobOk, jobErr = runJobWheelAttach(OrderInstallState.vehicle, { attachUsesDirtyWheel = false })
+        if not jobOk then notify(type(jobErr) == "table" and jobErr.fallback or tostring(jobErr), "error") end
+        return jobOk
     end
 
     local attachOk, attachErr = tryAttachNearestVehicleWheel(OrderInstallState.vehicle, WheelOrderInstallState.detachedWheelIndexes)
