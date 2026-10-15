@@ -345,7 +345,9 @@ local function newWorld(opts)
     local cenv = C.env
     local snapshot = W.player.clientJobKey ~= false
     if W.player.clientJobKey == false then W.player.clientJobKey = nil end
-    cenv.GetResourceState = function(name) return (name == "sky_base" or name == "sky_jobs_base") and "started" or "missing" end
+    cenv.GetResourceState = function(name)
+        return (name == "sky_base" or name == "sky_jobs_base" or name == "sky_mechanicjob") and "started" or "missing"
+    end
     cenv.PlayerPedId = function() return 101 end
     cenv.GetEntityCoords = function(entity)
         if entity == 101 then return W.player.pos end
@@ -379,7 +381,13 @@ local function newWorld(opts)
     cenv.IsControlJustPressed = function(_, key) return key == 38 and W.pressingE == true end
     cenv.SendNUIMessage = function() end
     cenv.RegisterNUICallback = function(name, fn) C.nui[name] = fn end
-    cenv.TriggerServerEvent = function() end
+    -- Net events reach the server's handlers with the player as source.
+    cenv.TriggerServerEvent = function(name, ...)
+        senv.source = 1
+        S.emit(name, ...)
+        senv.source = nil
+    end
+    cenv.SetNewWaypoint = function(x, y) W.waypoint = { x = x, y = y } end
     cenv.Sky = {
         Config = { locale = "en" },
         Load = { Model = function() end },
@@ -694,4 +702,123 @@ do
     assert(access.IsOnDuty() == true, "job name alone keeps the duty state")
 end
 
-print("PASS: parts orders from the tablet, delivery timer, box placement near the player, unpacking, moved bays, catalogue changes, carry items, no-bay/order error messages, client duty without the duty system.")
+-- Carry items mode in a workshop made in /jobconfig ("mechanic"): its Parts Delivery Drop and,
+-- when given, a storage this far from it.
+local function carryWorld(storageDistance)
+    local points = { { uid = "drop", type = "parts_drop", label = "Parts Delivery", x = -355.0, y = -140.0, z = 39.0, heading = 70.0 } }
+    if storageDistance then
+        points[#points + 1] = { uid = "store", type = "storage", label = "Parts Storage", x = -355.0 + storageDistance, y = -140.0, z = 39.0, heading = 70.0 }
+    end
+    return newWorld({
+        clientConfig = function(Config) Config.ToggleFeatures.carryItems = true end,
+        workshops = { entries = { { id = "custom_1", name = "mechanic", jobKey = "mechanic", job = "mechanic", points = points } },
+            features = { partsDelivery = true, carryItems = true }, settings = {}, interactions = {} },
+    })
+end
+
+local function heldCount(W)
+    local n = 0
+    for _, object in pairs(W.objects) do if object.carried then n = n + 1 end end
+    return n
+end
+
+local function depositAt(W, x)
+    W.player.pos = vec(x, -140.0, 39.0)
+    local handled
+    W.run(function() handled = W.client.exports.TryDepositCarryItemToStorage("custom_1") end)
+    return handled
+end
+
+local CARRY_HINT = "Delivery picked up. Carry it to your workshop's storage and press E there to unpack the parts."
+local CARRYING_HINT = "You are carrying a delivery. Take it to your workshop's storage and press E there to unpack the parts."
+
+-- 10. Without a storage in the workshop a carried delivery could never be unpacked, and the
+--     player holding it could open no other delivery: it unpacks at the bay instead.
+do
+    local W = carryWorld(nil)
+    W.order({ { name = "brakes", quantity = 2 } })
+    W.order({ { name = "turbo", quantity = 1 } })
+    W.advance(65000)
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    assert(W.player.items.brakes == 2 and W.db.rows[1].status == "claimed", "unpacked at the bay")
+    assert(W.client.env.OrderInstallState.heldCarryItem == nil and heldCount(W) == 0, "nothing carried")
+    assert(W.lastNotification() == "Delivery unpacked.", tostring(W.lastNotification()))
+
+    -- The next delivery opens.
+    W.advance(2000)
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    assert(W.player.items.turbo == 1 and W.db.rows[2].status == "claimed", "the next delivery opened")
+end
+
+-- 11. With a storage: the box is picked up with directions instead of "Delivery unpacked.",
+--     a waypoint when the storage is out of sight, the bay's prompt says where to go, a
+--     storage of the wrong place says the same, and the workshop storage unpacks it.
+do
+    local W = carryWorld(40.0)
+    W.order({ { name = "brakes", quantity = 1 } })
+    W.order({ { name = "turbo", quantity = 1 } })
+    W.advance(65000)
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    assert(W.db.rows[1].status == "claiming" and W.client.env.OrderInstallState.heldCarryItem.name == "brakes", "carrying the delivery")
+    assert(heldCount(W) == 1 and (W.player.items.brakes or 0) == 0, "box in hand, nothing unpacked yet")
+    assert(W.lastNotification() == CARRY_HINT, tostring(W.lastNotification()))
+    assert(W.waypoint and math.abs(W.waypoint.x - -315.0) < 0.01, "waypoint to the storage")
+
+    -- E on the bay's prompt while carrying: directions, no second delivery.
+    W.advance(2000)
+    W.client.emit("sky_jobs_base:interaction:mechanic:parts_drop", { entryId = "custom_1", pointUid = "drop", pointType = "parts_drop" })
+    W.advance(8000)
+    assert(W.lastNotification() == CARRYING_HINT, tostring(W.lastNotification()))
+    assert(W.db.rows[2].status == "ready", "the other delivery stays at the bay")
+
+    -- A storage away from the workshop's.
+    assert(depositAt(W, -200.0) == true and W.lastNotification() == CARRYING_HINT, tostring(W.lastNotification()))
+    assert(W.db.rows[1].status == "claiming" and W.client.env.OrderInstallState.heldCarryItem ~= nil, "still carried")
+
+    assert(depositAt(W, -315.5) == true, "the workshop storage takes it")
+    assert(W.player.items.brakes == 1 and W.db.rows[1].status == "claimed", "unpacked at the storage")
+    assert(W.client.env.OrderInstallState.heldCarryItem == nil and heldCount(W) == 0, "hands empty")
+    assert(W.lastNotification() == "Part placed in workshop storage.")
+end
+
+-- 12. An engine (moved with the hoist when installed) used to be carried invisibly; a
+--     delivery shows it in the hands. A carried prop that was cleaned away still lets the
+--     delivery be put in the storage.
+do
+    local W = carryWorld(8.0)
+    W.order({ { name = "engine", quantity = 1 } })
+    W.advance(65000)
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    assert(W.client.env.OrderInstallState.heldCarryItem.name == "engine" and heldCount(W) == 1, "engine in the hands")
+    assert(W.waypoint == nil, "no waypoint for a storage in sight")
+
+    for id, object in pairs(W.objects) do if object.carried then W.objects[id] = nil end end -- /mechanicprop
+    assert(depositAt(W, -347.5) == true and W.player.items.engine == 1, "stored without the prop: " .. tostring(W.lastNotification()))
+end
+
+-- 13. Starting other work (an order install, a repair) cleared the carried part while the
+--     server still had it as carried: the delivery vanished. It goes back to its bay now.
+do
+    local W = carryWorld(40.0)
+    W.order({ { name = "brakes", quantity = 1 } })
+    W.advance(65000)
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    assert(W.db.rows[1].status == "claiming" and #W.boxes() == 0)
+
+    W.run(function() W.client.env.clearOrderInstallState() end)
+    W.advance(2000)
+    assert(W.db.rows[1].status == "ready", "delivery back at the bay")
+    assert(W.lastNotification() == "The delivery you were carrying was put back at the delivery bay.", tostring(W.lastNotification()))
+    assert(#W.boxes() == 1 and heldCount(W) == 0, "its box stands at the bay again")
+
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    assert(W.db.rows[1].status == "claiming", "picked up again")
+end
+
+print("PASS: parts orders from the tablet, delivery timer, box placement near the player, unpacking, moved bays, catalogue changes, carry items (unpacked at the bay without a storage, directions and waypoint to the storage, the bay prompt while carrying, a visible engine, a cleaned-away prop, a delivery put back when other work starts), no-bay/order error messages, client duty without the duty system.")

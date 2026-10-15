@@ -280,7 +280,10 @@ Locales["de"] = {
         PartsDeliveryDisabled = "Die Teilelieferung ist ausgeschaltet.",
         PartsDeliveryOrderFailed = "Die Bestellung konnte nicht gespeichert werden, dein Geld wurde erstattet. Die Serverkonsole zeigt den Grund.",
         PartsDeliveryNoResponse = "Der Server hat nicht geantwortet. Versuche es gleich noch einmal.",
-        PartsDeliveryEmpty = "Diese Lieferung enthielt keine Teile, die der Shop noch verkauft, daher wurde nichts hinzugefügt."
+        PartsDeliveryEmpty = "Diese Lieferung enthielt keine Teile, die der Shop noch verkauft, daher wurde nichts hinzugefügt.",
+        PartsDeliveryCarryToStorage = "Lieferung aufgenommen. Trag sie zum Lager deiner Werkstatt und drücke dort E, um die Teile auszupacken.",
+        PartsDeliveryCarrying = "Du trägst eine Lieferung. Bring sie zum Lager deiner Werkstatt und drücke dort E, um die Teile auszupacken.",
+        PartsDeliveryReturned = "Die Lieferung, die du getragen hast, wurde zurück zur Lieferstelle gebracht."
     },
     Nui = {
         app = {

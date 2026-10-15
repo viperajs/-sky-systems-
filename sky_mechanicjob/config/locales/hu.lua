@@ -280,7 +280,10 @@ Locales["hu"] = {
         PartsDeliveryDisabled = "Az alkatrészszállítás ki van kapcsolva.",
         PartsDeliveryOrderFailed = "A rendelést nem sikerült menteni, a pénzét visszakapta. Az ok a szerverkonzolon látható.",
         PartsDeliveryNoResponse = "A szerver nem válaszolt. Próbálja újra egy pillanat múlva.",
-        PartsDeliveryEmpty = "Ebben a szállítmányban nem volt olyan alkatrész, amit a bolt még árul, ezért semmi sem került hozzáadásra."
+        PartsDeliveryEmpty = "Ebben a szállítmányban nem volt olyan alkatrész, amit a bolt még árul, ezért semmi sem került hozzáadásra.",
+        PartsDeliveryCarryToStorage = "Szállítmány felvéve. Vigye a műhely tárolójához, és ott nyomja meg az E-t az alkatrészek kicsomagolásához.",
+        PartsDeliveryCarrying = "Egy szállítmányt visz. Vigye a műhely tárolójához, és ott nyomja meg az E-t az alkatrészek kicsomagolásához.",
+        PartsDeliveryReturned = "A szállítmány, amelyet vitt, visszakerült a lerakodóhelyre."
     },
     Nui = {
         app = {

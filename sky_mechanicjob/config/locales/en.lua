@@ -280,7 +280,10 @@ Locales["en"] = {
         PartsDeliveryDisabled = "Parts delivery is turned off.",
         PartsDeliveryOrderFailed = "The order could not be saved and your money was refunded. The server console shows why.",
         PartsDeliveryNoResponse = "The server did not answer. Try again in a moment.",
-        PartsDeliveryEmpty = "This delivery held no parts the shop still sells, so nothing was added."
+        PartsDeliveryEmpty = "This delivery held no parts the shop still sells, so nothing was added.",
+        PartsDeliveryCarryToStorage = "Delivery picked up. Carry it to your workshop's storage and press E there to unpack the parts.",
+        PartsDeliveryCarrying = "You are carrying a delivery. Take it to your workshop's storage and press E there to unpack the parts.",
+        PartsDeliveryReturned = "The delivery you were carrying was put back at the delivery bay."
     },
     Nui = {
         app = {

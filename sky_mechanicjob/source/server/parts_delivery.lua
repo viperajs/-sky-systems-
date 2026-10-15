@@ -7,6 +7,7 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server
 local MAX_LINE_QUANTITY = 99 -- the tablet basket caps every line at 99
 local CLAIM_DISTANCE = 10.0
 local STORAGE_DISTANCE = 10.0
+local MAX_CARRY_DISTANCE = 150.0 -- a carried delivery's storage must be in the workshop
 local WORKSHOP_DATA_TTL_MS = 60000
 local DELIVERY_POINT_TYPES = { parts_drop = true, part_delivery = true, parts_delivery = true, delivery = true, delivery_bay = true }
 local STORAGE_POINT_TYPES = { storage = true }
@@ -455,6 +456,17 @@ local function findCarryItemName(lines)
     return nil
 end
 
+-- The job's storage a carried delivery is taken to (the one nearest to the player at the bay),
+-- or nil when the workshop has none. A player carrying a delivery opens no other one, and
+-- without a storage it could never be unpacked.
+local function findCarryStorage(src, job)
+    local storage = pickJobPoint(src, job, MechanicWorkshopData.GetPoints(STORAGE_POINT_TYPES) or {})
+    if storage and isPlayerNear(src, storage.coords, MAX_CARRY_DISTANCE) then
+        return storage
+    end
+    return nil
+end
+
 local function isPalletMode()
     local pallet = (Config.CarryItems or {}).deliveryPallet
     return MechanicWorkshopData.IsFeatureEnabled("carryItems", false) and type(pallet) == "table" and pallet.enabled ~= false
@@ -655,6 +667,12 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:claim", function(source, data)
     releaseHeldCarry(src)
 
     local carryName = MechanicWorkshopData.IsFeatureEnabled("carryItems", false) and findCarryItemName(decodeLines(row.items, job)) or nil
+    local storage = carryName and findCarryStorage(src, job) or nil
+    if carryName and not storage then
+        print(("[sky_mechanicjob][parts_delivery] delivery %s was unpacked at the bay: the %s workshop has no storage location within %dm to carry it to (/jobconfig > Edit workshop > Locations)")
+            :format(formatOrderUid(deliveryId), tostring(job), math.floor(MAX_CARRY_DISTANCE)))
+        carryName = nil
+    end
     if carryName then
         local affected = MySQL.update.await("UPDATE sky_mechanic_parts_deliveries SET status = 'claiming' WHERE id = ? AND job = ? AND status = 'ready'", { deliveryId, job })
         if (tonumber(affected) or 0) ~= 1 then
@@ -666,7 +684,8 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:claim", function(source, data)
             success = true,
             data = {
                 deliveryClaimed = true,
-                carryItem = { name = carryName, metadata = { deliveryId = deliveryId } }
+                -- The client points the player to the storage where it is unpacked.
+                carryItem = { name = carryName, metadata = { deliveryId = deliveryId, storage = toPointPayload(storage) } }
             }
         }
     end
@@ -684,6 +703,12 @@ Sky.Cb.Register("sky_mechanicjob:carryItem:drop", function(source, data)
     local src = tonumber(source)
     if src then releaseHeldCarry(src) end
     return { success = true }
+end)
+
+-- The client let go of the delivery it carried (it started other work): back to its bay.
+RegisterNetEvent("sky_mechanicjob:partsDelivery:returnCarried", function()
+    local src = tonumber(source)
+    if src then releaseHeldCarry(src) end
 end)
 
 -- The items come from the delivery the server handed out, never from the client.
