@@ -2055,25 +2055,51 @@ RegisterNUICallback("tablet:getConnectedVehicle", function(data, cb)
     cb({ success = true, data = { vehicle = getConnectedVehiclePayload() } })
 end)
 
+local ORDER_VEHICLE_MAX_DISTANCE = 15.0
+
+-- The order's own vehicle near the player: the given (connected) one when its plate is the
+-- order's, else the nearest with that plate. The install used the connected vehicle as it was,
+-- so a part could go on another car while the order counted it as installed.
+local function findOrderVehicle(plate, preferredNetId)
+    local pedCoords = GetEntityCoords(PlayerPedId())
+    local target = sanitizePlate(plate)
+
+    local function usable(veh)
+        return veh ~= 0 and DoesEntityExist(veh) and #(pedCoords - GetEntityCoords(veh)) <= ORDER_VEHICLE_MAX_DISTANCE
+            and (target == "" or sanitizePlate(GetVehicleNumberPlateText(veh)) == target)
+    end
+
+    if preferredNetId > 0 and NetworkDoesNetworkIdExist(preferredNetId) then
+        local veh = NetworkGetEntityFromNetworkId(preferredNetId)
+        if usable(veh) then return veh, preferredNetId end
+    end
+    -- Without the order's plate (an older server file) only the connected vehicle is known.
+    if target == "" then return nil end
+
+    local best, bestDist = nil, nil
+    for _, veh in ipairs(GetGamePool("CVehicle")) do
+        if usable(veh) then
+            local dist = #(pedCoords - GetEntityCoords(veh))
+            if not bestDist or dist < bestDist then
+                best, bestDist = veh, dist
+            end
+        end
+    end
+    if best then
+        return best, NetworkGetNetworkIdFromEntity(best)
+    end
+    return nil
+end
+
 RegisterNUICallback("orders:startInstall", function(data, cb)
     local orderId = math.floor(tonumber(data and data.orderId) or 0)
     local partIndex = math.floor(tonumber(data and data.partIndex) or 0)
+    -- The connected vehicle, if any. Install needed one connected first (the button stayed
+    -- grey without any message); the order's own vehicle is found by its plate now.
     local netId = math.floor(tonumber(data and data.vehicleNetId) or 0)
 
-    if orderId <= 0 or partIndex <= 0 or netId <= 0 then
+    if orderId <= 0 or partIndex <= 0 then
         cb({ success = false, error = "invalid_payload" })
-        return
-    end
-
-    local veh = NetworkGetEntityFromNetworkId(netId)
-    if veh == 0 or not DoesEntityExist(veh) then
-        cb({ success = false, error = "vehicle_not_found" })
-        return
-    end
-
-    local pedCoords = GetEntityCoords(PlayerPedId())
-    if #(pedCoords - GetEntityCoords(veh)) > 15.0 then
-        cb({ success = false, error = "vehicle_too_far" })
         return
     end
 
@@ -2106,6 +2132,13 @@ RegisterNUICallback("orders:startInstall", function(data, cb)
         cb({ success = false, error = "part_not_found" })
         return
     end
+
+    local veh, vehNetId = findOrderVehicle(prepData.plate, netId)
+    if not veh then
+        cb({ success = false, error = "vehicle_not_found", plate = prepData.plate })
+        return
+    end
+    netId = vehNetId
 
     clearOrderInstallState()
     OrderInstallState.active = true

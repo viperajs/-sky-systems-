@@ -432,21 +432,30 @@ local function newWorld(opts)
     cenv.GetResourceState = function(name) return (name == "sky_base" or name == "sky_jobs_base") and "started" or "missing" end
     cenv.PlayerPedId = function() return PED end
     cenv.PlayerId = function() return 0 end
+    -- W.other: a second car parked in the workshop ({ entity, netId, plate, pos }).
+    local function isOther(entity) return W.other ~= nil and entity == W.other.entity end
     cenv.GetEntityCoords = function(entity)
         if entity == PED then return W.player.pos end
         if entity == VEH then return W.veh.pos end
+        if isOther(entity) then return W.other.pos end
         return W.objects[entity] and W.objects[entity].pos or vec(0, 0, 0)
     end
-    cenv.DoesEntityExist = function(entity) return entity == PED or entity == VEH or W.objects[entity] ~= nil end
-    cenv.IsEntityAVehicle = function(entity) return entity == VEH end
+    cenv.DoesEntityExist = function(entity) return entity == PED or entity == VEH or isOther(entity) or W.objects[entity] ~= nil end
+    cenv.IsEntityAVehicle = function(entity) return entity == VEH or isOther(entity) end
     cenv.IsEntityDead = function() return false end
     cenv.IsPedInAnyVehicle = function() return false end
     cenv.GetVehiclePedIsIn = function() return 0 end
     cenv.GetClosestVehicle = function(x, y, z, radius) return #(vec(x, y, z) - W.veh.pos) <= radius and VEH or 0 end
-    cenv.GetGamePool = function() return { VEH } end
-    cenv.NetworkDoesNetworkIdExist = function(netId) return netId == NET end
-    cenv.NetworkGetEntityFromNetworkId = function(netId) return netId == NET and VEH or 0 end
-    cenv.NetworkGetNetworkIdFromEntity = function(entity) return entity == VEH and NET or 0 end
+    cenv.GetGamePool = function() return W.other and { W.other.entity, VEH } or { VEH } end
+    cenv.NetworkDoesNetworkIdExist = function(netId) return netId == NET or (W.other ~= nil and netId == W.other.netId) end
+    cenv.NetworkGetEntityFromNetworkId = function(netId)
+        if netId == NET then return VEH end
+        return (W.other and netId == W.other.netId) and W.other.entity or 0
+    end
+    cenv.NetworkGetNetworkIdFromEntity = function(entity)
+        if entity == VEH then return NET end
+        return isOther(entity) and W.other.netId or 0
+    end
     cenv.NetworkHasControlOfEntity = function() return W.hasControl ~= false end
     cenv.NetworkGetEntityIsNetworked = function() return true end
     cenv.NetworkRequestControlOfEntity = function() W.controlRequests = (W.controlRequests or 0) + 1 end
@@ -456,7 +465,8 @@ local function newWorld(opts)
     cenv.GetModSlotName = function() return "" end
     cenv.GetModTextLabel = function() return "" end
     cenv.GetVehicleClass = function() return W.veh.class end
-    cenv.GetVehicleNumberPlateText = function() return W.veh.plate end
+    cenv.GetVehicleNumberPlateText = function(entity) return isOther(entity) and W.other.plate or W.veh.plate end
+    cenv.IsNuiFocused = function() return W.nuiFocused == true end
     cenv.GetModelDimensions = function() return vec(-1.0, -2.4, -0.6), vec(1.0, 2.4, 0.9) end
     cenv.GetOffsetFromEntityInWorldCoords = function(_, x, y, z) return W.veh.pos + vec(x, y, z) end
     cenv.GetEntityBoneIndexByName = function(_, name) return CAR_BONES[name] or -1 end
@@ -523,7 +533,7 @@ local function newWorld(opts)
         Load = { Model = function() end, AnimDict = function() end },
         Show = {
             Notification = function(_, message, kind) C.notifications[#C.notifications + 1] = { msg = message, kind = kind } end,
-            HelpNotification = function() end,
+            HelpNotification = function(text, key) C.help = { text = text, key = key } end,
         },
         Cooldown = function() return true end,
         IsDebugActive = function() return false end,
@@ -849,4 +859,80 @@ do
     assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed")
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests.")
+-- An engine order for W.veh, bought at the self-service point, with the engine in the
+-- mechanic's inventory.
+local function engineOrder(W)
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "mod_11", value = 1 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    W.player.items.engine = 1
+end
+
+-- 6. Install without connecting a vehicle first: the button stayed grey until one was
+--    connected. The order's own car is found by its plate and connected.
+do
+    local W = newWorld({ job = "mechanic" })
+    engineOrder(W)
+    assert(W.client.env.OrderTabletState.connectedVehicleNetId == 0, "nothing connected")
+    local started = W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = 0 })
+    assert(started and started.success == true, "started without a connected vehicle: " .. tostring(started and started.error))
+    assert(W.client.env.OrderInstallState.vehicleNetId == NET and W.client.env.OrderTabletState.connectedVehicleNetId == NET, "the order's car is connected")
+    assert(W.act("open_hood"))
+    W.onAwait = W.playEngineSwap(true)
+    assert(W.act("engine_swap"))
+    assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "installed on the order's car")
+end
+
+-- 7. Another car connected (parked next to the customer's): the part went on the connected
+--    car while the order counted it as installed. It goes on the order's car now.
+do
+    local W = newWorld({ job = "mechanic" })
+    engineOrder(W)
+    W.other = { entity = 19, netId = 119, plate = "OTHER 1", pos = vec(3.0, 0.0, 0.0), mods = {} }
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = 119 }).success == true, "the other car connected")
+    local started = W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = 119 })
+    assert(started.success == true, tostring(started.error))
+    assert(W.client.env.OrderInstallState.vehicleNetId == NET, "installing on the order's car, not the connected one")
+    assert(W.client.env.OrderTabletState.connectedVehicleNetId == NET, "the order's car is connected instead")
+end
+
+-- 8. The order's car is not near the mechanic: the tablet is told so (with the plate) and
+--    nothing starts.
+do
+    local W = newWorld({ job = "mechanic" })
+    engineOrder(W)
+    W.veh.pos = vec(17.0, 0.0, 0.0) -- in the server's 20 m, beyond the 15 m to work on it
+    local started = W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = 0 })
+    assert(started.success == false and started.error == "vehicle_not_found" and started.plate == "TEST 123", tostring(started.error))
+    assert(W.client.env.OrderInstallState.active == false, "no install started")
+end
+
+-- 9. Next to the vehicle of an active install a prompt names the radial menu key and the next
+--    step; the tablet used to say "Press E", which did nothing.
+do
+    local W = newWorld({ job = "mechanic" })
+    engineOrder(W)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = 0 }).success == true)
+    local C = W.client
+    W.player.pos = vec(0.0, 3.4, 0.0) -- at the front
+    assert(C.env.showOrderInstallStepPrompt() == true, "prompt next to the car")
+    assert(C.help.text == "Radial menu: Open Hood" and C.help.key == "G", tostring(C.help.text) .. " / " .. tostring(C.help.key))
+
+    assert(W.act("open_hood"))
+    W.clock = W.clock + 1000
+    assert(C.env.showOrderInstallStepPrompt() == true and C.help.text == "Radial menu: Swap Engine", tostring(C.help.text))
+
+    W.nuiFocused = true -- the radial menu or a minigame is open
+    assert(C.env.showOrderInstallStepPrompt() == false)
+    W.nuiFocused = false
+    W.player.pos = vec(0.0, 12.0, 0.0)
+    assert(C.env.showOrderInstallStepPrompt() == false, "no prompt away from the car")
+
+    -- No install: no prompt.
+    W.player.pos = vec(0.0, 3.4, 0.0)
+    assert(W.act("cancel_order_install"))
+    assert(C.env.showOrderInstallStepPrompt() == false)
+end
+
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle.")

@@ -24,7 +24,7 @@ local function getFluidRefillPourRadialDescription()
     return template:format(getFluidRefillPartLabel())
 end
 
-registerExport("getRadialActions", function()
+local function buildRadialActions()
     if CarJackState.lifted then
         if CarJackState.vehicle == 0 or not DoesEntityExist(CarJackState.vehicle) then
             clearCarJackState()
@@ -379,9 +379,12 @@ registerExport("getRadialActions", function()
                 cancelWheelAction
             }
         end
-        print(("[sky_mechanicjob][wheel_attach][check] getRadialActions hidden (nearest=%s target=%s step=%s)"):format(
-            tostring(nearestVeh), tostring(veh), tostring(WheelOrderInstallState.step)
-        ))
+        -- Built twice a second for the install prompt and the target options: debug only.
+        if Sky and Sky.IsDebugActive and Sky.IsDebugActive() then
+            print(("[sky_mechanicjob][wheel_attach][check] getRadialActions hidden (nearest=%s target=%s step=%s)"):format(
+                tostring(nearestVeh), tostring(veh), tostring(WheelOrderInstallState.step)
+            ))
+        end
         return { cancelWheelAction }
     end
 
@@ -435,7 +438,9 @@ registerExport("getRadialActions", function()
     end
 
     return { cancelWheelAction }
-end)
+end
+
+registerExport("getRadialActions", buildRadialActions)
 
 registerExport("triggerRadialMenuAction", function(actionId)
     if actionId == "access_lift" then
@@ -1137,4 +1142,63 @@ registerExport("triggerRadialMenuAction", function(actionId)
     end
 
     return false, { key = "radial.errors.generic", fallback = "Action unavailable." }
+end)
+
+-- ─── Next Install Step Prompt ─────────────────────
+-- The steps of an install are actions of the job radial menu, and nothing pointed there: the
+-- Orders tablet closed and said "Press E near the connected vehicle", and E did nothing.
+-- Next to the vehicle of an active install a prompt names the radial menu key and the step.
+local INSTALL_PROMPT_DISTANCE = 4.5
+local INSTALL_PROMPT_REFRESH_MS = 500
+
+-- The key the player bound to sky_jobs_base's radial menu (toggle or hold command).
+local function getRadialKeyLabel()
+    for _, command in ipairs({ "sky_jobs_radial", "+sky_jobs_radial" }) do
+        local label = GetControlInstructionalButton(0, GetHashKey(command) | 0x80000000, true)
+        if type(label) == "string" and label:sub(1, 2) == "t_" and #label > 2 then
+            return label:sub(3)
+        end
+    end
+    return "G"
+end
+
+local installPrompt = { text = nil, key = "G", refreshAt = 0 }
+
+--- Shows the radial menu prompt for the next install step this frame; returns whether it did.
+function showOrderInstallStepPrompt()
+    if not OrderInstallState.active or OrderInstallState.finalizing or TuningState.active or IsNuiFocused() then
+        return false
+    end
+
+    local veh = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
+    if veh == 0 or not DoesEntityExist(veh)
+        or #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(veh)) > INSTALL_PROMPT_DISTANCE then
+        return false
+    end
+
+    local now = GetGameTimer()
+    if now >= installPrompt.refreshAt then
+        installPrompt.refreshAt = now + INSTALL_PROMPT_REFRESH_MS
+        installPrompt.text = nil
+        -- An error here would end the prompt's thread for the rest of the session.
+        local ok, actions = pcall(buildRadialActions)
+        for _, action in ipairs(ok and type(actions) == "table" and actions or {}) do
+            if type(action) == "table" and type(action.id) == "string" and not action.id:find("^cancel_") then
+                local template = (tuningLocales and tuningLocales.OrderInstallRadialPrompt) or "Radial menu: %s"
+                installPrompt.text = template:gsub("%%s", (tostring(action.label or action.id):gsub("%%", "%%%%")))
+                break
+            end
+        end
+        installPrompt.key = getRadialKeyLabel()
+    end
+
+    if not installPrompt.text then return false end
+    Sky.Show.HelpNotification(installPrompt.text, installPrompt.key)
+    return true
+end
+
+CreateThread(function()
+    while true do
+        Wait(showOrderInstallStepPrompt() and 0 or 250)
+    end
 end)
