@@ -39,7 +39,13 @@ local function mergeWorkshopEntries(entries)
             end
             local job = {}
             for k, v in pairs(base) do job[k] = v end
-            for k, v in pairs(entry) do job[k] = v end
+            for k, v in pairs(entry) do
+                -- An empty Parts Delivery tab keeps the config.lua list, as tablet_apps.lua
+                -- does for the wholesale shop; copied over it, the parts shop sold nothing.
+                if not (k == "partsDeliveryShop" and (type(v) ~= "table" or #v == 0)) then
+                    job[k] = v
+                end
+            end
             merged[#merged + 1] = job
         end
     end
@@ -55,7 +61,10 @@ local function loadConfiguratorData()
     local ok, row = pcall(function()
         return MySQL.single.await("SELECT data FROM sky_jobs_creator_data WHERE creator_key = 'workshopcreator' LIMIT 1")
     end)
-    if not ok then return end
+    if not ok then
+        print(("[sky_mechanicjob] reading the /jobconfig workshops failed; the previous ones stay in use: %s"):format(tostring(row)))
+        return
+    end
 
     local decoded = nil
     if row and type(row.data) == "string" then
@@ -150,6 +159,15 @@ function Pricing.GetJobConfig(jobName)
     if job then return job end
     local jobs = getWorkshopJobs()
     return type(jobs[1]) == "table" and jobs[1] or {}
+end
+
+--- Every workshop: the /jobconfig ones and the config.lua jobs
+---@return table[]
+function Pricing.GetAllJobConfigs()
+    local all = {}
+    for _, job in ipairs(getWorkshopJobs()) do all[#all + 1] = job end
+    for _, job in ipairs(Config and Config.Jobs or {}) do all[#all + 1] = job end
+    return all
 end
 
 function Pricing.GetJobCostProfile(jobName)

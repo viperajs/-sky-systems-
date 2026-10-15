@@ -56,7 +56,9 @@ end
 local function setAccessState(isEmployed, isOnDuty, jobKey)
     local sanitizedKey = sanitizeJobKey(jobKey)
     local empFlag = (isEmployed == true) and (sanitizedKey ~= nil)
-    local dutyFlag = empFlag and (isOnDuty == true)
+    -- Without the duty system every member is on duty, as on the server (jobs.lua
+    -- PlayerCache.IsOnDuty); the framework's off duty hid e.g. the parts delivery prompt.
+    local dutyFlag = empFlag and (isOnDuty == true or (Config and Config.DutySystem == false))
 
     -- Duty and job changes must be announced too; listeners (e.g. sky_mechanicjob's
     -- access state) otherwise kept the old duty state.
@@ -83,9 +85,14 @@ local function updateJob(data)
         return
     end
 
-    -- Framework job tables carry the duty state of the new job.
-    if type(data) == "table" and type(data.onduty) == "boolean" then
-        setAccessState(true, data.onduty, jobName)
+    -- Framework job tables carry the duty state of the new job (QBCore onduty, ESX onDuty).
+    local frameworkDuty = nil
+    if type(data) == "table" then
+        frameworkDuty = data.onduty
+        if frameworkDuty == nil then frameworkDuty = data.onDuty end
+    end
+    if type(frameworkDuty) == "boolean" then
+        setAccessState(true, frameworkDuty, jobName)
         return
     end
 

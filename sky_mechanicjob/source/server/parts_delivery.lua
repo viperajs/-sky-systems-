@@ -148,15 +148,19 @@ end
 
 -- ── Catalogue ────────────────────────────────────────
 
--- The workshop's Parts Delivery tab in /jobconfig, else its config.lua job (server/pricing.lua).
-local function getShopCatalog(job)
-    local jobCfg = Pricing.GetJobConfig(job)
+-- /jobconfig names are typed in; "turbo " is no inventory item.
+local function trimName(value)
+    return type(value) == "string" and value:match("^%s*(.-)%s*$") or ""
+end
+
+local function buildCatalog(jobCfg)
     local catalog = {}
     for _, item in ipairs(jobCfg.partsDeliveryShop or jobCfg.shop or {}) do
-        if type(item) == "table" and type(item.name) == "string" and item.name ~= "" then
+        local name = type(item) == "table" and trimName(item.name) or ""
+        if name ~= "" then
             catalog[#catalog + 1] = {
-                name = item.name,
-                label = item.label or item.name,
+                name = name,
+                label = item.label or name,
                 price = math.max(0, math.floor(tonumber(item.price) or 100)),
                 category = item.category or "General"
             }
@@ -165,10 +169,28 @@ local function getShopCatalog(job)
     return catalog
 end
 
+-- The workshop's Parts Delivery tab in /jobconfig, else its config.lua job (server/pricing.lua).
+local function getShopCatalog(job)
+    return buildCatalog(Pricing.GetJobConfig(job))
+end
+
 local function getCatalogMap(job)
     local map = {}
     for _, item in ipairs(getShopCatalog(job)) do
         map[item.name] = item
+    end
+    return map
+end
+
+-- Every item any workshop's parts shop (or config.lua job) sells.
+local function getAnyCatalogMap()
+    local map = {}
+    for _, jobCfg in ipairs(Pricing.GetAllJobConfigs()) do
+        if type(jobCfg) == "table" then
+            for _, item in ipairs(buildCatalog(jobCfg)) do
+                map[item.name] = map[item.name] or item
+            end
+        end
     end
     return map
 end
@@ -207,13 +229,21 @@ local function buildOrderLines(job, items)
     return lines, total
 end
 
--- Only catalogue items are handed out, so rows stored before these checks cannot pay out
--- arbitrary items or quantities.
+-- Only items a parts shop sells are handed out, so rows stored before these checks cannot pay
+-- out arbitrary items or quantities. A part taken out of the workshop's own Parts Delivery tab
+-- after it was ordered and paid is still delivered while any shop sells it; before, opening
+-- such a delivery said "Delivery unpacked." and gave nothing.
 local function decodeLines(itemsJson, job)
     local catalog = getCatalogMap(job)
+    local anyCatalog = nil
     local lines = {}
     for _, it in ipairs(decodeJson(itemsJson)) do
-        local item = type(it) == "table" and catalog[it.name] or nil
+        local name = type(it) == "table" and trimName(it.name) or ""
+        local item = catalog[name]
+        if not item and name ~= "" then
+            anyCatalog = anyCatalog or getAnyCatalogMap()
+            item = anyCatalog[name]
+        end
         local quantity = readQuantity(it)
         if item and quantity >= 1 and quantity <= MAX_LINE_QUANTITY then
             lines[#lines + 1] = { name = item.name, label = item.label, quantity = quantity }
@@ -284,23 +314,34 @@ local function toPointPayload(point)
     }
 end
 
+-- The requested point when it belongs to the job, else the job's point nearest to the player.
+local function pickJobPoint(src, job, points, requestedKey)
+    local ped = GetPlayerPed(src)
+    local origin = ped and ped ~= 0 and GetEntityCoords(ped) or nil
+    local nearest, nearestDist = nil, nil
+    for _, point in ipairs(points) do
+        if point.job == nil or point.job == job then
+            if point.key == requestedKey then
+                return point
+            end
+            local dist = origin and #(origin - point.coords) or 0.0
+            if not nearestDist or dist < nearestDist then
+                nearest, nearestDist = point, dist
+            end
+        end
+    end
+    return nearest
+end
+
 -- The workshop's own delivery bays when the server can read them; otherwise the bay the
 -- client picked from the same data.
-local function resolveDeliveryPoint(job, requested)
+local function resolveDeliveryPoint(src, job, requested)
     requested = type(requested) == "table" and requested or {}
 
     local points = MechanicWorkshopData.GetPoints(DELIVERY_POINT_TYPES)
     if points then
-        local fallback = nil
-        for _, point in ipairs(points) do
-            if point.job == nil or point.job == job then
-                if point.key == requested.key then
-                    return toPointPayload(point)
-                end
-                fallback = fallback or point
-            end
-        end
-        return fallback and toPointPayload(fallback) or nil
+        local point = pickJobPoint(src, job, points, requested.key)
+        return point and toPointPayload(point) or nil
     end
 
     local coords = type(requested.coords) == "table" and requested.coords or {}
@@ -354,7 +395,8 @@ local function giveLines(src, lines)
 end
 
 -- Moves the row from fromStatus to 'claimed' before handing out its items, so two
--- requests for the same delivery cannot both receive them.
+-- requests for the same delivery cannot both receive them. The third value is true when
+-- none of its parts is sold anymore (the row is still closed, nothing is given).
 local function completeDelivery(src, row, fromStatus)
     local lines = decodeLines(row.items, row.job)
     for _, line in ipairs(lines) do
@@ -381,8 +423,25 @@ local function completeDelivery(src, row, fromStatus)
         return false, "inventory_full"
     end
 
+    local empty = #lines == 0
+    if empty then
+        print(("[sky_mechanicjob][parts_delivery] delivery %s held no part any parts shop still sells; it was closed without items"):format(formatOrderUid(row.id)))
+    end
     notifyJob(row.job)
-    return true
+    return true, nil, empty
+end
+
+-- The box stands at its bay's current place (the client resolves the bay key), so a bay
+-- moved in /jobconfig after the order is accepted there too; its box could never be opened.
+local function isNearDelivery(src, point)
+    if isPlayerNear(src, point.coords, CLAIM_DISTANCE) then return true end
+    if type(point.key) ~= "string" then return false end
+    for _, current in ipairs(MechanicWorkshopData.GetPoints(DELIVERY_POINT_TYPES) or {}) do
+        if current.key == point.key then
+            return isPlayerNear(src, current.coords, CLAIM_DISTANCE)
+        end
+    end
+    return false
 end
 
 local function findCarryItemName(lines)
@@ -442,7 +501,7 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:createOrder", function(source, da
         return { success = false, error = "invalid_items" }
     end
 
-    local deliveryPoint = resolveDeliveryPoint(job, data.deliveryPoint)
+    local deliveryPoint = resolveDeliveryPoint(src, job, data.deliveryPoint)
     if not deliveryPoint then
         return { success = false, error = "missing_delivery_location" }
     end
@@ -534,11 +593,13 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:getReadyDeliveries", function(sou
     end
 
     local job = Functions.GetJob(src)
+    -- The newest 100: with the oldest first, 100 unopened old rows hid every new delivery.
+    -- The client still shows the oldest of these first at each bay.
     local rows = MySQL.query.await([[
         SELECT id, delivery_point, items, created_at
         FROM sky_mechanic_parts_deliveries
         WHERE job = ? AND status = 'ready'
-        ORDER BY id ASC
+        ORDER BY id DESC
         LIMIT 100
     ]], { job }) or {}
 
@@ -587,7 +648,7 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:claim", function(source, data)
         return { success = false, error = "delivery_not_found" }
     end
 
-    if not isPlayerNear(src, decodeJson(row.delivery_point).coords, CLAIM_DISTANCE) then
+    if not isNearDelivery(src, decodeJson(row.delivery_point)) then
         return { success = false, error = "too_far" }
     end
 
@@ -610,11 +671,11 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:claim", function(source, data)
         }
     end
 
-    local ok, err = completeDelivery(src, row, "ready")
+    local ok, err, empty = completeDelivery(src, row, "ready")
     if not ok then
         return { success = false, error = err }
     end
-    return { success = true, data = { deliveryClaimed = true } }
+    return { success = true, data = { deliveryClaimed = true, emptyDelivery = empty == true or nil } }
 end)
 
 -- ── Carry Item Actions ────────────────────────────────
@@ -754,13 +815,19 @@ end
 -- Delivery timers and carried deliveries do not survive a restart.
 local function recoverDeliveries()
     local rows = MySQL.query.await("SELECT id, job, status, delivery_point FROM sky_mechanic_parts_deliveries WHERE status IN ('pending', 'claiming')") or {}
+    local returned = {}
     for _, row in ipairs(rows) do
         if row.status == "pending" then
             local arrivesAt = tonumber(decodeJson(row.delivery_point).arrivesAt) or 0
             scheduleReady(row.id, row.job, arrivesAt - os.time())
         elseif not isHeld(row.id) then
-            MySQL.update.await("UPDATE sky_mechanic_parts_deliveries SET status = 'ready' WHERE id = ? AND status = 'claiming'", { row.id })
+            local affected = MySQL.update.await("UPDATE sky_mechanic_parts_deliveries SET status = 'ready' WHERE id = ? AND status = 'claiming'", { row.id })
+            if (tonumber(affected) or 0) > 0 then returned[row.job] = true end
         end
+    end
+    -- The clients fetched their deliveries at their own start, before these were back.
+    for job in pairs(returned) do
+        notifyJob(job)
     end
 end
 

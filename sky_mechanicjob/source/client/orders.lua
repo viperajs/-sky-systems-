@@ -870,7 +870,12 @@ function holdCarryItemProp(itemName, metadata)
     local propModelName = tostring(itemCfg.prop or ORDER_ITEM_PROPS[tostring(itemName or "")] or "prop_cs_cardbox_01")
     local modelHash = GetHashKey(propModelName)
 
+    -- Nothing is held when the prop fails; a part left "held" blocked every later delivery
+    -- and install (parts_delivery.lua canInteractWithDelivery).
     if not requestModelLoaded(modelHash, 2500) then
+        print(("[sky_mechanicjob][carry_item] failed: carry prop '%s' did not load"):format(propModelName))
+        OrderInstallState.heldCarryItem = nil
+        OrderInstallState.heldCarryTransportMode = "hand"
         return false
     end
 
@@ -881,6 +886,8 @@ function holdCarryItemProp(itemName, metadata)
     if propObj == 0 or not DoesEntityExist(propObj) then
         print(("[sky_mechanicjob][carry_item] failed: could not create carry prop '%s'"):format(propModelName))
         SetModelAsNoLongerNeeded(modelHash)
+        OrderInstallState.heldCarryItem = nil
+        OrderInstallState.heldCarryTransportMode = "hand"
         return false
     end
 
@@ -1265,10 +1272,209 @@ function doesActiveEngineInstallUseHoist()
     return getCarryItemTransportMode(OrderInstallState.requiredItem) == "engine_lift"
 end
 
+-- ─── Every Wheel Of The Vehicle (tyres and wheels) ──
+-- New tyres or rims go on every wheel the vehicle has, one after another; swapping a single
+-- wheel used to finish the job and count for all of them. A wheel is a position as wheel
+-- damage keeps it: a six-wheeler's middle and rear wheel of one side are one position.
+local WHEEL_POSITION_LABELS = {
+    front_left = "Front left wheel", front_right = "Front right wheel",
+    middle_left = "Middle left wheel", middle_right = "Middle right wheel",
+    rear_left = "Rear left wheel", rear_right = "Rear right wheel",
+    front = "Front wheel", rear = "Rear wheel"
+}
+
+-- A motorcycle's front and rear rims (and custom tyres) are separate parts.
+local BIKE_WHEEL_BY_PART = {
+    mod_23 = "front", wheel_custom_23 = "front",
+    mod_24 = "rear", wheel_custom_24 = "rear"
+}
+
+local function getWheelPositionIndexes(vehicle, candidateIndex)
+    local indexes = expandWheelIndexes(candidateIndex)
+    if type(filterVehicleWheelIndexes) == "function" then
+        indexes = filterVehicleWheelIndexes(vehicle, indexes)
+    end
+    table.sort(indexes)
+    return indexes
+end
+
+--- The wheel positions of a vehicle (on a motorcycle, the one wheel partId belongs to);
+--- missing = no wheel mounted there (wheel damage or theft).
+function getVehicleWheelPositions(vehicle, partId)
+    local detached = {}
+    if type(getDetachedWheelDamageIndexes) == "function" then
+        for _, idx in ipairs(getDetachedWheelDamageIndexes(vehicle)) do detached[idx] = true end
+    end
+
+    local positions, byKey, hasRightSide = {}, {}, false
+    for _, candidate in ipairs(DETACH_WHEEL_CANDIDATES) do
+        for _, boneName in ipairs(candidate.bones) do
+            if GetEntityBoneIndexByName(vehicle, boneName) ~= -1 then
+                local indexes = getWheelPositionIndexes(vehicle, candidate.index)
+                local key = table.concat(indexes, ",")
+                if byKey[key] then
+                    if candidate.label:find("^rear_") then byKey[key].label = candidate.label end
+                elseif #indexes > 0 then
+                    local missingIndexes = {}
+                    for _, idx in ipairs(indexes) do
+                        if detached[idx] then missingIndexes[#missingIndexes + 1] = idx end
+                    end
+                    byKey[key] = {
+                        key = key, label = candidate.label, indexes = indexes,
+                        missing = #missingIndexes > 0, missingIndexes = missingIndexes, done = false
+                    }
+                    positions[#positions + 1] = byKey[key]
+                end
+                if candidate.label:find("_right$") then hasRightSide = true end
+                break
+            end
+        end
+    end
+
+    -- Bikes: a front and a rear wheel.
+    if not hasRightSide then
+        for _, position in ipairs(positions) do
+            position.label = position.label:gsub("_left$", "")
+        end
+
+        local onlyLabel = BIKE_WHEEL_BY_PART[tostring(partId or "")]
+        local partPositions = {}
+        for _, position in ipairs(positions) do
+            if position.label == onlyLabel then partPositions[#partPositions + 1] = position end
+        end
+        if #partPositions > 0 then positions = partPositions end
+    end
+    return positions
+end
+
+--- The wheel position of the job the player stands at (the closest wheel, as detach and attach
+--- use), and that wheel; no position when the closest wheel is not part of the job.
+function getNearestJobWheelPosition(vehicle)
+    local wheelData = getClosestWheelData(vehicle, GetEntityCoords(PlayerPedId()), DETACH_WHEEL_MAX_BONE_DISTANCE)
+    if not wheelData then return nil, nil end
+    local key = table.concat(getWheelPositionIndexes(vehicle, wheelData.index), ",")
+    for _, position in ipairs(WheelOrderInstallState.wheels or {}) do
+        if position.key == key then return position, wheelData end
+    end
+    return nil, wheelData
+end
+
+function countReplacedWheels()
+    local done, total = 0, 0
+    for _, position in ipairs(WheelOrderInstallState.wheels or {}) do
+        total = total + 1
+        if position.done then done = done + 1 end
+    end
+    return done, total
+end
+
+function getWheelPositionLabel(position)
+    local label = position and position.label or ""
+    return getNuiLocale(("tablet.orders.wheel_checklist.wheel_%s"):format(label), WHEEL_POSITION_LABELS[label] or label)
+end
+
+local function wheelError(localeKey, fallback)
+    return { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales[localeKey]) or fallback }
+end
+
+--- Takes the old wheel off where the player stands (every-wheel jobs).
+function runJobWheelDetach(vehicle)
+    local position, wheelData = getNearestJobWheelPosition(vehicle)
+    if not position then
+        if wheelData then
+            return false, wheelError("WheelNotInJob", "This wheel is not part of this job.")
+        end
+        return false, wheelError("DetachWheelNotNear", "Move closer to a wheel to detach it.")
+    end
+    if position.done then
+        return false, wheelError("WheelAlreadyReplaced", "This wheel is already new. Go to a wheel that still has its old tyre.")
+    end
+    if position.missing then
+        return false, wheelError("WheelInstallWrongStep", "Complete the current wheel-change step first.")
+    end
+
+    local detachOk, detachErr = tryDetachNearestVehicleWheel()
+    if not detachOk then
+        return false, detachErr
+    end
+
+    WheelOrderInstallState.currentWheel = position
+    sendWheelChecklistUpdate()
+    notify((tuningLocales and tuningLocales.DetachWheelSuccess) or "Wheel detached.", "success")
+    return true
+end
+
+--- Puts a new wheel on the hub the player took off, or where none is mounted (every-wheel
+--- jobs). The new rims of an order show once the last wheel is on.
+function runJobWheelAttach(vehicle, options)
+    local position = WheelOrderInstallState.currentWheel
+    local nearest, wheelData = getNearestJobWheelPosition(vehicle)
+    if position then
+        if nearest ~= position then
+            return false, wheelError("WheelAttachOtherWheel", "Put the new wheel on the hub you took the old one off.")
+        end
+    else
+        position = nearest
+        if not position and wheelData then
+            return false, wheelError("WheelNotInJob", "This wheel is not part of this job.")
+        end
+        if not position or position.done or not position.missing then
+            return false, wheelError("WheelInstallWrongStep", "Complete the current wheel-change step first.")
+        end
+    end
+
+    -- Attaching repairs the whole vehicle (SetVehicleFixed): the wheels still to do keep a
+    -- missing wheel or burst tyre, or they all looked new after the first one.
+    local restoreWheels = {}
+    for _, other in ipairs(WheelOrderInstallState.wheels or {}) do
+        if other ~= position and not other.done then
+            local burst = {}
+            for _, idx in ipairs(other.indexes) do
+                if not other.missing and IsVehicleTyreBurst(vehicle, idx, false) then burst[#burst + 1] = idx end
+            end
+            restoreWheels[#restoreWheels + 1] = { detached = other.missing and other.missingIndexes or {}, burst = burst }
+        end
+    end
+    options = type(options) == "table" and options or {}
+    options.restoreWheels = restoreWheels
+
+    local attachOk, attachErr = tryAttachNearestVehicleWheel(vehicle, position.indexes, options)
+    if not attachOk then
+        return false, attachErr
+    end
+
+    -- The part goes on with the last wheel; if that fails, the wheel can be attached again.
+    local done, total = countReplacedWheels()
+    done = done + 1
+    if done >= total and not OrderInstallState.repairMode and not applyOrderPartToVehicle(vehicle, OrderInstallState.part) then
+        return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
+    end
+
+    position.done = true
+    position.missing = false
+    WheelOrderInstallState.currentWheel = nil
+    if done >= total then
+        WheelOrderInstallState.step = "remove"
+    end
+
+    sendWheelChecklistUpdate()
+    notify(("%s (%d/%d)"):format((tuningLocales and tuningLocales.AttachWheelSuccess) or "New wheel attached.", done, total), "success")
+    return true
+end
+
 function nextWheelInstallActionId()
     if not WheelOrderInstallState.active then return nil end
 
     local step = tostring(WheelOrderInstallState.step or "idle")
+    if WheelOrderInstallState.allWheels and step == "wheels" then
+        -- The wheel taken off gets its new one first; otherwise the wheel the player stands at
+        -- is taken off, or gets a new one when none is mounted there.
+        if WheelOrderInstallState.currentWheel then return "attach_wheel" end
+        local veh = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
+        local position = veh ~= 0 and DoesEntityExist(veh) and getNearestJobWheelPosition(veh) or nil
+        if position and not position.done and position.missing then return "attach_wheel" end
+        return "detach_wheel"
+    end
     if step == "detach" and WheelOrderInstallState.skipDetach then
         step = "attach"
     end
@@ -1367,6 +1573,24 @@ function sendWheelChecklistUpdate()
     if not WheelOrderInstallState.active then return end
 
     local currentStep = WheelOrderInstallState.step
+    if WheelOrderInstallState.allWheels then
+        local steps = {
+            { id = "lift", label = getNuiLocale("tablet.orders.wheel_checklist.lift", "Lift up the car with car jack"), done = currentStep ~= "lift" }
+        }
+        for _, position in ipairs(WheelOrderInstallState.wheels) do
+            steps[#steps + 1] = { id = "wheel_" .. position.key, label = getWheelPositionLabel(position), done = position.done == true }
+        end
+        steps[#steps + 1] = { id = "remove", label = getNuiLocale("tablet.orders.wheel_checklist.remove", "Remove the car jack"), done = currentStep == "complete" }
+
+        sendUi("wheelInstall:checklist:update", {
+            title = getNuiLocale("tablet.orders.wheel_checklist.title", "Wheel Change Checklist"),
+            note = getNuiLocale("tablet.orders.wheel_checklist.every_wheel_note", "Replace every wheel: take each one off and put the new one on."),
+            steps = steps
+        })
+        WheelOrderInstallState.checklistVisible = true
+        return
+    end
+
     local steps = {
         { id = "lift", label = getNuiLocale("tablet.orders.wheel_checklist.lift", "Lift up the car with car jack"), done = currentStep ~= "lift" },
         { id = "detach", label = getNuiLocale("tablet.orders.wheel_checklist.detach", "Detach one wheel"), done = WheelOrderInstallState.skipDetach == true or currentStep == "install_brakes" or currentStep == "install_suspension" or currentStep == "attach" or currentStep == "remove" or currentStep == "complete" }
@@ -1409,6 +1633,7 @@ function sendWheelChecklistUpdate()
     WheelOrderInstallState.checklistVisible = true
 end
 
+-- extraData.allWheels (with extraData.vehicle): new tyres or rims, so every wheel is replaced.
 function startWheelInstallState(requiresBrakes, requiresSuspension, extraData)
     local extra = (type(extraData) == "table") and extraData or {}
 
@@ -1418,6 +1643,21 @@ function startWheelInstallState(requiresBrakes, requiresSuspension, extraData)
     WheelOrderInstallState.skipDetach = extra.skipDetach == true
     WheelOrderInstallState.requiresBrakeInstall = requiresBrakes == true
     WheelOrderInstallState.requiresSuspensionInstall = requiresSuspension == true
+    WheelOrderInstallState.allWheels = false
+    WheelOrderInstallState.wheels = nil
+    WheelOrderInstallState.currentWheel = nil
+
+    local vehicle = extra.vehicle
+    if extra.allWheels == true and vehicle and vehicle ~= 0 and DoesEntityExist(vehicle) then
+        local positions = getVehicleWheelPositions(vehicle, extra.partId)
+        -- A vehicle without known wheel bones keeps the one-wheel change.
+        if #positions > 0 then
+            WheelOrderInstallState.allWheels = true
+            WheelOrderInstallState.wheels = positions
+            WheelOrderInstallState.skipDetach = false
+            WheelOrderInstallState.detachedWheelIndexes = nil
+        end
+    end
 
     sendWheelChecklistUpdate()
 end
@@ -1434,6 +1674,9 @@ function clearWheelInstallState(resetCarJack)
     WheelOrderInstallState.requiresBrakeInstall = false
     WheelOrderInstallState.requiresSuspensionInstall = false
     WheelOrderInstallState.checklistVisible = false
+    WheelOrderInstallState.allWheels = false
+    WheelOrderInstallState.wheels = nil
+    WheelOrderInstallState.currentWheel = nil
 
     if resetCarJack and CarJackState.lifted then
         clearCarJackState(true)
