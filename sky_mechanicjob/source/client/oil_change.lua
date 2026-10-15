@@ -294,17 +294,14 @@ local function validateOilPourPreconditions(vehicle)
         }
     end
 
-    if not HasVehicleHood(vehicle) then return true end
-
-    if not IsVehicleDoorDamaged(vehicle, 4) then
-        local angleRatio = GetVehicleDoorAngleRatio(vehicle, 4)
-        if angleRatio <= 0.01 then
-            print("[sky_mechanicjob][oil_change] pour failed: hood is closed")
-            return false, {
-                key = "radial.errors.generic",
-                fallback = tuningLocales.OilChangeNeedOpenHood or "Open the hood from the radial menu before pouring fresh oil."
-            }
-        end
+    -- The hood may have been synced shut again since the Open Hood step (ensureVehicleHoodOpen).
+    if not ensureVehicleHoodOpen(vehicle) then
+        print("[sky_mechanicjob][oil_change] pour failed: hood is closed")
+        return false, {
+            key = "radial.errors.generic",
+            code = "hood_closed",
+            fallback = tuningLocales.OilChangeNeedOpenHood or "Open the hood from the radial menu before pouring fresh oil."
+        }
     end
 
     return true

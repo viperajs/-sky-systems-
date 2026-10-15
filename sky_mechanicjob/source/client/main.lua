@@ -744,6 +744,30 @@ function requestVehicleControl(entity, timeoutMs)
     return NetworkHasControlOfEntity(entity)
 end
 
+local HOOD_OPEN_ANGLE_RATIO = 0.08
+
+-- Door states only sync from the vehicle's network owner, and the mechanic working on a
+-- customer's car is usually not that owner: the hood opened from the radial menu snapped shut
+-- again, and the engine swap or oil pour then refused with "open the hood" while the radial
+-- menu no longer offered it. Takes control, opens the hood and waits for it to swing open.
+-- True when the hood is open, missing or broken off (nothing is in the way).
+function ensureVehicleHoodOpen(vehicle, waitMs)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return false end
+    if not HasVehicleHood(vehicle) or IsVehicleDoorDamaged(vehicle, 4) then return true end
+    if (tonumber(GetVehicleDoorAngleRatio(vehicle, 4)) or 0.0) > HOOD_OPEN_ANGLE_RATIO then return true end
+
+    requestVehicleControl(vehicle, 700)
+    SetVehicleDoorOpen(vehicle, 4, false, false)
+
+    local deadline = GetGameTimer() + (tonumber(waitMs) or 1000)
+    for _ = 1, 40 do
+        if (tonumber(GetVehicleDoorAngleRatio(vehicle, 4)) or 0.0) > HOOD_OPEN_ANGLE_RATIO then return true end
+        if GetGameTimer() >= deadline then break end
+        Wait(50)
+    end
+    return (tonumber(GetVehicleDoorAngleRatio(vehicle, 4)) or 0.0) > HOOD_OPEN_ANGLE_RATIO
+end
+
 function getClosestVehicleWithPoliceFallback(x, y, z, radius, modelHash, flags)
     local lookupFlags = tonumber(flags) or VEHICLE_LOOKUP_FLAGS
     local veh = GetClosestVehicle(x, y, z, radius, modelHash or 0, lookupFlags)

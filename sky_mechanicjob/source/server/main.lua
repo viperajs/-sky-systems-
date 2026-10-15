@@ -774,10 +774,11 @@ local function getInstallablePart(src, orderId, partIndex)
     if type(part) ~= "table" then return nil, "part_not_found" end
     if part.installed == true then return nil, "already_installed" end
 
-    if not Functions.GetNearbyVehicleByPlate(src, order.plate, ORDER_VEHICLE_DISTANCE) then
+    local vehicle = Functions.GetNearbyVehicleByPlate(src, order.plate, ORDER_VEHICLE_DISTANCE)
+    if not vehicle then
         return nil, "vehicle_too_far"
     end
-    return order, nil, items, part
+    return order, nil, items, part, vehicle
 end
 
 Sky.Cb.Register("sky_mechanicjob:orders:prepareInstall", function(source, data)
@@ -811,7 +812,7 @@ Sky.Cb.Register("sky_mechanicjob:orders:completeInstall", function(source, data)
 
     local orderId = math.floor(tonumber(data and data.orderId) or 0)
     local partIndex = math.floor(tonumber(data and data.partIndex) or 0)
-    local order, err, items, part = getInstallablePart(src, orderId, partIndex)
+    local order, err, items, part, vehicle = getInstallablePart(src, orderId, partIndex)
     if not order then return { success = false, error = err } end
 
     local reqItem = type(part.requiredItem) == "string" and part.requiredItem or ""
@@ -848,6 +849,14 @@ Sky.Cb.Register("sky_mechanicjob:orders:completeInstall", function(source, data)
 
     VehicleHistory.Add(order.plate, "part_installed",
         string.format("Installed: %s (Order #%d)", part.label or part.id, orderId), src, part.price or 0)
+
+    -- Mods sync from the vehicle's network owner. When that is another player (the customer
+    -- sitting in the car, or someone standing closer), their client applies the part as well;
+    -- the installer's own apply was otherwise overwritten by the next sync.
+    local owner = tonumber(NetworkGetEntityOwner(vehicle)) or 0
+    if owner > 0 and owner ~= src then
+        TriggerClientEvent("sky_mechanicjob:orders:applyInstalledPart", owner, NetworkGetNetworkIdFromEntity(vehicle), part)
+    end
 
     return { success = true, data = { completed = allInstalled } }
 end)
