@@ -30,6 +30,7 @@ TuningState.customHandlingSelections = TuningState.customHandlingSelections or {
 TuningState.customHandlingSelectionsByNetId = TuningState.customHandlingSelectionsByNetId or {}
 TuningState.customHandlingSelectionsByPlate = TuningState.customHandlingSelectionsByPlate or {}
 TuningState.customHandlingAppliedByNetId = TuningState.customHandlingAppliedByNetId or {}
+TuningState.customHandlingAppliedEntityByNetId = TuningState.customHandlingAppliedEntityByNetId or {}
 TuningState.customHandlingSessionState = TuningState.customHandlingSessionState or nil
 
 -- ── Helpers ──────────────────────────────────────────
@@ -216,6 +217,29 @@ local function applyPresetToHandlingData(baseValues, presetObj)
     end
 end
 
+-- The presets this client applied to the vehicle, by network id. A vehicle streamed in again is
+-- a new entity with the model's own handling: its presets were skipped as applied and the car
+-- drove without its upgrades.
+local function getAppliedSignature(vehicle, netId)
+    if not netId or netId <= 0 then return nil end
+    local sig = TuningState.customHandlingAppliedByNetId[netId]
+    if sig ~= nil and TuningState.customHandlingAppliedEntityByNetId[netId] ~= vehicle then
+        TuningState.customHandlingAppliedByNetId[netId] = nil
+        TuningState.customHandlingAppliedEntityByNetId[netId] = nil
+        if type(TuningState.customHandlingBase) == "table" and TuningState.customHandlingBase.vehicleNetId == netId then
+            TuningState.customHandlingBase = nil
+        end
+        return nil
+    end
+    return sig
+end
+
+local function setAppliedSignature(vehicle, netId, sig)
+    if not netId or netId <= 0 then return end
+    TuningState.customHandlingAppliedByNetId[netId] = sig
+    TuningState.customHandlingAppliedEntityByNetId[netId] = sig ~= nil and vehicle or nil
+end
+
 local function computeTargetHandlingValues(vehicle, selections)
     local values = readCurrentHandlingValues(vehicle)
     local profileKeys = getSortedProfileKeys()
@@ -365,10 +389,7 @@ function CustomTuning.ApplyHandling(vehicle, selections, baseValues)
     ModifyVehicleTopSpeed(vehicle, 1.0)
     updateStateSelections(vehicle, selections)
 
-    local netId = NetworkGetNetworkIdFromEntity(vehicle)
-    if netId and netId > 0 then
-        TuningState.customHandlingAppliedByNetId[netId] = computeSelectionsSignature(selections)
-    end
+    setAppliedSignature(vehicle, NetworkGetNetworkIdFromEntity(vehicle), computeSelectionsSignature(selections))
 
     return true
 end
@@ -386,13 +407,13 @@ function CustomTuning.ApplyPersistedState(vehicle, serverProperties, force)
 
     if force and netId > 0 then
         -- Another resource reset the handling, so the current values are the base again.
-        TuningState.customHandlingAppliedByNetId[netId] = nil
+        setAppliedSignature(vehicle, netId, nil)
         if type(TuningState.customHandlingBase) == "table" and TuningState.customHandlingBase.vehicleNetId == netId then
             TuningState.customHandlingBase = nil
         end
     end
 
-    local appliedSig = netId > 0 and TuningState.customHandlingAppliedByNetId[netId] or nil
+    local appliedSig = getAppliedSignature(vehicle, netId)
     if appliedSig == sig or (appliedSig == nil and not next(selections)) then
         logDebug(string.format("[sky_mechanicjob][custom_tuning] apply skipped: netId=%s signature=%s", tostring(netId), tostring(sig)))
         return true
@@ -458,7 +479,7 @@ function CustomTuning.EnsureBaseline(vehicle)
 
     -- Handling is not networked: the current values only contain presets this client applied itself.
     local rawBase = readCurrentHandlingValues(vehicle)
-    if netId and netId > 0 and TuningState.customHandlingAppliedByNetId[netId] ~= nil then
+    if getAppliedSignature(vehicle, netId) ~= nil then
         rawBase = computeTargetHandlingValues(vehicle, sanitizeSelections(TuningState.customHandlingSelectionsByNetId[netId]))
     end
 
@@ -483,7 +504,7 @@ function CustomTuning.CaptureSessionState(vehicle)
         plate = getNormalizedPlate(vehicle),
         values = readCurrentHandlingValues(vehicle),
         selections = sanitizeSelections(TuningState.customHandlingSelections),
-        appliedSignature = TuningState.customHandlingAppliedByNetId[netId],
+        appliedSignature = getAppliedSignature(vehicle, netId),
         appliedSelections = sanitizeSelections(TuningState.customHandlingSelectionsByNetId[netId])
     }
 end
@@ -527,7 +548,7 @@ function CustomTuning.RestoreSessionState(vehicle)
 
     -- The restored values are the pre-session ones, so restore what this client had applied then.
     if netId and netId > 0 then
-        TuningState.customHandlingAppliedByNetId[netId] = session.appliedSignature
+        setAppliedSignature(vehicle, netId, session.appliedSignature)
         TuningState.customHandlingSelectionsByNetId[netId] = sanitizeSelections(session.appliedSelections)
     end
 

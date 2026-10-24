@@ -189,7 +189,7 @@ local function checkBrakeAndSuspensionBandsChanged()
     end
 
     if applied.brake_pads ~= brakeBand then
-        if brakeBand == 0 or applied.brake_pads == 0 then
+        if brakeBand == 0 or applied.brake_pads ~= 3 then
             return true
         end
     end
@@ -256,7 +256,9 @@ local function fixVehicleTyres(vehicle)
     for _, i in ipairs(SIX_WHEEL_TYRE_INDEXES) do
         SetVehicleTyreFixed(vehicle, i)
     end
-    WearState.tyresPopped = false
+    if vehicle == WearState.vehicle then
+        WearState.tyresPopped = false
+    end
 end
 
 local function findVehicleByPlate(plate)
@@ -337,11 +339,15 @@ local function applyTransmissionLimp(vehicle)
     SetEntityMaxSpeed(vehicle, 30.0 / 3.6)
 end
 
+-- The limp mode's speed cap is lifted, not set to the estimated top speed: that estimate leaves
+-- out the mods, so a tuned car stayed below its top speed after a limp.
+local LIMP_LIFTED_MAX_SPEED = 999.0
+
 local function resetTransmissionLimp(vehicle)
     if not WearState.transmissionLimpActive then return end
     if vehicle ~= 0 and DoesEntityExist(vehicle) then
         SetVehicleHighGear(vehicle, math.max(1, math.floor(tonumber(WearState.transmissionBaseHighGear) or 1)))
-        SetEntityMaxSpeed(vehicle, math.max(1.0, tonumber(WearState.transmissionBaseMaxSpeed) or 1.0))
+        SetEntityMaxSpeed(vehicle, LIMP_LIFTED_MAX_SPEED)
     end
     WearState.transmissionLimpActive = false
     WearState.transmissionBaseHighGear = nil
@@ -362,7 +368,7 @@ local function resetElectricLimp(vehicle)
     if not WearState.electricLimpActive then return end
     if vehicle ~= 0 and DoesEntityExist(vehicle) then
         SetVehicleHighGear(vehicle, math.max(1, math.floor(tonumber(WearState.electricBaseHighGear) or 1)))
-        SetEntityMaxSpeed(vehicle, math.max(1.0, tonumber(WearState.electricBaseMaxSpeed) or 1.0))
+        SetEntityMaxSpeed(vehicle, LIMP_LIFTED_MAX_SPEED)
     end
     WearState.electricLimpActive = false
     WearState.electricBaseHighGear = nil
@@ -419,20 +425,26 @@ local function evaluateWearEffects(vehicle, deltaMs)
     end
 end
 
-local function fullRepairVehicleState(vehicle)
+local function fullRepairVehicleState(vehicle, isSessionVehicle)
     fixVehicleTyres(vehicle)
+    SetVehicleUndriveable(vehicle, false)
+    SetVehicleEngineHealth(vehicle, 1000.0)
+
+    -- Engine damage, limp modes and handling belong to the wear session of the car this player
+    -- drives. Every client hears the repair: on the others it reset their own car's engine
+    -- damage and limp mode, and gave the repaired car their car's brakes and gears.
+    if not isSessionVehicle then return end
+
     resetEngineDamage()
     resetTransmissionLimp(vehicle)
     resetElectricLimp(vehicle)
 
-    SetVehicleUndriveable(vehicle, false)
     SetVehicleReduceGrip(vehicle, false)
     SetVehicleHandbrake(vehicle, false)
 
     SetVehicleEngineTorqueMultiplier(vehicle, 1.0)
     SetVehicleEnginePowerMultiplier(vehicle, 0.0)
-    SetEntityMaxSpeed(vehicle, 999.0)
-    SetVehicleEngineHealth(vehicle, 1000.0)
+    SetEntityMaxSpeed(vehicle, LIMP_LIFTED_MAX_SPEED)
     SetVehicleEngineOn(vehicle, true, true, false)
 
     applyBrakeDegradation(vehicle, 3)
@@ -461,7 +473,9 @@ local function applyWearEffectsToVehicle(vehicle)
     if applied.brake_pads ~= brakeBand then
         local prevBand = applied.brake_pads
         applied.brake_pads = brakeBand
-        if brakeBand == 0 or prevBand == 0 then
+        -- Not known (a repair or newer wear reset the applied bands): the brakes stayed at a
+        -- fifth of their force after new pads, and the next session took that as their base.
+        if brakeBand == 0 or prevBand ~= 3 then
             applyBrakeDegradation(vehicle, brakeBand)
         end
     end
@@ -868,7 +882,9 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
         return
     end
 
-    if sanitizePlate(WearState.plate) == plateStr then
+    -- The car this player drives (its wear session); everybody else only fixes what shows.
+    local isSessionVehicle = sanitizePlate(WearState.plate) == plateStr and targetVeh == WearState.vehicle
+    if isSessionVehicle then
         WearState.appliedBands = {}
         WearState.tyresPopped = false
         updateCriticalWearState()
@@ -878,7 +894,7 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
     local isFullRepair = (payload.fullRepair == true or partStr == "admin_full_repair")
 
     if isFullRepair then
-        fullRepairVehicleState(targetVeh)
+        fullRepairVehicleState(targetVeh, isSessionVehicle)
     else
         if partStr == "tyres" or isPartAffectedByRepair(payload, "tyres") then
             fixVehicleTyres(targetVeh)
@@ -887,14 +903,16 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
 
     if not isFullRepair then
         if isPartAffectedByRepair(payload, "spark_plugs") or isPartAffectedByRepair(payload, "engine_oil") or isPartAffectedByRepair(payload, "coolant") or isPartAffectedByRepair(payload, "transmission_fluid") or isPartAffectedByRepair(payload, "clutch") or isPartAffectedByRepair(payload, "air_filter") then
-            resetEngineDamage()
+            if isSessionVehicle then
+                resetEngineDamage()
+            end
             if GetVehicleEngineHealth(targetVeh) <= 0.0 then
                 SetVehicleEngineHealth(targetVeh, 1000.0)
             end
         end
     end
 
-    if not isFullRepair then
+    if not isFullRepair and isSessionVehicle then
         if isPartAffectedByRepair(payload, "transmission_fluid") or isPartAffectedByRepair(payload, "clutch") then
             resetTransmissionLimp(targetVeh)
         end
@@ -908,13 +926,13 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
         end
     end
 
-    if not isFullRepair then
+    if not isFullRepair and isSessionVehicle then
         if isPartAffectedByRepair(payload, "inverter") then
             resetElectricLimp(targetVeh)
         end
     end
 
-    if sanitizePlate(WearState.plate) == plateStr and not isFullRepair then
+    if isSessionVehicle and not isFullRepair then
         applyWearEffectsToVehicle(targetVeh)
     end
 end)
