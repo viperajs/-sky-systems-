@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/tablet_state.lua") end
 -- =====================================================
 --  sky_jobs_base · source/client/tablet_state.lua
 --  Deobfuscated & Cleaned

@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/wear.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/server/wear.lua
 --  Vehicle Wear Tracking, Mileage Sync & Part Repairs
@@ -527,12 +525,12 @@ end)
 
 -- ── Server Exports ───────────────────────────────────
 
-registerExport("GetVehicleMileage", function(plate)
+exports("GetVehicleMileage", function(plate)
     local entry = loadVehicleWear(plate)
     return entry and entry.mileage or 0.0
 end)
 
-registerExport("SetVehicleMileage", function(plate, mileage)
+exports("SetVehicleMileage", function(plate, mileage)
     local entry = loadVehicleWear(plate)
     if not entry then return false end
     entry.mileage = math.max(0.0, tonumber(mileage) or 0.0)
@@ -541,12 +539,12 @@ registerExport("SetVehicleMileage", function(plate, mileage)
     return true
 end)
 
-registerExport("GetVehicleWear", function(plate)
+exports("GetVehicleWear", function(plate)
     local entry = loadVehicleWear(plate)
     return entry and copyWearMap(entry.wear) or getDefaultWearMap()
 end)
 
-registerExport("SetVehicleWear", function(plate, wearMap)
+exports("SetVehicleWear", function(plate, wearMap)
     local entry = loadVehicleWear(plate)
     if not entry or type(wearMap) ~= "table" then return false end
     for _, part in ipairs(ALL_WEAR_PARTS) do

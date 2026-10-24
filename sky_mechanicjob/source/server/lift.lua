@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/lift.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/lift.lua
 --  Lift Platform Network Attachment Synchronization

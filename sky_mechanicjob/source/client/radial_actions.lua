@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/radial_actions.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/radial_actions.lua
 --  Deobfuscated by Claude
@@ -440,9 +438,9 @@ local function buildRadialActions()
     return { cancelWheelAction }
 end
 
-registerExport("getRadialActions", buildRadialActions)
+exports("getRadialActions", buildRadialActions)
 
-registerExport("triggerRadialMenuAction", function(actionId)
+exports("triggerRadialMenuAction", function(actionId)
     if actionId == "access_lift" then
         if type(openNearestLiftControlUi) ~= "function" then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.LiftNotNearby) or "No lift nearby." }

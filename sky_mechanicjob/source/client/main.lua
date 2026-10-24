@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/main.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/main.lua
 --  Deobfuscated by Claude
@@ -562,9 +561,8 @@ local CREATOR_POINT_INTERACTIONS = {
     engine_swap = "engine_hoist_location"
 }
 
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 
-registerExport("GetCreatorTypeDefinitions", function(creatorKey)
+exports("GetCreatorTypeDefinitions", function(creatorKey)
     if creatorKey ~= nil and creatorKey ~= "workshopcreator" then
         return {}
     end

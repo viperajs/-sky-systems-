@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/wardrobe.lua") end
 -- =====================================================
 --  sky_jobs_base · source/server/wardrobe.lua
 --  Wardrobe & Outfits Database & Server Callbacks

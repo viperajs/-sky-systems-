@@ -240,7 +240,6 @@ local function newWorld(opts)
         env.json = json
         env.vector3 = vec
         env.type = function(value) return getmetatable(value) == vec_mt and "vector3" or type(value) end
-        env.SkyDiagnostics = false
         env.print = function() end
         env.GetCurrentResourceName = function() return "sky_mechanicjob" end
         env.IsDuplicityVersion = function() return side == "server" end
@@ -677,7 +676,6 @@ do
             return stub
         end })
         env._G = env
-        env.SkyDiagnostics = false
         env.Config = { DutySystem = dutySystem, MultiJob = { defaultJob = "unemployed" } }
         env.Sky_Jobs = nil
         env.exports = setmetatable({}, { __call = function() end })

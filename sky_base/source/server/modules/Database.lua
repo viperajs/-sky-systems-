@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/server/modules/Database.lua") end
 -- =====================================================
 --  sky_base · source/server/modules/Database.lua
 --  Server-Side Database Query Helpers (Sky.DB)

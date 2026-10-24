@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/shared/modules/Table.lua") end
 -- =====================================================
 --  sky_base · source/shared/modules/Table.lua
 --  Deobfuscated & Cleaned

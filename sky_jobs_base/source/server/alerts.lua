@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/alerts.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/server/alerts.lua
 --  Panic, ping & dispatch alerts, map feeds, heli spotlights,
@@ -400,7 +398,7 @@ end
 
 --- Creates a dispatch for on-duty members of data.jobs (tablet map, map blip and incident notification).
 --- data = { jobs = { "police" }, title, message, coords, code?, blip = { sprite?, color? }?, location? }
-registerExport("CreateDispatch", function(data)
+exports("CreateDispatch", function(data)
     if type(data) ~= "table" then return false end
     local coords = toCoords(data.coords)
     local title = cleanText(data.title, 80, nil)

@@ -1,13 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/nui_registry.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
-local function logDiagnostics(level, event, details)
-    if SkyDiagnostics and SkyDiagnostics.Log then
-        SkyDiagnostics.Log(level, event, details)
-    elseif level == "warn" or level == "error" then
-        local ok, message = pcall(json.encode, details or {})
-        print(("[sky_jobs_base][%s][%s] %s"):format(level:upper(), event, ok and message or "Diagnostics unavailable"))
-    end
-end
 -- =====================================================
 --  sky_jobs_base · source/client/nui_registry.lua
 --  Captures NUI callback handlers for cross-resource proxy
@@ -24,13 +14,12 @@ local registeredHandlers = {}
 
 RegisterNUICallback = function(name, handler)
     if type(name) == "string" and type(handler) == "function" then
-        if SkyDiagnostics and SkyDiagnostics.WrapNui then handler = SkyDiagnostics.WrapNui(name, handler) end
         registeredHandlers[name] = handler
     end
     return nativeRegisterNUICallback(name, handler)
 end
 
-registerExport("RunNuiCallback", function(name, data, cb)
+exports("RunNuiCallback", function(name, data, cb)
     -- cb comes from another resource (sky_mechanicjob's bridge) as a callable table.
     local cbMeta = type(cb) == "table" and getmetatable(cb) or nil
     local isCallable = type(cb) == "function" or (type(cbMeta) == "table" and cbMeta.__call ~= nil)
@@ -40,17 +29,15 @@ registerExport("RunNuiCallback", function(name, data, cb)
 
     local handler = registeredHandlers[name]
     if not handler then
-        logDiagnostics("error", "nui.proxy_unregistered", { name = name })
         cb({ success = false, error = "callback_not_registered" })
         return false
     end
 
-    logDiagnostics("debug", "nui.proxy_dispatch", { name = name })
     handler(type(data) == "table" and data or {}, cb)
     return true
 end)
 
-registerExport("GetRegisteredNuiCallbacks", function()
+exports("GetRegisteredNuiCallbacks", function()
     local names = {}
     for name in pairs(registeredHandlers) do
         names[#names + 1] = name

@@ -46,7 +46,6 @@ local function newClient(bones, wheelCount)
         return stub
     end })
     env._G = env
-    env.SkyDiagnostics = false
     env.print = function() end
     env.CreateThread = function() end
     env.Wait = function() end

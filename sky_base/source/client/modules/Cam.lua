@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/client/modules/Cam.lua") end
 -- =====================================================
 --  sky_base · source/client/modules/Cam.lua
 --  Deobfuscated & Cleaned

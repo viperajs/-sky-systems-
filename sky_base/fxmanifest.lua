@@ -9,7 +9,6 @@ version '1.26.0'
 escrow_ignore 'config/**'
 
 shared_scripts {
-    'source/diagnostics.lua',
     'config/init.lua',
     'config/config.lua',
     'config/currency.lua',
@@ -59,7 +58,6 @@ client_scripts {
 }
 
 files {
-    'source/diagnostics.lua',
     'source/import.lua',
     'source/client/modules/*.lua',
     'source/shared/modules/*.lua',

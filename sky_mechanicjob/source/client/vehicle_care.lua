@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/vehicle_care.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/vehicle_care.lua
 --  Deobfuscated & Cleaned
@@ -490,7 +488,7 @@ local function fullAdminVehicleRepair(vehicle)
     end)
 end
 
-registerExport("AdminRepairVehicle", function(targetVehicle)
+exports("AdminRepairVehicle", function(targetVehicle)
     local vehicle = resolveTargetVehicle(targetVehicle)
     if vehicle == 0 then return false, "no_vehicle" end
 

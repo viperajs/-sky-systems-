@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/radial_menu.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/radial_menu.lua
 --  Deobfuscated & Cleaned
@@ -999,19 +997,19 @@ AddEventHandler("onResourceStop", function(resName)
     end
 end)
 
-registerExport("openRadialMenu", openRadialMenu)
-registerExport("getRadialActions", buildAllRadialActions)
+exports("openRadialMenu", openRadialMenu)
+exports("getRadialActions", buildAllRadialActions)
 
-registerExport("getRadialAction", function(actionId)
+exports("getRadialAction", function(actionId)
     return getRadialActionById(actionId)
 end)
 
-registerExport("isRadialMenuActionAvailable", function(actionId)
+exports("isRadialMenuActionAvailable", function(actionId)
     if type(actionId) ~= "string" then return false end
     local act = exports[GetCurrentResourceName()]:getRadialAction(actionId)
     return act ~= nil
 end)
 
-registerExport("triggerRadialMenuAction", function(actionId, context)
+exports("triggerRadialMenuAction", function(actionId, context)
     return handleActionExecutionResult(actionId, false, context)
 end)

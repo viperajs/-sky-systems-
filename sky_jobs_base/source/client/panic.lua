@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/panic.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/panic.lua
 --  Deobfuscated & Cleaned
@@ -473,7 +471,7 @@ end
 
 registerAlertKeybind("ping", "l", "Trigger location ping")
 
-registerExport("triggerPanicAlert", function()
+exports("triggerPanicAlert", function()
     triggerAlert("panic")
     return true
 end)

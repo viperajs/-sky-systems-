@@ -25,7 +25,6 @@ local env = setmetatable({}, { __index = function(_, key)
     return stub
 end })
 env._G = env
-env.SkyDiagnostics = false
 env.print = function() end
 env.CreateThread = function() end
 env.GetGameBuildNumber = function() return 3258 end

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/antilag.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/antilag.lua
 --  Deobfuscated & Cleaned

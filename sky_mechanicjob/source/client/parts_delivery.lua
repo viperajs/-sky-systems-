@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/parts_delivery.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/parts_delivery.lua
 --  Deobfuscated & Cleaned
@@ -971,7 +969,7 @@ local function clearHeldDeliveryCarry()
 end
 
 -- ─── Export: Deposit Carry Item To Storage ──────────
-registerExport("TryDepositCarryItemToStorage", function(stationId)
+exports("TryDepositCarryItemToStorage", function(stationId)
     -- Only a part carried out of a delivery goes to storage; parts held for an order
     -- install keep the normal storage interaction.
     local heldItem = OrderInstallState and OrderInstallState.heldCarryItem or nil

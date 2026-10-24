@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/db_migrate.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/db_migrate.lua
 --  Automatic Database Schema Migrations & Table Init

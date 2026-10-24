@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/dispatch.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/dispatch.lua
 --  Deobfuscated & Cleaned
@@ -12,7 +10,7 @@ local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 ---@param coords? table|vector3
 ---@param extraData? table
 ---@return boolean
-registerExport("createDispatch", function(title, message, jobKey, coords, extraData)
+exports("createDispatch", function(title, message, jobKey, coords, extraData)
     TriggerServerEvent("sky_jobs_base:dispatch:create", title, message, jobKey, coords, extraData)
     return true
 end)

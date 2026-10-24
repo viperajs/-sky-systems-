@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/wheel_damage.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/wheel_damage.lua
 --  Deobfuscated & Cleaned
@@ -905,7 +903,7 @@ AddEventHandler("onResourceStop", function(resName)
 end)
 
 -- skipServer: the caller's server-side repair already cleared the wheel state.
-registerExport("FixWheelDamage", function(targetVehicle, skipServer)
+exports("FixWheelDamage", function(targetVehicle, skipServer)
     local veh = tonumber(targetVehicle) or targetVehicle
     if not veh then veh = getDrivenVehicle() end
     if veh == 0 or not DoesEntityExist(veh) then return false end

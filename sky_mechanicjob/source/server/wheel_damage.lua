@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/wheel_damage.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/wheel_damage.lua
 --  Wheel Damage State Bag & Physical Tyre Sync

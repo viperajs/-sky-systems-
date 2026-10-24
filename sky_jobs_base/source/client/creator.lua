@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/creator.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/creator.lua
 --  Deobfuscated & Cleaned
@@ -1184,13 +1182,13 @@ local function triggerCustomSetPointHandlers(data)
     return nil
 end
 
-registerExport("registerSetPointHandler", function(name, fn)
+exports("registerSetPointHandler", function(name, fn)
     if type(name) ~= "string" or name == "" or type(fn) ~= "function" then return false end
     registeredSetPointHandlers[name] = fn
     return true
 end)
 
-registerExport("unregisterSetPointHandler", function(name)
+exports("unregisterSetPointHandler", function(name)
     if type(name) ~= "string" or name == "" then return false end
     registeredSetPointHandlers[name] = nil
     return true

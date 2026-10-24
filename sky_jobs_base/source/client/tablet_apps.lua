@@ -1,12 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/tablet_apps.lua") end
-local function logDiagnostics(level, event, details)
-    if SkyDiagnostics and SkyDiagnostics.Log then
-        SkyDiagnostics.Log(level, event, details)
-    elseif level == "warn" or level == "error" then
-        local ok, message = pcall(json.encode, details or {})
-        print(("[sky_jobs_base][%s][%s] %s"):format(level:upper(), event, ok and message or "Diagnostics unavailable"))
-    end
-end
 -- =====================================================
 --  sky_jobs_base · source/client/tablet_apps.lua
 --  Deobfuscated & Cleaned
@@ -187,7 +178,6 @@ local function launchAppDirect(app, key, route, extraOpts)
 
     local isMechanicApp = (type(app.clientEvent) == "string" and app.clientEvent:find("^sky_mechanicjob:") ~= nil)
         or (type(app.serverEvent) == "string" and app.serverEvent:find("^sky_mechanicjob:") ~= nil)
-    logDiagnostics("info", "tablet.app_owner", { name = targetKey, route = targetRoute, owner = isMechanicApp and "sky_mechanicjob" or "sky_jobs_base" })
 
     if not isMechanicApp then
         SetNuiFocus(true, true)
@@ -303,7 +293,6 @@ RegisterNUICallback("tablet:launchApp", function(data, cb)
 
     local isMechanicApp = (type(app.clientEvent) == "string" and app.clientEvent:find("^sky_mechanicjob:") ~= nil)
         or (type(app.serverEvent) == "string" and app.serverEvent:find("^sky_mechanicjob:") ~= nil)
-    logDiagnostics("info", "tablet.app_owner", { name = normKey, route = defaultRoute, owner = isMechanicApp and "sky_mechanicjob" or "sky_jobs_base" })
 
     if isMechanicApp then
         SetNuiFocus(false, false)

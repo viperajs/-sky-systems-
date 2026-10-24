@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/storage.lua") end
 -- =====================================================
 --  sky_jobs_base · source/server/storage.lua
 --  Storage Stashes, Trunk Props & Lockers Callbacks

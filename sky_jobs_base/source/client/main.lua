@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/main.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/main.lua
 --  Deobfuscated & Cleaned
@@ -8,7 +6,7 @@ local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 Sky_Jobs = Sky_Jobs or {}
 Sky_Jobs.Tablet = Sky_Jobs.Tablet or {}
 
-registerExport("Get", function()
+exports("Get", function()
     return Sky_Jobs
 end)
 
@@ -216,11 +214,11 @@ function Sky_Jobs.Tablet.OpenOnJobsBase(appKey, route, options)
     return true
 end
 
-registerExport("OpenTablet", function(appKey, route, options)
+exports("OpenTablet", function(appKey, route, options)
     return Sky_Jobs.Tablet.Open(appKey, route, options)
 end)
 
-registerExport("OpenOnJobsBase", function(appKey, route, options)
+exports("OpenOnJobsBase", function(appKey, route, options)
     return Sky_Jobs.Tablet.OpenOnJobsBase(appKey, route, options)
 end)
 

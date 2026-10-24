@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/tablet_apps.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/server/tablet_apps.lua
 --  Server-Side Tablet Apps Registry & Callbacks
@@ -16,7 +14,7 @@ function Sky_Jobs.RegisterTabletApps(resourceName, apps)
     Sky_Jobs.RegisteredTabletApps[resourceName] = apps
 end
 
-registerExport("RegisterTabletApps", function(resourceName, apps)
+exports("RegisterTabletApps", function(resourceName, apps)
     Sky_Jobs.RegisterTabletApps(resourceName, apps)
 end)
 

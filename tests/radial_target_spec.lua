@@ -18,7 +18,6 @@ local function newClient(skyBase)
         return stub
     end })
     env._G = env
-    env.SkyDiagnostics = false
     env.print = function() end
     env.IsDuplicityVersion = function() return false end
     env.GetCurrentResourceName = function() return "sky_jobs_base" end

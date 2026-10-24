@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/client/modules/Callbacks.lua") end
 -- =====================================================
 --  sky_base · source/client/modules/Callbacks.lua
 --  Deobfuscated & Cleaned
@@ -15,7 +14,6 @@ local currentRequestId = 0
 ---@param name string
 ---@param callbackFunction function
 function Sky.Cb.Register(name, callbackFunction)
-    if SkyDiagnostics then callbackFunction = SkyDiagnostics.Wrap("callback", name, callbackFunction) end
     assert(name ~= nil, 'Parameter "name" must be a string!')
     callbacks[name] = callbackFunction
 end

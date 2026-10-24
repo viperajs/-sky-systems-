@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/garage.lua") end
 -- =====================================================
 --  sky_jobs_base · source/server/garage.lua
 --  Job Garage Vehicles & Catalog Callbacks

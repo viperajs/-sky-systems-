@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/engine_swap.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/engine_swap.lua
 --  Deobfuscated & Cleaned

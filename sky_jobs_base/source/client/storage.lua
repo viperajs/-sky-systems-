@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/storage.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/storage.lua
 --  Deobfuscated & Cleaned
@@ -1351,7 +1349,7 @@ AddEventHandler("onResourceStop", function(resName)
     end
 end)
 
-registerExport("getNearbyTrunkPropTarget", function(maxDist)
+exports("getNearbyTrunkPropTarget", function(maxDist)
     local target = getClosestWorldProp(maxDist)
     if not target then return nil end
     return {
@@ -1360,7 +1358,7 @@ registerExport("getNearbyTrunkPropTarget", function(maxDist)
     }
 end)
 
-registerExport("removeNearbyTrunkProp", function(maxDist)
+exports("removeNearbyTrunkProp", function(maxDist)
     local target = getClosestWorldProp(maxDist)
     if not target then
         return false, "radial.actions.removeProp.states.noNearby"
@@ -1372,11 +1370,11 @@ registerExport("removeNearbyTrunkProp", function(maxDist)
     return true
 end)
 
-registerExport("startTrunkPropPlacement", function(item, options)
+exports("startTrunkPropPlacement", function(item, options)
     return startTrunkPropPlacement(item, options)
 end)
 
-registerExport("getStreamedTrunkProps", function()
+exports("getStreamedTrunkProps", function()
     local list = {}
     for propId, handle in pairs(spawnedPropHandles) do
         if handle and DoesEntityExist(handle) then
@@ -1392,7 +1390,7 @@ registerExport("getStreamedTrunkProps", function()
     return list
 end)
 
-registerExport("registerExternalTrunkVehicle", function(vehicle)
+exports("registerExternalTrunkVehicle", function(vehicle)
     if not (vehicle and vehicle ~= 0 and DoesEntityExist(vehicle)) then return false end
     local modelHash = GetEntityModel(vehicle)
     if modelHash then
@@ -1402,7 +1400,7 @@ registerExport("registerExternalTrunkVehicle", function(vehicle)
     return true
 end)
 
-registerExport("unregisterExternalTrunkVehicle", function(vehicle)
+exports("unregisterExternalTrunkVehicle", function(vehicle)
     if not (vehicle and vehicle ~= 0 and DoesEntityExist(vehicle)) then return false end
     local netId = NetworkGetNetworkIdFromEntity(vehicle)
     if not netId or netId == 0 then return false end

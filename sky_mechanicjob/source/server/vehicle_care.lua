@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/vehicle_care.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/vehicle_care.lua
 --  Vehicle Care, Cleaning, Waxing & Admin Full Repair

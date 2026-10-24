@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/main.lua") end
 -- =====================================================
 --  sky_jobs_base · source/server/main.lua
 --  Core Server Callbacks & Duty Synchronization

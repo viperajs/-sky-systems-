@@ -32,7 +32,6 @@ local function newEnv(resource, side)
         if mt and mt.__name == "vector3" then return "vector3" end
         return type(value)
     end
-    env.SkyDiagnostics = false
     env.GetCurrentResourceName = function() return resource end
     env.IsDuplicityVersion = function() return side == "server" end
     env.GetResourceState = function(name) return (f.stopped and f.stopped[name]) and "stopped" or "started" end

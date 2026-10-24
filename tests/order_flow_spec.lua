@@ -208,7 +208,6 @@ local function newWorld(opts)
         env.vector3 = vec
         env.vec3 = vec
         env.type = function(value) return getmetatable(value) == vec_mt and "vector3" or type(value) end
-        env.SkyDiagnostics = false
         env.print = function() end
         env.GetCurrentResourceName = function() return "sky_mechanicjob" end
         env.IsDuplicityVersion = function() return side == "server" end

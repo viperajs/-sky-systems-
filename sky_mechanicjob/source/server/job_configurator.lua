@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/job_configurator.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/job_configurator.lua
 --  Settings schema of the shared /jobconfig UI
@@ -583,7 +582,6 @@ local function buildSchema()
     }
 end
 
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 
 -- Built while Config still holds the config.lua values: server/pricing.lua applies the saved
 -- settings over Config later, and those must not become the defaults.
@@ -593,6 +591,6 @@ if not schemaBuilt then
     schema = nil
 end
 
-registerExport("GetJobConfiguratorSchema", function()
+exports("GetJobConfiguratorSchema", function()
     return schema
 end)

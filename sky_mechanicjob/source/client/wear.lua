@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/wear.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/wear.lua
 --  Deobfuscated by Claude
@@ -921,7 +919,7 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
     end
 end)
 
-registerExport("GetVehicleMileage", function(vehicleOrPlate)
+exports("GetVehicleMileage", function(vehicleOrPlate)
     local resolvedPlate = ""
     if vehicleOrPlate == nil then
         if WearState.active then

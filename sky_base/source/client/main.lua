@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/client/main.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_base · source/client/main.lua
 --  Deobfuscated & Cleaned
@@ -8,45 +6,45 @@ local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- -----------------------------------------------------
 --  EXPORTS
 -- -----------------------------------------------------
-registerExport("Get", function()
+exports("Get", function()
     return Sky
 end)
 
 -- The target system in use after auto-detection ("ox", "qb" or "none"). sky_jobs_base loads
 -- config/target for its job actions (workshop lift, engine hoist, ...) and needs the same one.
-registerExport("GetTargetSystem", function()
+exports("GetTargetSystem", function()
     return Sky.Config.target
 end)
 
-registerExport("FormatCurrency", function(amount, currency)
+exports("FormatCurrency", function(amount, currency)
     return Sky.Currency.Format(amount, currency)
 end)
 
-registerExport("GetCurrencyFormatter", function(currency)
+exports("GetCurrencyFormatter", function(currency)
     return Sky.Currency.GetFormatter(currency)
 end)
 
-registerExport("GetCurrencyNuiConfig", function()
+exports("GetCurrencyNuiConfig", function()
     return Sky.Currency.GetNuiConfig()
 end)
 
-registerExport("GetDefaultCurrency", function()
+exports("GetDefaultCurrency", function()
     return Sky.Currency.GetDefaultCurrency()
 end)
 
-registerExport("FormatCurrencyAmount", function(amount, currency)
+exports("FormatCurrencyAmount", function(amount, currency)
     return Sky.Currency.FormatCurrencyAmount(amount, currency)
 end)
 
-registerExport("RegisterCustomPhoneApp", function(data)
+exports("RegisterCustomPhoneApp", function(data)
     return Sky.Functions.RegisterCustomPhoneApp(data)
 end)
 
-registerExport("SendCustomPhoneAppMessage", function(appName, messageData)
+exports("SendCustomPhoneAppMessage", function(appName, messageData)
     return Sky.Functions.SendCustomPhoneAppMessage(appName, messageData)
 end)
 
-registerExport("SendPhoneAppNotification", function(data)
+exports("SendPhoneAppNotification", function(data)
     return Sky.Functions.SendPhoneAppNotification(data)
 end)
 
@@ -778,11 +776,11 @@ end
 -- Other resources create their points through these exports. Reaching the functions
 -- through exports.sky_base:Get() hands them over as function references, which the
 -- import wrappers rejected with a type(...) == "function" check, so no point was made.
-registerExport("CreateInteractionPoint", function(...)
+exports("CreateInteractionPoint", function(...)
     return Sky.CreateInteractionPoint(...)
 end)
 
-registerExport("DeleteInteractionPoint", function(...)
+exports("DeleteInteractionPoint", function(...)
     return Sky.DeleteInteractionPoint(...)
 end)
 
