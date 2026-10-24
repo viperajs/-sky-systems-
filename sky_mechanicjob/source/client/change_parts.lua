@@ -440,3 +440,11 @@ function runEngineSwapInstallMinigame(vehicle, partData)
 end
 
 TuningMinigames.Register("engine_swap", runEngineSwapInstallMinigame)
+
+-- Stopped mid-swap, the minigame never returns to stop the looping repair pose. (The minigame
+-- state is already cancelled by then: spray_paint.lua's stop handler runs first.)
+AddEventHandler("onResourceStop", function(resName)
+    if resName == GetCurrentResourceName() and IsEntityPlayingAnim(PlayerPedId(), ANIM_REPAIR_DICT, ANIM_REPAIR_CLIP, 3) then
+        stopEngineSwapAnim()
+    end
+end)

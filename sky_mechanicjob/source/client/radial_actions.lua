@@ -186,6 +186,11 @@ local function buildRadialActions()
             isActionAllowedNear = isNearAnyEngineHoistForOrderInstall()
         end
 
+        -- Also with the hoist pushed to the front of the car and the mechanic behind it.
+        if nextAction == "attach_engine_hoist" then
+            isActionAllowedNear = canAttachEngineHoistToVehicle(veh)
+        end
+
         if nextAction == "install_stance_wheel" then
             local liftState = getWorkshopLiftStateForVehicle(veh)
             if liftState and liftState.raised then
@@ -584,12 +589,8 @@ local function runRadialMenuAction(actionId)
             return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.") }
         end
 
-        local pedCoords = GetEntityCoords(PlayerPedId())
-        local vehCoords = GetEntityCoords(veh)
-        if #(pedCoords - vehCoords) > 4.0 then
-            return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallTooFar) or "Move closer to the connected order vehicle." }
-        end
-
+        -- The distance is checked by attachEngineHoistToVehicleFront: next to the car or with
+        -- the hoist at its front.
         local nextAction = nextSimpleInstallActionId()
         if nextAction ~= "attach_engine_hoist" then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallWrongStep) or "Complete the current install step first." }
@@ -639,9 +640,12 @@ local function runRadialMenuAction(actionId)
         local isOilChange = (flow == "oil_change")
         local isFluidRefill = (flow == "fluid_refill")
 
+        -- The hood shut again after the hoist was attached: back to the swap, not to Take Engine
+        -- Hoist at its now empty spot.
+        local takeHoistNext = isEngineSwap and doesActiveEngineInstallUseHoist() and not EngineHoistActiveState.attachedToVehicle
         local nextStepName = "install"
         if isEngineSwap then
-            nextStepName = doesActiveEngineInstallUseHoist() and "take_hoist" or "engine_swap"
+            nextStepName = takeHoistNext and "take_hoist" or "engine_swap"
         elseif isOilChange or isFluidRefill then
             nextStepName = "pour_oil"
         end
@@ -652,8 +656,12 @@ local function runRadialMenuAction(actionId)
             sendSimpleInstallChecklistUpdate()
 
             if isEngineSwap then
-                local fallbackMsg = doesActiveEngineInstallUseHoist() and "Hood is missing/damaged, continue by taking the engine hoist." or "Hood is missing/damaged, continue with the engine swap."
-                notify((tuningLocales and tuningLocales.EngineSwapHoodAlreadyOpen) or fallbackMsg, "info")
+                -- The hoist text was never shown: every locale has EngineSwapHoodAlreadyOpen.
+                if takeHoistNext then
+                    notify((tuningLocales and tuningLocales.EngineSwapHoodAlreadyOpenTakeHoist) or "The engine bay is open. Take the engine hoist from its spot.", "info")
+                else
+                    notify((tuningLocales and tuningLocales.EngineSwapHoodAlreadyOpen) or "Hood is missing/damaged, continue with the engine swap.", "info")
+                end
             elseif isOilChange then
                 notify((tuningLocales and tuningLocales.OilChangeHoodAlreadyOpen) or "Hood is missing/damaged, continue by pouring fresh oil.", "info")
             elseif isFluidRefill then
@@ -665,14 +673,21 @@ local function runRadialMenuAction(actionId)
             return true
         end
 
-        -- With network control, so the open hood syncs instead of snapping shut again.
-        ensureVehicleHoodOpen(veh)
+        -- With network control, so the open hood syncs instead of snapping shut again. The swap
+        -- needs it open and checks again: "Hood opened" and moving on looped between Open Hood
+        -- and the swap when it could not be opened (someone in the car).
+        if not ensureVehicleHoodOpen(veh) and isEngineSwap then
+            return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallHoodOpenFailed) or "The hood could not be opened. Ask anyone in the car to get out, then try again." }
+        end
         OrderInstallState.simpleStep = nextStepName
         sendSimpleInstallChecklistUpdate()
 
         if isEngineSwap then
-            local successMsg = doesActiveEngineInstallUseHoist() and "Hood opened. Take the engine hoist." or "Hood opened. Start the engine swap."
-            notify((tuningLocales and tuningLocales.EngineSwapHoodOpened) or successMsg, "success")
+            if takeHoistNext then
+                notify((tuningLocales and tuningLocales.EngineSwapHoodOpenedTakeHoist) or "Hood opened. Take the engine hoist from its spot.", "success")
+            else
+                notify((tuningLocales and tuningLocales.EngineSwapHoodOpened) or "Hood opened. Start the engine swap.", "success")
+            end
         elseif isOilChange then
             notify((tuningLocales and tuningLocales.OilChangeHoodOpened) or "Hood opened. Pour fresh oil into the engine.", "success")
         elseif isFluidRefill then
@@ -1196,6 +1211,15 @@ end
 
 local installPrompt = { text = nil, key = "G", refreshAt = 0 }
 
+-- The engine hoist steps are done away from the car: taking it at its spot, and attaching it
+-- from behind it at the bumper. The prompt only showed next to the car.
+local function isAtEngineHoistStep(veh)
+    local step = nextSimpleInstallActionId()
+    if step == "take_engine_hoist" then return isNearAnyEngineHoistForOrderInstall() end
+    if step == "attach_engine_hoist" then return canAttachEngineHoistToVehicle(veh) end
+    return false
+end
+
 --- Shows the radial menu prompt for the next install step this frame; returns whether it did.
 function showOrderInstallStepPrompt()
     if not OrderInstallState.active or OrderInstallState.finalizing or TuningState.active or IsNuiFocused() then
@@ -1203,8 +1227,10 @@ function showOrderInstallStepPrompt()
     end
 
     local veh = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
-    if veh == 0 or not DoesEntityExist(veh)
-        or #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(veh)) > INSTALL_PROMPT_DISTANCE then
+    if veh == 0 or not DoesEntityExist(veh) then
+        return false
+    end
+    if #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(veh)) > INSTALL_PROMPT_DISTANCE and not isAtEngineHoistStep(veh) then
         return false
     end
 

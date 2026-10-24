@@ -447,6 +447,38 @@ function isNearAnyEngineHoistForOrderInstall(maxDist)
     return point ~= nil
 end
 
+--- Whether this workshop has an Engine Hoist location the player may use.
+function hasUsableEngineHoistPoint()
+    for _, pt in ipairs(EngineHoistState.pointList) do
+        if canUseHoistPoint(pt) then return true end
+    end
+    return false
+end
+
+-- The hoist goes this far in front of the bumper.
+local HOIST_FRONT_GAP = 0.95
+-- How close the pushed hoist must be to that spot to attach it.
+local HOIST_ATTACH_REACH = 2.0
+
+local function getHoistAttachOffset(vehicle)
+    local minDim, maxDim = GetModelDimensions(GetEntityModel(vehicle))
+    return maxDim.y + HOIST_FRONT_GAP, minDim.z
+end
+
+--- Whether the pushed hoist can be attached: the mechanic next to the car, or the hoist at its
+--- front. Pushed head-on, the hoist reaches the bumper with the mechanic behind it, more than
+--- 4 m from the car's centre: Attach was only offered once the hoist was pushed into the car.
+function canAttachEngineHoistToVehicle(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return false end
+    if #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(vehicle)) <= 4.0 then return true end
+
+    local hoist = EngineHoistActiveState.hoistProp
+    if not EngineHoistActiveState.active or hoist == 0 or not DoesEntityExist(hoist) then return false end
+    local spot = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, (getHoistAttachOffset(vehicle)), 0.0)
+    local hoistCoords = GetEntityCoords(hoist)
+    return #(vector3(hoistCoords.x, hoistCoords.y, 0.0) - vector3(spot.x, spot.y, 0.0)) <= HOIST_ATTACH_REACH
+end
+
 function attachEngineHoistToVehicleFront(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
         Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: vehicle missing")
@@ -466,9 +498,7 @@ function attachEngineHoistToVehicleFront(vehicle)
         }
     end
 
-    local pedCoords = GetEntityCoords(PlayerPedId())
-    local vehCoords = GetEntityCoords(vehicle)
-    if #(pedCoords - vehCoords) > 4.0 then
+    if not canAttachEngineHoistToVehicle(vehicle) then
         Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: player is too far from vehicle")
         return false, {
             key = "radial.errors.generic",
@@ -481,9 +511,7 @@ function attachEngineHoistToVehicleFront(vehicle)
     SetEntityCompletelyDisableCollision(hoistObj, false, false)
     SetEntityCollision(hoistObj, true, true)
 
-    local minDim, maxDim = GetModelDimensions(GetEntityModel(vehicle))
-    local offsetY = maxDim.y + 0.95
-    local offsetZ = minDim.z
+    local offsetY, offsetZ = getHoistAttachOffset(vehicle)
 
     AttachEntityToEntity(hoistObj, vehicle, 0, 0.0, offsetY, offsetZ, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
     EngineHoistActiveState.attachedToVehicle = true

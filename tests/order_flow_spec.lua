@@ -153,7 +153,7 @@ local MODULE_GLOBALS = {
     VehicleHistory = true, VehiclePersistence = true, Sky_Jobs = true, CustomTuning = true, StanceKit = true,
     AntiLag = true, TwoStep = true, OrderInstallState = true, WheelOrderInstallState = true,
     OrderTabletState = true, TuningState = true, tuningLocales = true, nuiLocales = true, locales = true,
-    MechanicWorkshopData = true, MechanicTheft = true,
+    MechanicWorkshopData = true, MechanicTheft = true, TuningMinigames = true,
 }
 
 local VEH, NET, PED = 9, 109, 1
@@ -1312,6 +1312,84 @@ do
     assert(W.actions().take_engine_hoist and W.act("take_engine_hoist"), "the hoist is taken at its new spot")
 end
 
+-- 12b. The hoist pushed head-on to the front of the car is at its spot while the mechanic behind
+--      it is 5 m from the car's centre: Attach was only offered once the hoist was pushed into
+--      the bumper. The step prompt shows there and at the hoist's own spot, and Open Hood says
+--      to take the hoist (every locale's "Start the engine swap" was shown).
+do
+    local W = hoistWorld()
+    local C = W.client
+    assert(W.lastNotification() == "Hood opened. Take the engine hoist from its spot.", tostring(W.lastNotification()))
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    C.help = nil
+    assert(C.env.showOrderInstallStepPrompt() == true and C.help.text:find("Take Engine Hoist"), "prompt at the hoist's spot")
+    assert(W.act("take_engine_hoist"))
+
+    C.env.GetEntityForwardVector = function() return vec(0, -1, 0) end
+    coroutine.resume(W.followLoop)
+    W.player.pos = vec(0.0, 5.1, 0.0)
+    coroutine.resume(W.followLoop)
+    local hoist = W.hoistState.hoistProp
+    assert(#(W.objects[hoist].pos - vec(0.0, 3.35, 0.0)) < 0.01, "the hoist at the front of the car")
+    assert(W.actions().attach_engine_hoist, "Attach offered with the hoist at the bumper")
+    C.help = nil
+    W.clock = W.clock + 1000 -- the prompt text is refreshed twice a second
+    assert(C.env.showOrderInstallStepPrompt() == true and C.help.text:find("Attach Engine Hoist"), "prompt behind the hoist")
+    assert(W.act("attach_engine_hoist"))
+    assert(W.objects[hoist].attachedTo == VEH, "attached")
+
+    -- Pushed somewhere else, far from the car: not attached.
+    local W2 = hoistWorld()
+    W2.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W2.act("take_engine_hoist"))
+    W2.player.pos = vec(9.0, 0.0, 0.0)
+    coroutine.resume(W2.followLoop)
+    coroutine.resume(W2.followLoop)
+    assert(not W2.actions().attach_engine_hoist and not W2.act("attach_engine_hoist"), "too far from the car")
+end
+
+-- 12c. The hood shuts after the hoist was attached: Open Hood leads back to the swap. It sent the
+--      mechanic to Take Engine Hoist at its now empty spot. A hood that cannot be opened (someone
+--      in the car) says so instead of "Hood opened"; the radial menu kept offering the swap.
+do
+    local W = hoistWorld()
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.act("take_engine_hoist"))
+    W.player.pos = vec(1.5, 0.0, 0.0)
+    assert(W.act("attach_engine_hoist"))
+    W.veh.hood = 0.0
+    W.hoodStuck = true
+    W.onAwait = W.playEngineSwap(true)
+    local ok, err = W.act("engine_swap")
+    assert(not ok and W.client.env.OrderInstallState.simpleStep == "open_hood", "back at Open Hood")
+    ok, err = W.act("open_hood")
+    assert(not ok and err.fallback:find("could not be opened"), tostring(err and err.fallback))
+    W.hoodStuck = false
+    assert(W.act("open_hood"))
+    assert(W.client.env.OrderInstallState.simpleStep == "engine_swap", "back to the swap: " .. tostring(W.client.env.OrderInstallState.simpleStep))
+    assert(W.act("engine_swap"))
+    assert(W.db.orders[1].status == "completed", "engine installed")
+
+    -- A restart mid-swap: the minigame never returns to stop the repair pose.
+    W.pedAnim = "mini@repair/fixing_a_ped"
+    W.client.emit("onResourceStop", "sky_mechanicjob")
+    assert(W.pedAnim == nil, "repair pose stopped with the resource")
+end
+
+-- 12d. Carry items on but no Engine Hoist location for the workshop: Take Engine Hoist could
+--      never be done and only Cancel Install was offered. The engine is swapped without one.
+do
+    local W = newWorld({ job = "mechanic", clientConfig = function(cfg) cfg.ToggleFeatures.carryItems = true end })
+    engineOrder(W)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    assert(W.client.env.OrderInstallState.simpleStep == "engine_swap", tostring(W.client.env.OrderInstallState.simpleStep))
+    assert(W.lastNotification() == "Hood opened. Start the engine swap.", tostring(W.lastNotification()))
+    W.onAwait = W.playEngineSwap(true)
+    assert(W.act("engine_swap"))
+    assert(W.db.orders[1].status == "completed", "engine installed")
+end
+
 -- 13. Work poses. A wheel put on for an order is done kneeling at the wheel; any options table
 --     used to switch to the catalytic converter's pose, lying under the car.
 do
@@ -1419,4 +1497,4 @@ do
     assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car, the jobs tablet kept open after a mechanic app's back arrow, the old paint back after a cancelled or uncounted repaint.")
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car, the jobs tablet kept open after a mechanic app's back arrow, the old paint back after a cancelled or uncounted repaint, the hoist attached from behind it at the front of the car, the hoist steps prompted away from the car, Open Hood after the hoist is attached, a hood that cannot be opened, no hoist step without a hoist location, the repair pose stopped with the resource.")

@@ -1309,7 +1309,10 @@ function resolveSimpleInstallFlow()
 end
 
 function doesActiveEngineInstallUseHoist()
-    return getCarryItemTransportMode(OrderInstallState.requiredItem) == "engine_lift"
+    if getCarryItemTransportMode(OrderInstallState.requiredItem) ~= "engine_lift" then return false end
+    -- Without an Engine Hoist location for the workshop the take step could never be done and
+    -- the radial menu only offered Cancel Install. The engine is then swapped without one.
+    return type(hasUsableEngineHoistPoint) ~= "function" or hasUsableEngineHoistPoint()
 end
 
 -- ─── Every Wheel Of The Vehicle (tyres and wheels) ──
