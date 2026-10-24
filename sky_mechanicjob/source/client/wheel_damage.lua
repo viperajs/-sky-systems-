@@ -254,7 +254,7 @@ local function applyPhysicalWheelState(vehicle, wheelIndex, wheelData)
         local leaveTrail = isTheft or (CFG_DEBRIS.leaveDebrisTrail ~= false)
         local leavePhys = isTheft or (CFG_DEBRIS.leavePhysicalWheel == false)
 
-        BreakOffVehicleWheel(vehicle, wheelIndex, leaveTrail, leavePhys, false, CFG_DEBRIS.putOnFire == true and not isTheft)
+        breakOffVehicleWheelByTyre(vehicle, wheelIndex, leaveTrail, leavePhys, false, CFG_DEBRIS.putOnFire == true and not isTheft)
         WheelDamageRuntime.detachedApplied[key] = true
         return
     end

@@ -1166,6 +1166,21 @@ function expandWheelIndexes(wheelIndex)
     return result
 end
 
+-- BreakOffVehicleWheel takes the wheel's place in the vehicle's wheel list, not the tyre index
+-- every other wheel native uses: a car's rear wheels are 2 and 3 there (tyres 4 and 5) and a
+-- motorbike's rear wheel is 1 (tyre 4). Tyre 4 or 5 broke nothing off a car, so stolen or
+-- damaged rear wheels stayed on.
+function breakOffVehicleWheelByTyre(vehicle, tyreIndex, leaveDebrisTrail, deleteWheel, unknownFlag, putOnFire)
+    local wheelCount = tonumber(GetVehicleNumberOfWheels(vehicle)) or 0
+    local wheelIndex = tyreIndex
+    if wheelCount <= 2 then
+        if tyreIndex == 4 then wheelIndex = 1 end
+    elseif wheelCount < 6 then
+        if tyreIndex == 4 then wheelIndex = 2 elseif tyreIndex == 5 then wheelIndex = 3 end
+    end
+    BreakOffVehicleWheel(vehicle, wheelIndex, leaveDebrisTrail, deleteWheel, unknownFlag, putOnFire)
+end
+
 function resolveAttachWheelIndexes(vehicle, wheelIndexes)
     local indexes = type(wheelIndexes) == "table" and wheelIndexes or {}
     if #indexes > 0 then

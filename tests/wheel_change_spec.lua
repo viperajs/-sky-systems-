@@ -34,7 +34,7 @@ local function newClient(bones, wheelCount)
     local f = {
         bones = bones, boneNames = {}, coords = { [VEHICLE] = vec(0, 0, 0), [PED] = vec(-1.6, 0, 0) },
         exports = {}, nuiCallbacks = {}, off = {}, burst = {}, stateBag = {}, notes = {}, checklists = {},
-        calls = {}, applied = 0, applyFailures = 0, nextObject = 500,
+        calls = {}, applied = 0, applyFailures = 0, nextObject = 500, stateBagHandlers = {},
         orderPart = { id = "mod_23", label = "Rims", value = 7, requiredItem = "wheels" },
     }
     local i = 0
@@ -103,7 +103,18 @@ local function newClient(bones, wheelCount)
     env.GetVehiclePetrolTankHealth = function() return 1000.0 end
     env.GetVehicleDirtLevel = function() return 0.0 end
     -- Wheels: SetVehicleFixed puts every wheel back and fixes every tyre, as in game.
-    env.BreakOffVehicleWheel = function(_, idx) f.off[idx] = true end
+    -- BreakOffVehicleWheel takes the place in the vehicle's wheel list and ignores one past its
+    -- end (FiveM: wheelIndex >= numWheels). f.off is kept by tyre index like the other natives.
+    env.BreakOffVehicleWheel = function(_, idx)
+        if idx >= wheelCount then return end
+        local tyre = idx
+        if wheelCount == 2 and idx == 1 then tyre = 4
+        elseif wheelCount < 6 and idx == 2 then tyre = 4
+        elseif wheelCount < 6 and idx == 3 then tyre = 5 end
+        f.off[tyre] = true
+    end
+    env.AddStateBagChangeHandler = function(key, _, fn) f.stateBagHandlers[key] = fn end
+    env.GetEntityFromStateBagName = function() return VEHICLE end
     env.SetVehicleFixed = function() f.off, f.burst = {}, {} end
     env.SetVehicleTyreFixed = function(_, idx) f.burst[idx] = nil end
     env.SetVehicleTyreBurst = function(_, idx) f.burst[idx] = true end
@@ -339,4 +350,21 @@ do
     assert(f.completions(REPAIR_DONE) == 1)
 end
 
-print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail), a motorcycle rim on its own wheel, brakes still one wheel.")
+-- 7. A wheel broken off by damage or a theft comes off, the rear ones too: the break-off native
+--    counts a car's rear wheels as 2 and 3 (tyres 4 and 5) and ignored 4 and 5.
+do
+    local f = newClient(CAR_BONES, 4)
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = {
+        ["0"] = { damage = 200, popped = true, detached = true },
+        ["4"] = { damage = 200, popped = true, detached = true },
+        ["5"] = { damage = 120, popped = true },
+    } })
+    assert(f.off[0] and f.off[4], "front left and rear left wheel came off")
+    assert(f.burst[5] and not f.off[5], "the rear right tyre is only burst")
+
+    local bike = newClient(BIKE_BONES, 2)
+    bike.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = { ["4"] = { damage = 200, popped = true, detached = true } } })
+    assert(bike.off[4], "a motorcycle's rear wheel came off")
+end
+
+print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft.")

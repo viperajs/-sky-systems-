@@ -41,7 +41,7 @@ function tryDetachNearestVehicleWheel()
 
     local expandedIndexes = expandWheelIndexes(wheelTarget.index)
     for _, idx in ipairs(expandedIndexes) do
-        BreakOffVehicleWheel(veh, idx, true, true, false, false)
+        breakOffVehicleWheelByTyre(veh, idx, true, true, false, false)
         Wait(0)
         if IsVehicleTyreBurst(veh, idx, false) then
             break
@@ -117,7 +117,7 @@ function tryAttachNearestVehicleWheel(vehicle, detachedIndexes, options)
     -- missing wheel or burst tyre (runJobWheelAttach).
     for _, wheel in ipairs(type(options) == "table" and type(options.restoreWheels) == "table" and options.restoreWheels or {}) do
         for _, idx in ipairs(wheel.detached or {}) do
-            BreakOffVehicleWheel(vehicle, idx, false, true, false, false)
+            breakOffVehicleWheelByTyre(vehicle, idx, false, true, false, false)
         end
         for _, idx in ipairs(wheel.burst or {}) do
             SetVehicleTyreBurst(vehicle, idx, true, 1000.0)
