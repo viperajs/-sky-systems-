@@ -506,7 +506,9 @@ function TwoStep.TickVehicle(vehicle, now, state, plate, record)
 
         if now >= (twostepState.nextBurstAt or 0) then
             local intensity = math.max(0.35, math.min(1.0, (state.rpm - config.rpmWindowMin) / config.rpmWindowSize))
-            triggerBackfireEffect(vehicle, record, intensity)
+            -- Flames and the pop, as the anti-lag plays them for its driver: the driver only saw
+            -- the flames while everybody else also heard the pop.
+            playTwostepBurst(vehicle, record, intensity)
 
             if now >= (twostepState.nextSyncAt or 0) then
                 TriggerServerEvent("sky_mechanicjob:twostep:syncBurst", VehToNet(vehicle), {
