@@ -7,7 +7,9 @@ local ENGINE_PROP_MODEL = "prop_car_engine_01"
 local HOIST_PROP_MODEL = "xs_prop_x18_engine_hoist_02a"
 local ANIM_BOX_CARRY_DICT = "anim@heists@box_carry@"
 local ANIM_BOX_CARRY_CLIP = "idle"
-local MAX_SEARCH_DIST = 20.0
+-- The mechanic walks up to a hoist to take it. Taking one from 20 m away teleported it
+-- from its workshop spot to the mechanic standing at the car.
+local HOIST_TAKE_DISTANCE = 3.5
 local CREATOR_KEY = "workshopcreator"
 local POINT_TYPE_HOIST = "engine_swap"
 
@@ -36,6 +38,14 @@ local function playBoxCarryAnim(ped)
 
     Sky.Load.AnimDict(ANIM_BOX_CARRY_DICT)
     TaskPlayAnim(ped, ANIM_BOX_CARRY_DICT, ANIM_BOX_CARRY_CLIP, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+end
+
+-- The pushing pose loops until it is stopped; it was left on after the hoist was attached
+-- to the car or put back, so the mechanic kept walking around holding nothing.
+local function stopBoxCarryAnim(ped)
+    if IsEntityPlayingAnim(ped, ANIM_BOX_CARRY_DICT, ANIM_BOX_CARRY_CLIP, 3) then
+        StopAnimTask(ped, ANIM_BOX_CARRY_DICT, ANIM_BOX_CARRY_CLIP, 1.0)
+    end
 end
 
 -- ── Point Key Formatter ──────────────────────────────
@@ -143,6 +153,7 @@ end
 function clearEngineHoistState()
     local hoist = EngineHoistActiveState.hoistProp
     local engine = EngineHoistActiveState.engineProp
+    local wasPushing = EngineHoistActiveState.active
 
     if engine ~= 0 and DoesEntityExist(engine) then
         DeleteEntity(engine)
@@ -175,6 +186,10 @@ function clearEngineHoistState()
     EngineHoistActiveState.originHeading = 0.0
     EngineHoistActiveState.originFrozen = false
     EngineHoistActiveState.attachedToVehicle = false
+
+    if wasPushing then
+        stopBoxCarryAnim(PlayerPedId())
+    end
 end
 
 local function cleanupOrphanedAttachedHoists(vehicle)
@@ -291,7 +306,7 @@ local function canUseHoistPoint(point)
 end
 
 local function findNearestHoistPoint(maxRadius)
-    local radius = tonumber(maxRadius) or MAX_SEARCH_DIST
+    local radius = tonumber(maxRadius) or HOIST_TAKE_DISTANCE
     local pedCoords = GetEntityCoords(PlayerPedId())
     local bestPoint = nil
     local bestDist = radius + 0.001
@@ -309,10 +324,18 @@ end
 
 -- ── Following Loop ───────────────────────────────────
 
+local followLoopId = 0
+
 local function startHoistFollowLoop()
+    followLoopId = followLoopId + 1
+    local loopId = followLoopId
     CreateThread(function()
-        while EngineHoistActiveState.active do
+        while EngineHoistActiveState.active and loopId == followLoopId do
             Wait(0)
+            -- Attaching the hoist (or taking it again) runs while this loop waits; one more
+            -- pass moved the attached hoist back in front of the mechanic and restarted the
+            -- pushing pose.
+            if not EngineHoistActiveState.active or loopId ~= followLoopId then break end
 
             local hoist = EngineHoistActiveState.hoistProp
             if hoist == 0 or not DoesEntityExist(hoist) then
@@ -371,7 +394,7 @@ function takeNearestEngineHoistForOrderInstall()
 
     clearEngineHoistState()
 
-    local point, dist = findNearestHoistPoint(MAX_SEARCH_DIST)
+    local point, dist = findNearestHoistPoint(HOIST_TAKE_DISTANCE)
     if point == nil then
         Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: no workshopcreator hoist location nearby")
         return false, {
@@ -420,7 +443,7 @@ function takeNearestEngineHoistForOrderInstall()
 end
 
 function isNearAnyEngineHoistForOrderInstall(maxDist)
-    local point = select(1, findNearestHoistPoint(tonumber(maxDist) or MAX_SEARCH_DIST))
+    local point = select(1, findNearestHoistPoint(tonumber(maxDist) or HOIST_TAKE_DISTANCE))
     return point ~= nil
 end
 
@@ -438,6 +461,7 @@ function attachEngineHoistToVehicleFront(vehicle)
         Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: hoist not active")
         return false, {
             key = "radial.errors.generic",
+            code = "no_active_hoist",
             fallback = tuningLocales.EngineSwapNoActiveHoist or "Take an engine hoist first."
         }
     end
@@ -463,6 +487,7 @@ function attachEngineHoistToVehicleFront(vehicle)
 
     AttachEntityToEntity(hoistObj, vehicle, 0, 0.0, offsetY, offsetZ, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
     EngineHoistActiveState.attachedToVehicle = true
+    stopBoxCarryAnim(PlayerPedId())
     return true
 end
 

@@ -21,6 +21,23 @@ local MINIGAME_TIMEOUT_MS = 45000
 local ANIM_REPAIR_DICT = "mini@repair"
 local ANIM_REPAIR_CLIP = "fixing_a_ped"
 
+-- Turns the mechanic to the spot they work on. TaskTurnPedToFace* was followed straight away
+-- by the work animation or scenario, which replaced the turn, so the work was done facing
+-- wherever the mechanic happened to look.
+local function facePedTowards(ped, coords)
+    local pedCoords = GetEntityCoords(ped)
+    SetEntityHeading(ped, GetHeadingFromVector_2d(coords.x - pedCoords.x, coords.y - pedCoords.y))
+end
+
+-- The engine bay: the hood bone, or the middle of the vehicle without one.
+local function getEngineBayCoords(vehicle)
+    local boneIdx = GetEntityBoneIndexByName(vehicle, "bonnet")
+    if boneIdx ~= -1 then
+        return GetWorldPositionOfEntityBone(vehicle, boneIdx)
+    end
+    return GetEntityCoords(vehicle)
+end
+
 local REMOVABLE_PANELS = {
     { key = "door_lf", bone = "door_dside_f", doorIndex = 0 },
     { key = "door_rf", bone = "door_pside_f", doorIndex = 1 },
@@ -181,12 +198,7 @@ function runSimpleBodyworkWeldingInstallAnim(vehicle, partData)
         end
     end
 
-    if targetCoords then
-        TaskTurnPedToFaceCoord(ped, targetCoords.x, targetCoords.y, targetCoords.z, 700)
-    else
-        TaskTurnPedToFaceEntity(ped, vehicle, 700)
-    end
-
+    facePedTowards(ped, targetCoords or GetEntityCoords(vehicle))
     TaskStartScenarioInPlace(ped, "WORLD_HUMAN_WELDING", 0, true)
 
     local duration = startNonMinigameInstallProgress(
@@ -217,7 +229,7 @@ function runSimpleHoodInstallAnim(vehicle, partData)
         }
     end
 
-    TaskTurnPedToFaceEntity(ped, vehicle, 700)
+    facePedTowards(ped, getEngineBayCoords(vehicle))
     Sky.Load.AnimDict(ANIM_REPAIR_DICT)
     TaskPlayAnim(ped, ANIM_REPAIR_DICT, ANIM_REPAIR_CLIP, 8.0, -8.0, -1, 1, 0.0, false, false, false)
 
@@ -366,7 +378,7 @@ function runEngineSwapInstallMinigame(vehicle, partData)
         }
     end
 
-    TaskTurnPedToFaceEntity(ped, vehicle, 700)
+    facePedTowards(ped, getEngineBayCoords(vehicle))
     startEngineSwapAnim()
 
     local sessionOk, session = TuningMinigames.StartSession("engine_swap", {

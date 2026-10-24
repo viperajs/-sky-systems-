@@ -510,7 +510,27 @@ local function newWorld(opts)
     cenv.IsModelValid = function() return true end
     cenv.HasModelLoaded = function() return true end
     cenv.HasAnimDictLoaded = function() return true end
-    cenv.IsEntityPlayingAnim = function() return false end
+    -- The mechanic's animation and heading, and the props the engine hoist moves.
+    cenv.TaskPlayAnim = function(ped, dict, clip) if ped == PED then W.pedAnim = dict .. "/" .. clip end end
+    cenv.StopAnimTask = function(ped, dict, clip) if ped == PED and W.pedAnim == dict .. "/" .. clip then W.pedAnim = nil end end
+    cenv.ClearPedTasks = function(ped) if ped == PED then W.pedAnim = nil end end
+    cenv.ClearPedTasksImmediately = cenv.ClearPedTasks
+    cenv.IsEntityPlayingAnim = function(ped, dict, clip) return ped == PED and W.pedAnim == dict .. "/" .. clip end
+    cenv.SetEntityHeading = function(entity, heading)
+        if entity == PED then W.player.heading = heading elseif W.objects[entity] then W.objects[entity].heading = heading end
+    end
+    cenv.GetEntityHeading = function(entity)
+        if entity == PED then return W.player.heading or 0.0 end
+        return W.objects[entity] and W.objects[entity].heading or 0.0
+    end
+    -- GTA headings turn counter-clockwise from north (+Y).
+    cenv.GetHeadingFromVector_2d = function(x, y) return math.deg(math.atan(-x, y)) % 360 end
+    cenv.GetEntityForwardVector = function() return vec(1, 0, 0) end
+    cenv.SetEntityCoordsNoOffset = function(entity, x, y, z) if W.objects[entity] then W.objects[entity].pos = vec(x, y, z) end end
+    cenv.FreezeEntityPosition = function(entity, frozen) if W.objects[entity] then W.objects[entity].frozen = frozen end end
+    cenv.AttachEntityToEntity = function(child, parent) if W.objects[child] then W.objects[child].attachedTo = parent end end
+    cenv.DetachEntity = function(entity) if W.objects[entity] then W.objects[entity].attachedTo = nil end end
+    cenv.IsEntityAttachedToEntity = function(a, b) return W.objects[a] ~= nil and W.objects[a].attachedTo == b end
     cenv.CreateObjectNoOffset = function(_, x, y, z)
         W.nextObject = W.nextObject + 1
         W.objects[W.nextObject] = { pos = vec(x, y, z) }
@@ -935,4 +955,108 @@ do
     assert(C.env.showOrderInstallStepPrompt() == false)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle.")
+-- ── Engine hoist (carry items on: the engine is moved with a workshop hoist) ──
+local HOIST_POS = vec(6.0, 0.0, 0.0)
+local CARRY_ANIM = "anim@heists@box_carry@/idle"
+
+-- An engine order with the workshop's hoist placed 4.5 m from the mechanic at the car.
+local function hoistWorld()
+    local W = newWorld({ job = "mechanic", clientConfig = function(cfg) cfg.ToggleFeatures.carryItems = true end })
+    engineOrder(W)
+    W.placeHoist = function(pos)
+        W.client.emit("sky_jobs_base:creatorUpdated", "workshopcreator", { entries = { {
+            id = 1, jobKey = "mechanic",
+            points = { { uid = "h1", type = "engine_swap", x = pos.x, y = pos.y, z = pos.z, heading = 90.0 } },
+        } } })
+    end
+    W.placeHoist(HOIST_POS)
+    W.hoistState = W.client.env.EngineHoistActiveState
+    -- Background loops do not run here; the hoist's follow loop is kept to step it by hand.
+    W.client.env.CreateThread = function(fn) W.followLoop = coroutine.create(fn) end
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    assert(W.client.env.OrderInstallState.simpleStep == "take_hoist", "the hoist comes after the hood")
+    return W
+end
+
+local function hoistAtWorkshop(W)
+    for _, obj in pairs(W.objects) do
+        if #(obj.pos - HOIST_POS) < 0.01 and obj.frozen == true and obj.attachedTo == nil and obj.heading == 90.0 then return true end
+    end
+    return false
+end
+
+-- 10. The mechanic walks to the hoist, takes it, pushes it to the car and attaches it, and
+--     swaps the engine facing the engine bay. The hoist used to be summoned from 20 m, the
+--     pushing pose stayed on after attaching, and finishing deleted the workshop's hoist and
+--     left its engine prop hanging in front of the car.
+do
+    local W = hoistWorld()
+    local C = W.client
+    assert(not W.actions().take_engine_hoist, "no hoist to take from the car, 4.5 m away")
+    local ok, err = W.act("take_engine_hoist")
+    assert(not ok and err.fallback:find("No engine hoist nearby"), tostring(err and err.fallback))
+
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.actions().take_engine_hoist, "Take Engine Hoist offered next to it")
+    assert(W.act("take_engine_hoist"))
+    local hoist, engine = W.hoistState.hoistProp, W.hoistState.engineProp
+    assert(hoist ~= 0 and engine ~= 0 and W.objects[engine].attachedTo == hoist, "the engine hangs on the hoist")
+    assert(C.env.OrderInstallState.heldProp == hoist and W.pedAnim == CARRY_ANIM, "pushing the hoist")
+
+    -- The follow loop keeps the hoist in front of the mechanic.
+    coroutine.resume(W.followLoop)
+    W.player.pos = vec(1.5, 0.0, 0.0)
+    coroutine.resume(W.followLoop)
+    assert(#(W.objects[hoist].pos - vec(3.25, 0.0, 0.0)) < 0.01, "the hoist follows the mechanic")
+
+    assert(W.act("attach_engine_hoist"))
+    assert(W.objects[hoist].attachedTo == VEH and W.pedAnim == nil, "attached to the car, pushing pose stopped")
+    -- The loop was waiting while the hoist was attached; it must not move it or restart the pose.
+    coroutine.resume(W.followLoop)
+    assert(coroutine.status(W.followLoop) == "dead", "follow loop ended")
+    assert(W.objects[hoist].attachedTo == VEH and W.pedAnim == nil, "still attached, still no pushing pose")
+
+    W.onAwait = function()
+        W.swapHeading, W.swapAnim = W.player.heading, W.pedAnim
+        W.playEngineSwap(true)()
+    end
+    assert(W.act("engine_swap"))
+    -- From (1.5, 0) to the hood bone at (0, 1.8): 39.8 degrees.
+    assert(math.abs(W.swapHeading - 39.81) < 0.1, "faces the engine bay: " .. tostring(W.swapHeading))
+    assert(W.swapAnim == "mini@repair/fixing_a_ped", "repair animation during the swap")
+    assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "engine installed")
+    assert(W.objects[engine] == nil, "engine prop removed")
+    assert(W.objects[hoist] and hoistAtWorkshop(W), "the hoist is back at its workshop spot")
+    assert(W.hoistState.hoistProp == 0 and W.hoistState.active == false, "hoist released")
+end
+
+-- 11. Cancelling while pushing the hoist puts it back and ends the pushing pose.
+do
+    local W = hoistWorld()
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.act("take_engine_hoist"))
+    local engine = W.hoistState.engineProp
+    assert(W.act("cancel_order_install"))
+    assert(W.pedAnim == nil, "pushing pose stopped")
+    assert(W.objects[engine] == nil and hoistAtWorkshop(W), "engine prop removed, hoist back in place")
+end
+
+-- 12. The hoist is put back while being pushed (the workshop moved it in /jobconfig): Attach
+--     used to fail forever with "Take an engine hoist first"; Take Engine Hoist is offered again.
+do
+    local W = hoistWorld()
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.act("take_engine_hoist"))
+    W.placeHoist(vec(8.0, 0.0, 0.0))
+    assert(W.pedAnim == nil and W.hoistState.hoistProp == 0, "hoist put back, pushing pose stopped")
+
+    W.player.pos = vec(1.5, 0.0, 0.0)
+    local ok, err = W.act("attach_engine_hoist")
+    assert(not ok and err.code == "no_active_hoist", tostring(err and err.fallback))
+    assert(W.client.env.OrderInstallState.simpleStep == "take_hoist", "back at the take step")
+    W.player.pos = vec(7.5, 0.0, 0.0)
+    assert(W.actions().take_engine_hoist and W.act("take_engine_hoist"), "the hoist is taken at its new spot")
+end
+
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) and the mechanic facing the engine bay.")

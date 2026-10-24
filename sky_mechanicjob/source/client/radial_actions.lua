@@ -181,7 +181,8 @@ local function buildRadialActions()
             end
         end
 
-        if nextAction == "take_engine_hoist" and not isNearVeh then
+        -- Taken where it stands, not summoned from across the workshop to the car.
+        if nextAction == "take_engine_hoist" then
             isActionAllowedNear = isNearAnyEngineHoistForOrderInstall()
         end
 
@@ -595,6 +596,12 @@ exports("triggerRadialMenuAction", function(actionId)
 
         local ok, err = attachEngineHoistToVehicleFront(veh)
         if not ok then
+            -- The hoist is gone (put back by a workshop update, or lost): offer Take Engine
+            -- Hoist again instead of an Attach step that can never succeed.
+            if type(err) == "table" and err.code == "no_active_hoist" then
+                OrderInstallState.simpleStep = "take_hoist"
+                sendSimpleInstallChecklistUpdate()
+            end
             return false, err
         end
 

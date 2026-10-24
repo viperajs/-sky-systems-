@@ -696,6 +696,12 @@ function deletePropEntity(entity)
 end
 
 function releaseOrderHeldProp()
+    -- During an engine swap the held prop is the workshop's engine hoist. Deleting it removed
+    -- the hoist from the workshop and left its engine prop hanging in front of the car once
+    -- the swap finished; it goes back to its spot instead (this also clears heldProp).
+    if OrderInstallState.heldProp ~= 0 and OrderInstallState.heldProp == EngineHoistActiveState.hoistProp then
+        clearEngineHoistState()
+    end
     if OrderInstallState.heldProp ~= 0 and DoesEntityExist(OrderInstallState.heldProp) then
         if not deletePropEntity(OrderInstallState.heldProp) then
             return false
