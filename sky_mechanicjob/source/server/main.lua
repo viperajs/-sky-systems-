@@ -476,6 +476,16 @@ local function getStoredPartState(plate, optionId, value)
     return false
 end
 
+-- The value that undoes a part, as the remover's client applies it (getOptionStockValue). A
+-- stance reset syncs through its state bag.
+local function getRemovalStockValue(optionId, claimed)
+    if optionId:match("^mod_%d+$") then return -1 end
+    if optionId:match("^toggle_%d+$") then return 0 end
+    local value = tonumber(claimed)
+    if optionId ~= "stancer_bundle" and value and value % 1 == 0 and math.abs(value) <= 1000 then return value end
+    return nil
+end
+
 local function getRemovalReturnItem(src, plate, optionId, value, wheelType)
     local installed, patch = getStoredPartState(plate, optionId, value)
     if not installed then return nil, nil end
@@ -572,7 +582,8 @@ Sky.Cb.Register("sky_mechanicjob:tuning:completeRemoval", function(source, data)
     if not Functions.IsMechanicOnDuty(src) then
         return { success = false, error = "not_authorized" }
     end
-    if not Functions.GetNearbyVehicleByPlate(src, plate, ORDER_VEHICLE_DISTANCE) then
+    local vehicle = Functions.GetNearbyVehicleByPlate(src, plate, ORDER_VEHICLE_DISTANCE)
+    if not vehicle then
         return { success = false, error = "vehicle_too_far" }
     end
 
@@ -585,6 +596,14 @@ Sky.Cb.Register("sky_mechanicjob:tuning:completeRemoval", function(source, data)
     end
 
     VehicleHistory.Add(plate, "tuning_removed", string.format("Removed: %s", pending.label), src, 0)
+
+    -- Mods sync from the vehicle's network owner (see completeInstall): the part removed by the
+    -- mechanic came back with the next sync while the item was returned.
+    local stockValue = getRemovalStockValue(optionId, data.stockValue)
+    local owner = tonumber(NetworkGetEntityOwner(vehicle)) or 0
+    if stockValue ~= nil and owner > 0 and owner ~= src then
+        TriggerClientEvent("sky_mechanicjob:orders:applyInstalledPart", owner, NetworkGetNetworkIdFromEntity(vehicle), { id = optionId, value = stockValue })
+    end
 
     return { success = true, data = { returnItem = pending.returnItem } }
 end)

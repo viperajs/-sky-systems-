@@ -192,6 +192,7 @@ local function newWorld(opts)
                 W.onAwait()
             else
                 W.clock = W.clock + math.max(16, tonumber(res[2]) or 0)
+                if W.onWait then W.onWait() end
             end
         end
     end
@@ -486,7 +487,8 @@ local function newWorld(opts)
     cenv.IsToggleModOn = function(_, modType) return W.veh.toggles[modType] == true end
     cenv.GetVehicleWheelType = function() return W.veh.wheelType end
     cenv.SetVehicleWheelType = function(_, value) W.veh.wheelType = value end
-    cenv.GetVehicleTyreSmokeColor = function() return 254, 254, 254 end
+    cenv.GetVehicleTyreSmokeColor = function() return table.unpack(W.veh.smoke or { 254, 254, 254 }) end
+    cenv.SetVehicleTyreSmokeColor = function(_, r, g, b) W.veh.smoke = { r, g, b } end
     cenv.GetVehicleXenonLightsColor = function() return -1 end
     cenv.GetVehicleXenonLightsCustomColor = function() return false, 0, 0, 0 end
     cenv.IsVehicleNeonLightEnabled = function() return false end
@@ -882,6 +884,28 @@ do
     assert(#W.server.clientEvents == before, "no relay to the installer")
 end
 
+-- 4b. Removing a part from a car another player owns: that player's client takes it off as
+--     well. The part came back with the owner's next sync while the item had been returned.
+do
+    local W = newWorld({ job = "mechanic" })
+    W.veh.mods[13] = 2
+    W.player.items.mechanic_tools = 1
+    W.vehOwner = 2
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    local res = W.nui("tuningRemoval:remove", { id = "mod_13" })
+    assert(res.success == true, "removal started: " .. tostring(res.error))
+    assert(W.act("open_hood"))
+    assert(W.act("install_order_part"))
+    assert(W.veh.mods[13] == -1, "taken off by the mechanic")
+
+    local relay = W.server.clientEvents[#W.server.clientEvents]
+    assert(relay and relay.name == "sky_mechanicjob:orders:applyInstalledPart" and relay.target == 2, "removal handed to the owner")
+    assert(relay.args[1] == NET and relay.args[2].id == "mod_13" and relay.args[2].value == -1, "with the stock value")
+    W.veh.mods[13] = 2
+    W.client.emit(relay.name, table.unpack(relay.args, 1, relay.args.n))
+    assert(W.veh.mods[13] == -1, "taken off on the owner's client")
+end
+
 -- 5. Without network control the hood and the part still get control requests; the part is
 --    applied locally either way.
 do
@@ -925,6 +949,100 @@ do
     W.onAwait = W.playEngineSwap(true)
     assert(W.act("engine_swap"))
     assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "installed on the order's car")
+end
+
+-- 6b. Finishing fails before the server is asked (here: the install needs the self-service
+--     tuning point and the mechanic left it): the job stayed at "complete" with only Cancel
+--     Install in the radial menu. Install Part finishes it without swapping the engine again.
+do
+    local W = newWorld({ job = "mechanic" })
+    engineOrder(W)
+    local env = W.client.env
+    env.Config.TuningWorkshopRequirement = { requireForInstall = true }
+    local nearPoint = true
+    env.isNearSelfServiceTuningPoint = function() return nearPoint end
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    nearPoint = false
+    W.onAwait = W.playEngineSwap(true)
+    assert(not W.act("engine_swap"), "not finished away from the tuning point")
+    assert(env.OrderInstallState.active and W.db.orders[1].status ~= "completed", "install still open")
+    assert(W.actions().install_order_part, "Install Part offered to finish")
+
+    nearPoint = true
+    W.onAwait = function() error("the engine swap minigame started again") end
+    assert(W.act("install_order_part"))
+    assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "finished")
+end
+
+-- 6c. Install Part picked again from the radial menu while its animation plays: refused, the
+--     part is installed once. It ran twice: two animations, then "the order could not be
+--     updated" for the second.
+do
+    local W = newWorld({ job = "mechanic" })
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "toggle_18", value = 1 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    W.player.items.turbo = 1
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    local second
+    W.onWait = function()
+        W.onWait = nil
+        second = table.pack(W.run(function() return W.client.exports.triggerRadialMenuAction("install_order_part") end, "second pick"))
+    end
+    local ok, err = W.act("install_order_part")
+    assert(ok, "the first pick failed: " .. tostring(err and err.fallback))
+    assert(second and second[1] == false, "second pick refused")
+    local finishes = 0
+    for _, name in ipairs(W.client.calls or {}) do
+        if name == ORDER_DONE then finishes = finishes + 1 end
+    end
+    assert(finishes == 1, "finished once, not " .. finishes .. " times")
+    assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed")
+    assert(W.lastNotification() == "Order completed successfully.", tostring(W.lastNotification()))
+end
+
+-- 6d. A catalytic converter repair keeps its own checklist next to the car: the install
+--     checklist of other parts replaced it.
+do
+    local W = newWorld({ job = "mechanic" })
+    W.client.load("sky_mechanicjob/source/client/catalytic_converter.lua")
+    local env = W.client.env
+    env.OrderInstallState.active = true
+    env.OrderInstallState.repairMode = true
+    env.OrderInstallState.installFlow = "catalytic_converter"
+    env.OrderInstallState.vehicleNetId = NET
+    env.startCatalyticInstallState(VEH, NET, W.veh.plate)
+    local title = W.lastMessage("wheelInstall:checklist:update").payload.title
+    env.sendSimpleInstallChecklistUpdate()
+    assert(W.lastMessage("wheelInstall:checklist:update").payload.title == title, "catalytic checklist kept")
+end
+
+-- 6e. Tyre smoke and its colour ordered together, the colour installed first: a colour shows only
+--     with the Tire Smoke mod on, and it failed to go on ("Failed to apply this part").
+do
+    local W = newWorld({ job = "mechanic" })
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "toggle_20", value = 1 })
+    W.nui("tuning:apply", { id = "tire_smoke_color", value = 2 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    assert(not W.veh.toggles[20], "the preview is undone until the mechanic installs it")
+    local colorIndex
+    for i, part in ipairs(json.decode(W.db.orders[1].items)) do
+        if part.id == "tire_smoke_color" then colorIndex = i end
+    end
+    assert(colorIndex, "the colour is part of the order")
+    W.player.items.spray_can = 1
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = colorIndex, vehicleNetId = NET }).success == true)
+    local ok, err = W.act("install_order_part")
+    assert(ok, "colour installed first: " .. tostring(err and err.fallback))
+    assert(W.veh.toggles[20] == true and W.veh.smoke and W.veh.smoke[1] == 255 and W.veh.smoke[2] == 0, "red tyre smoke on")
 end
 
 -- 7. Another car connected (parked next to the customer's): the part went on the connected
@@ -1189,4 +1307,4 @@ do
     assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install.")
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke.")

@@ -141,8 +141,14 @@ local function newClient(bones, wheelCount)
     env.applyOrderPartToVehicle = function()
         if f.applyFailures > 0 then f.applyFailures = f.applyFailures - 1 return false end
         f.applied = f.applied + 1
+        f.rims = "new"
         return true
     end
+    f.rims = "old"
+    env.Sky.Vehicle = { new = function() return {
+        GetVehicleProperties = function() return { modFrontWheels = f.rims, tyreBurst = { ["0"] = true } } end,
+        SetVehicleProperties = function(_, props) f.rims = props.modFrontWheels; f.restoredTyres = props.tyreBurst end,
+    } end }
     env.saveTuningForVehicle = function() end
     env.notify = function(message) f.notes[#f.notes + 1] = tostring(message) end
     env.sendUi = function(action, payload)
@@ -295,6 +301,25 @@ do
     assert(f.completions(ORDER_DONE) == 1)
 end
 
+-- 3b. Cancelled after the last wheel went on: the new rims come off again (they stayed on the car
+--     while the order stayed open). The tyres keep their current state.
+do
+    local f = newClient(CAR_BONES, 4)
+    assert(f.nui("orders:startInstall", { orderId = 5, partIndex = 1, vehicleNetId = VEHICLE_NET_ID }).success)
+    f.standAt("wheel_lf")
+    f.act("car_jack")
+    for _, bone in ipairs({ "wheel_lf", "wheel_rf", "wheel_lr", "wheel_rr" }) do
+        f.standAt(bone)
+        f.act("detach_wheel")
+        f.act("attach_wheel")
+    end
+    assert(f.rims == "new", "new rims on")
+    f.act("cancel_wheel_change")
+    assert(f.rims == "old", "the old rims are back")
+    assert(f.restoredTyres == nil, "tyre state left as it is")
+    assert(f.completions(ORDER_DONE) == 0)
+end
+
 -- 4. New tyres on a motorcycle: its front and its rear wheel.
 do
     local f = newClient(BIKE_BONES, 2)
@@ -438,4 +463,4 @@ do
     assert(f.burst[0], "the other tyre is still burst")
 end
 
-print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft, wheel damage cleared for the wheels an order replaced.")
+print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail, taken off again when cancelled), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft, wheel damage cleared for the wheels an order replaced.")

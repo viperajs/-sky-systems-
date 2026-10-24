@@ -441,7 +441,7 @@ end
 
 exports("getRadialActions", buildRadialActions)
 
-exports("triggerRadialMenuAction", function(actionId)
+local function runRadialMenuAction(actionId)
     if actionId == "access_lift" then
         if type(openNearestLiftControlUi) ~= "function" then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.LiftNotNearby) or "No lift nearby." }
@@ -457,6 +457,7 @@ exports("triggerRadialMenuAction", function(actionId)
         if not OrderInstallState.active or WheelOrderInstallState.active or RepaintOrderInstallState.active then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallNotActive) or "Part install is not active." }
         end
+        restoreVehicleBeforeOrderPart()
         clearOrderInstallState()
         notify((tuningLocales and tuningLocales.OrderInstallCanceled) or "Part install canceled.", "info")
         return true
@@ -922,6 +923,7 @@ exports("triggerRadialMenuAction", function(actionId)
         if not RepaintOrderInstallState.active then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.RepaintInstallNotActive) or "Repaint actions are only available during a repaint install." }
         end
+        restoreVehicleBeforeOrderPart()
         clearOrderInstallState()
         notify((tuningLocales and tuningLocales.RepaintInstallCanceled) or "Repaint canceled.", "info")
         return true
@@ -989,6 +991,7 @@ exports("triggerRadialMenuAction", function(actionId)
         if not WheelOrderInstallState.active then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallNotActive) or "Wheel actions are only available during a wheel order install." }
         end
+        restoreVehicleBeforeOrderPart()
         clearOrderInstallState()
         notify((tuningLocales and tuningLocales.WheelInstallCanceled) or "Wheel change canceled.", "info")
         return true
@@ -1149,6 +1152,25 @@ exports("triggerRadialMenuAction", function(actionId)
     end
 
     return false, { key = "radial.errors.generic", fallback = "Action unavailable." }
+end
+
+-- One step at a time: picked again from the radial menu while its animation played, a step ran
+-- twice (two animations, then the second finish failed). Cancelling and the lift stay available.
+local radialStepRunning = false
+
+exports("triggerRadialMenuAction", function(actionId)
+    if actionId == "access_lift" or tostring(actionId):match("^cancel_") then
+        return runRadialMenuAction(actionId)
+    end
+    if radialStepRunning then
+        return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallWrongStep) or "Complete the current install step first." }
+    end
+
+    radialStepRunning = true
+    local result = table.pack(pcall(runRadialMenuAction, actionId))
+    radialStepRunning = false
+    if not result[1] then error(result[2], 0) end
+    return table.unpack(result, 2, result.n)
 end)
 
 -- ─── Next Install Step Prompt ─────────────────────

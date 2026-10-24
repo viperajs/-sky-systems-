@@ -1254,13 +1254,16 @@ WHEEL_INSTALL_STEPS = {
     attach = "attach_wheel",
     remove = "remove_car_jack"
 }
-ARMOR_INSTALL_STEPS = { cut = "cut_armor_panel", weld = "weld_armor_panel" }
-ENGINE_SWAP_STEPS = { open_hood = "open_hood", take_hoist = "take_engine_hoist", attach_hoist = "attach_engine_hoist", engine_swap = "engine_swap" }
+-- "complete": the last step is done but finishing failed before the server counted it (away
+-- from the tuning point, welding cancelled). Install Part finishes it; the radial menu offered
+-- only Cancel Install.
+ARMOR_INSTALL_STEPS = { cut = "cut_armor_panel", weld = "weld_armor_panel", complete = "install_order_part" }
+ENGINE_SWAP_STEPS = { open_hood = "open_hood", take_hoist = "take_engine_hoist", attach_hoist = "attach_engine_hoist", engine_swap = "engine_swap", complete = "install_order_part" }
 HOOD_INSTALL_STEPS = { open_hood = "open_hood", install = "install_order_part" }
-OIL_CHANGE_STEPS = { drain_oil = "drain_old_oil", open_hood = "open_hood", pour_oil = "pour_new_oil" }
-UNDERBODY_NEON_STEPS = { install_neon = "install_underbody_neon" }
-STANCE_STEPS = { stance_wheels = "install_stance_wheel" }
-FLUID_REFILL_STEPS = { open_hood = "open_hood", pour_oil = "pour_new_oil" }
+OIL_CHANGE_STEPS = { drain_oil = "drain_old_oil", open_hood = "open_hood", pour_oil = "pour_new_oil", complete = "install_order_part" }
+UNDERBODY_NEON_STEPS = { install_neon = "install_underbody_neon", complete = "install_order_part" }
+STANCE_STEPS = { stance_wheels = "install_stance_wheel", complete = "install_order_part" }
+FLUID_REFILL_STEPS = { open_hood = "open_hood", pour_oil = "pour_new_oil", complete = "install_order_part" }
 REPAINT_STEPS = { sanding = "sand_vehicle", painting = "paint_vehicle" }
 
 function resolveSimpleInstallFlow()
@@ -1764,6 +1767,10 @@ end
 
 function sendSimpleInstallChecklistUpdate()
     if not OrderInstallState.active or WheelOrderInstallState.active or RepaintOrderInstallState.active then
+        return
+    end
+    -- The catalytic converter has its own checklist; next to the car this one replaced it.
+    if CatalyticInstallState and CatalyticInstallState.active then
         return
     end
 

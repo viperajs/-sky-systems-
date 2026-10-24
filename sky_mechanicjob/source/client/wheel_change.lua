@@ -1371,6 +1371,12 @@ function applyOrderPartToVehicle(vehicle, partPayload)
         return false
     end
 
+    -- A tyre smoke colour shows only with the Tire Smoke mod on. Ordered together and the colour
+    -- installed first, it failed to go on.
+    if optionId == "tire_smoke_color" and not IsToggleModOn(vehicle, 20) then
+        ToggleVehicleMod(vehicle, 20, true)
+    end
+
     if optionId == "mod_23" or optionId == "mod_24" then
         local wType = tonumber(partPayload.wheelType)
         if wType ~= nil then
@@ -1478,11 +1484,29 @@ function startDirectStanceInstall(vehicle, stancePart)
     return true
 end
 
+-- Damage, tyres, fuel and dirt are no part of an order: they keep their current state.
+local CONDITION_PROPERTY_KEYS = { "doorsBroken", "windowsBroken", "tyreBurst", "tyresCanBurst", "bodyHealth", "engineHealth", "tankHealth", "fuelLevel", "dirtLevel" }
+
 -- The vehicle just before an order part goes on. It is put back when the server does not count
 -- the install (the item gone at the last step, the order changed by a colleague, no answer):
 -- the part stayed on the car and was saved while the order stayed open and refundable.
 function rememberVehicleBeforeOrderPart(vehicle)
-    OrderInstallState.propsBeforePart = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+    local props = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+    if type(props) == "table" then
+        for _, key in ipairs(CONDITION_PROPERTY_KEYS) do props[key] = nil end
+    end
+    OrderInstallState.propsBeforePart = props
+end
+
+-- An install cancelled after its part went on (Cancel after the last wheel, a repaint that
+-- could not finish): the new rims or paint stayed on the car while the order stayed open.
+function restoreVehicleBeforeOrderPart()
+    local props = OrderInstallState.propsBeforePart
+    OrderInstallState.propsBeforePart = nil
+    local vehicle = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
+    if props and vehicle ~= 0 and DoesEntityExist(vehicle) then
+        Sky.Vehicle.new(vehicle):SetVehicleProperties(props)
+    end
 end
 
 function completeActiveOrderInstall(vehicle, force)
@@ -1616,6 +1640,7 @@ function completeActiveOrderInstall(vehicle, force)
             plate = OrderInstallState.tuningRemovalPlate,
             id = OrderInstallState.part and OrderInstallState.part.id or "",
             value = OrderInstallState.tuningRemovalValue,
+            stockValue = OrderInstallState.part and OrderInstallState.part.value,
             wheelType = OrderInstallState.tuningRemovalWheelType,
             label = OrderInstallState.part and OrderInstallState.part.label or "Tuning Removal",
             valueLabel = OrderInstallState.tuningRemovalValueLabel,
