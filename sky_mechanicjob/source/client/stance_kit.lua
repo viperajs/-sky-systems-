@@ -1116,7 +1116,9 @@ function StanceKit.AddOptions(arg1, arg2)
 
     StanceKit.EnsureDefaultForVehicle(vehicle)
 
-    local function addStancerSubOption(optionId, labelText, currentVal, boundsCfg, cameraPart, scaleFactor)
+    -- unchanged: the value is the car's own (no stance changed it); the list of applied tuning
+    -- leaves it out.
+    local function addStancerSubOption(optionId, labelText, currentVal, boundsCfg, cameraPart, scaleFactor, unchanged)
         local scaledVal = roundScaled(currentVal, scaleFactor)
         if scaledVal < boundsCfg.min then scaledVal = boundsCfg.min end
         if scaledVal > boundsCfg.max then scaledVal = boundsCfg.max end
@@ -1124,7 +1126,8 @@ function StanceKit.AddOptions(arg1, arg2)
         addOptionFunc("stancer", optionId, labelText, scaledVal, boundsCfg.min, boundsCfg.max, nil, cameraPart, {
             kind = "stancer",
             scale = scaleFactor,
-            step = 1
+            step = 1,
+            unchangedValue = unchanged and scaledVal or nil
         })
     end
 
@@ -1149,8 +1152,19 @@ function StanceKit.AddOptions(arg1, arg2)
 
     addStancerSubOption("stancer_camber_front", getNuiLocale("option.label.stancer_camber_front", "Front Camber"), tonumber(currentStance.fCamberFront) or 0.0, stancerBounds.camber_front, "wheels_front", STANCER_SCALE)
     addStancerSubOption("stancer_camber_rear", getNuiLocale("option.label.stancer_camber_rear", "Rear Camber"), tonumber(currentStance.fCamberRear) or 0.0, stancerBounds.camber_rear, "wheels_rear", STANCER_SCALE)
-    addStancerSubOption("stancer_track_width_front", getNuiLocale("option.label.stancer_track_width_front", "Front Track Width"), tonumber(currentStance.trackFront) or 0.0, stancerBounds.track_width_front, "wheels_front", STANCER_SCALE)
-    addStancerSubOption("stancer_track_width_rear", getNuiLocale("option.label.stancer_track_width_rear", "Rear Track Width"), tonumber(currentStance.trackRear) or 0.0, stancerBounds.track_width_rear, "wheels_rear", STANCER_SCALE)
+    -- Track width is the wheels' distance from the centre line. Without a stance of its own the
+    -- slider started at 0, and the first step pulled the wheels into the middle of the car.
+    local function addTrackWidthOption(optionId, labelText, stanceWidth, wheelIndex, boundsCfg, cameraPart)
+        local width = tonumber(stanceWidth)
+        if width and math.abs(width) > EPSILON then
+            addStancerSubOption(optionId, labelText, width, boundsCfg, cameraPart, STANCER_SCALE)
+        else
+            addStancerSubOption(optionId, labelText, math.abs(GetVehicleWheelXOffset(vehicle, wheelIndex)), boundsCfg, cameraPart, STANCER_SCALE, true)
+        end
+    end
+
+    addTrackWidthOption("stancer_track_width_front", getNuiLocale("option.label.stancer_track_width_front", "Front Track Width"), currentStance.trackFront, 1, stancerBounds.track_width_front, "wheels_front")
+    addTrackWidthOption("stancer_track_width_rear", getNuiLocale("option.label.stancer_track_width_rear", "Rear Track Width"), currentStance.trackRear, 3, stancerBounds.track_width_rear, "wheels_rear")
 
     local sizeVal = tonumber(currentStance.wheelSize) or clampScale(GetVehicleWheelSize(vehicle), 1.0)
     addStancerSubOption("wheel_size", getNuiLocale("option.label.wheel_size", "Wheel Size"), sizeVal, wheelSizeBounds.size, "wheels_front", WHEEL_SIZE_SCALE)

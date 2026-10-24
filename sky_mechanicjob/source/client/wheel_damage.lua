@@ -443,6 +443,49 @@ local function syncWheelBricksForVehicle(vehicle, wheelsData)
     updateVehicleFreezeForBricks(vehicle, true)
 end
 
+-- The vehicle a brick key ("netId:model", or "handle:model" for a local vehicle) belongs to.
+local function getBrickVehicle(key)
+    local id, model = tostring(key):match("^(%-?%d+):(%-?%d+)$")
+    id, model = tonumber(id), tonumber(model)
+    if not id then return 0 end
+    local veh = NetworkDoesNetworkIdExist(id) and NetworkGetEntityFromNetworkId(id) or 0
+    if veh == 0 and DoesEntityExist(id) then veh = id end
+    if veh ~= 0 and DoesEntityExist(veh) and GetEntityModel(veh) == model then return veh end
+    return 0
+end
+
+-- Bricks of a car that is gone (stored in a garage, deleted) stayed where it stood. Next to the
+-- bricks a car that still exists is streamed in; one out of range keeps them for its return.
+local ORPHAN_BRICK_RANGE = 60.0
+
+function removeOrphanedWheelBricks()
+    local pedCoords = GetEntityCoords(PlayerPedId())
+    for key, stacks in pairs(WheelDamageRuntime.brickProps) do
+        if getBrickVehicle(key) == 0 then
+            local anyProp, nearby = false, false
+            for _, stack in pairs(stacks) do
+                for _, propObj in ipairs(type(stack) == "table" and stack or { stack }) do
+                    if propObj ~= 0 and DoesEntityExist(propObj) then
+                        anyProp = true
+                        nearby = nearby or #(GetEntityCoords(propObj) - pedCoords) <= ORPHAN_BRICK_RANGE
+                    end
+                end
+            end
+            if nearby or not anyProp then
+                for idx in pairs(stacks) do deleteWheelBrickStack(stacks, idx) end
+                WheelDamageRuntime.brickProps[key] = nil
+            end
+        end
+    end
+end
+
+CreateThread(function()
+    while true do
+        Wait(2000)
+        if next(WheelDamageRuntime.brickProps) then removeOrphanedWheelBricks() end
+    end
+end)
+
 function ensureWheelTheftBricksForVehicle(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
         Sky.Debug("debug", "[sky_mechanicjob][wheel_theft] brick refresh failed: invalid vehicle")
@@ -455,6 +498,28 @@ function ensureWheelTheftBricksForVehicle(vehicle)
     syncWheelBricksForVehicle(vehicle, wheelsData)
 end
 
+-- The torque multiplier lasts one frame: set once on a state change it never took effect. The
+-- driver's client keeps it up while wheels are missing.
+local torqueHold = { vehicle = 0, multiplier = 1.0 }
+
+local function holdTorqueMultiplier(vehicle, multiplier)
+    if multiplier >= 1.0 or not isPlayerDriver(vehicle) then
+        if torqueHold.vehicle == vehicle then torqueHold.vehicle = 0 end
+        return
+    end
+    torqueHold.multiplier = multiplier
+    if torqueHold.vehicle == vehicle then return end
+
+    torqueHold.vehicle = vehicle
+    CreateThread(function()
+        while torqueHold.vehicle == vehicle and DoesEntityExist(vehicle) and isPlayerDriver(vehicle) do
+            SetVehicleEngineTorqueMultiplier(vehicle, torqueHold.multiplier)
+            Wait(0)
+        end
+        if torqueHold.vehicle == vehicle then torqueHold.vehicle = 0 end
+    end)
+end
+
 local function updateHandlingForWheelDamage(vehicle, wheelsData)
     if CFG_HANDLING.enabled == false then return end
     local detachedCount = countDetachedFromState(wheelsData)
@@ -462,6 +527,7 @@ local function updateHandlingForWheelDamage(vehicle, wheelsData)
     if detachedCount <= 0 then
         SetVehicleUndriveable(vehicle, false)
         SetVehicleReduceGrip(vehicle, false)
+        holdTorqueMultiplier(vehicle, 1.0)
         SetVehicleEngineTorqueMultiplier(vehicle, 1.0)
         SetVehicleEnginePowerMultiplier(vehicle, 0.0)
         return
@@ -477,7 +543,7 @@ local function updateHandlingForWheelDamage(vehicle, wheelsData)
     local tqFactor = tqMultPerWheel * detachedCount
     local pwrFactor = pwrMultPerWheel * detachedCount
 
-    SetVehicleEngineTorqueMultiplier(vehicle, math.max(0.08, 1.0 - tqFactor))
+    holdTorqueMultiplier(vehicle, math.max(0.08, 1.0 - tqFactor))
     SetVehicleEnginePowerMultiplier(vehicle, pwrFactor)
 
     if CFG_HANDLING.fullyDisableVehicle == true then
@@ -491,6 +557,7 @@ end
 local function resetHandlingProperties(vehicle)
     SetVehicleUndriveable(vehicle, false)
     SetVehicleReduceGrip(vehicle, false)
+    holdTorqueMultiplier(vehicle, 1.0)
     SetVehicleEngineTorqueMultiplier(vehicle, 1.0)
     SetVehicleEnginePowerMultiplier(vehicle, 0.0)
 end

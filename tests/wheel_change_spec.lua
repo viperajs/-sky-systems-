@@ -34,7 +34,7 @@ local function newClient(bones, wheelCount)
     local f = {
         bones = bones, boneNames = {}, coords = { [VEHICLE] = vec(0, 0, 0), [PED] = vec(-1.6, 0, 0) },
         exports = {}, nuiCallbacks = {}, off = {}, burst = {}, stateBag = {}, notes = {}, checklists = {},
-        calls = {}, applied = 0, applyFailures = 0, nextObject = 500, stateBagHandlers = {}, serverEvents = {},
+        calls = {}, applied = 0, applyFailures = 0, nextObject = 500, stateBagHandlers = {}, serverEvents = {}, deleted = {}, threads = {}, torque = {},
         orderPart = { id = "mod_23", label = "Rims", value = 7, requiredItem = "wheels" },
     }
     local i = 0
@@ -47,8 +47,9 @@ local function newClient(bones, wheelCount)
     end })
     env._G = env
     env.print = function() end
-    env.CreateThread = function() end
-    env.Wait = function() end
+    -- Threads are kept, not run; a test can run one. Wait yields inside such a thread.
+    env.CreateThread = function(fn) f.threads[#f.threads + 1] = fn end
+    env.Wait = function(ms) if coroutine.isyieldable() then coroutine.yield(ms) end end
     env.Citizen = { CreateThread = env.CreateThread, Wait = env.Wait }
     env.GetGameTimer = function() return 0 end
     env.GetGameBuildNumber = function() return 3258 end
@@ -75,9 +76,15 @@ local function newClient(bones, wheelCount)
     -- Natives
     env.PlayerPedId = function() return PED end
     env.GetEntityCoords = function(entity) return f.coords[entity] or vec(0, 0, 0) end
-    env.DoesEntityExist = function(entity) return entity == PED or entity == VEHICLE or (entity or 0) >= 500 end
+    env.DoesEntityExist = function(entity)
+        if f.deleted[entity] then return false end
+        if entity == VEHICLE then return not f.vehicleGone end
+        return entity == PED or (entity or 0) >= 500
+    end
+    env.DeleteEntity = function(entity) f.deleted[entity] = true end
+    env.SetVehicleEngineTorqueMultiplier = function(_, multiplier) f.torque[#f.torque + 1] = multiplier end
     env.IsEntityAVehicle = function(entity) return entity == VEHICLE end
-    env.NetworkDoesNetworkIdExist = function(netId) return netId == VEHICLE_NET_ID end
+    env.NetworkDoesNetworkIdExist = function(netId) return netId == VEHICLE_NET_ID and not f.vehicleGone end
     env.NetworkGetEntityFromNetworkId = function(netId) return netId == VEHICLE_NET_ID and VEHICLE or 0 end
     env.NetworkGetNetworkIdFromEntity = function(entity) return entity == VEHICLE and VEHICLE_NET_ID or 0 end
     env.NetworkHasControlOfEntity = function() return true end
@@ -463,4 +470,48 @@ do
     assert(f.burst[0], "the other tyre is still burst")
 end
 
-print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail, taken off again when cancelled), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft, wheel damage cleared for the wheels an order replaced.")
+-- 10. The bricks under a car with a stolen wheel go away with the car (stored in a garage,
+--     deleted); they stayed where it stood. A car out of range keeps them for its return.
+do
+    local f = newClient(CAR_BONES, 4)
+    local first = f.nextObject + 1
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = { ["4"] = { damage = 200, popped = true, detached = true, source = "theft" } } })
+    local bricks = {}
+    for obj = first, f.nextObject do bricks[#bricks + 1] = obj end
+    assert(#bricks > 0, "bricks under the car")
+    local function bricksLeft()
+        local n = 0
+        for _, obj in ipairs(bricks) do if not f.deleted[obj] then n = n + 1 end end
+        return n
+    end
+
+    f.env.removeOrphanedWheelBricks()
+    assert(bricksLeft() == #bricks, "bricks stay under the car")
+    f.vehicleGone = true
+    f.coords[PED] = vec(500, 0, 0)
+    f.env.removeOrphanedWheelBricks()
+    assert(bricksLeft() == #bricks, "bricks stay for a car out of range")
+    f.coords[PED] = vec(5, 0, 0)
+    f.env.removeOrphanedWheelBricks()
+    assert(bricksLeft() == 0, "bricks of a car that is gone removed")
+end
+
+-- 11. Driving with a wheel missing: the reduced torque is set every frame (it lasts one frame;
+--     set once on the state change, it never took effect). It ends once the wheel is back.
+do
+    local f = newClient(CAR_BONES, 4)
+    f.env.GetPedInVehicleSeat = function() return PED end
+    local before = #f.threads
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = { ["4"] = { damage = 200, popped = true, detached = true } } })
+    assert(#f.threads == before + 1, "torque kept up by a thread")
+    local co = coroutine.create(f.threads[#f.threads])
+    f.torque = {}
+    for _ = 1, 3 do assert(coroutine.resume(co)) end
+    assert(#f.torque == 3 and f.torque[1] < 1.0 and f.torque[3] == f.torque[1], "reduced torque every frame")
+
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, nil)
+    assert(coroutine.resume(co))
+    assert(coroutine.status(co) == "dead", "no longer kept up with every wheel on")
+end
+
+print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail, taken off again when cancelled), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft, wheel damage cleared for the wheels an order replaced, the bricks of a car that is gone removed, less torque every frame while a wheel is missing.")

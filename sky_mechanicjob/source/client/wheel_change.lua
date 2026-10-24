@@ -915,6 +915,10 @@ local function isOptionStancerChanged(opt)
     if opt.id == "wheel_size" or opt.id == "wheel_width" then
         return math.abs(val - 1.0) > 0.001
     end
+    -- The car's own track width (StanceKit.AddOptions).
+    if opt.unchangedValue ~= nil then
+        return math.abs((tonumber(opt.value) or 0) - opt.unchangedValue) >= 1
+    end
     return math.abs(val) > 0.001
 end
 

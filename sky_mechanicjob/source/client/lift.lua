@@ -270,9 +270,12 @@ local function findExistingLiftProps(liftPoint)
     return nil
 end
 
+-- existingProps.autoDiscover.enabled = false turned nothing off: map lifts were still found
+-- without a workshop_lift point.
 local function isAutoDiscoverEnabled()
     local existingCfg = Config and Config.WorkshopLiftSystem and Config.WorkshopLiftSystem.existingProps or {}
-    return existingCfg.enabled == true
+    local autoCfg = type(existingCfg.autoDiscover) == "table" and existingCfg.autoDiscover or {}
+    return existingCfg.enabled == true and autoCfg.enabled ~= false
 end
 
 local function buildAutoLiftKey(setName, coords)

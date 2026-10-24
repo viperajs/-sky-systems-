@@ -18,7 +18,10 @@ local LIFT = vec(100.0, 200.0, FLOOR)
 local REST = 0.5 -- the car's centre above the floor when it stands on it
 
 -- One world: the car, both clients, the server relay with 30 ms latency, 16 ms frames.
-local function newWorld()
+-- opts.mapLift: lift props of the map (an MLO) at these coordinates; opts.configure(Config) runs
+-- on each client's config before the lift starts; opts.pedPos1: where client 1 stands.
+local function newWorld(opts)
+    opts = opts or {}
     local W = { now = 0, entities = {}, clients = {}, relayed = {}, pendingServer = {}, serverTimers = {} }
     local entities = W.entities
 
@@ -156,7 +159,7 @@ local function newWorld()
             for h, e in pairs(entities) do
                 if e.exists then
                     if pool == "CVehicle" and e.kind == "veh" then out[#out + 1] = h end
-                    if pool == "CObject" and e.kind == "obj" and e.owner == id then out[#out + 1] = h end
+                    if pool == "CObject" and e.kind == "obj" and (e.owner == id or e.owner == "map") then out[#out + 1] = h end
                 end
             end
             table.sort(out)
@@ -186,6 +189,7 @@ local function newWorld()
         c.env = env
         for _, f in ipairs({ "config/init.lua", "config/config.lua", "config/adv_config.lua", "source/client/lift.lua" }) do
             assert(loadfile(SRC .. "/" .. f, "t", env))()
+            if f == "config/adv_config.lua" and opts.configure then opts.configure(env.Config) end
         end
         c.deliver = function(name, data)
             local fn = c.events[name]
@@ -235,7 +239,13 @@ local function newWorld()
     end
     function W.run(ms) local target = W.now + ms; while W.now < target do step() end end
 
-    W.clients[1] = newClient(1, 1000, vec(LIFT.x + 2.0, LIFT.y, FLOOR + 1.0))
+    if opts.mapLift then
+        local hash = function(s) return #tostring(s) * 7919 + tostring(s):byte(-1) end
+        local m = opts.mapLift
+        entities[900] = { kind = "obj", owner = "map", model = hash("sky_carlift_platform"), x = m.x, y = m.y, z = m.z, exists = true, frozen = true }
+        entities[901] = { kind = "obj", owner = "map", model = hash("sky_carlift_frame"), x = m.x + 0.1, y = m.y, z = m.z, exists = true, frozen = true }
+    end
+    W.clients[1] = newClient(1, 1000, opts.pedPos1 or vec(LIFT.x + 2.0, LIFT.y, FLOOR + 1.0))
     W.clients[2] = newClient(2, 2000, vec(LIFT.x - 2.0, LIFT.y, FLOOR + 1.0))
     W.run(1500) -- workshop data, lift props
 
@@ -385,4 +395,24 @@ do
     assert(not attachedForB and math.abs(W.carHeight()) < 0.01, "the other player still has the platform on the car")
 end
 
-print("PASS: workshop lift raised and lowered by one mechanic, taken over by a second one (no drop, no double height, not through the floor), a raised car deleted (platform back down for everyone, the next car not sunk), and Up pressed at any moment keeps the platform under the car for other players, a quick tap releases the car for them too.")
+-- 7. A lift of the map (MLO props) is found without a workshop_lift point, unless
+--    existingProps.autoDiscover.enabled is false: switching it off changed nothing.
+do
+    local MAP_LIFT = vec(LIFT.x + 30.0, LIFT.y, FLOOR)
+    local function mapLiftOffered(autoDiscover)
+        local W = newWorld({
+            mapLift = MAP_LIFT,
+            pedPos1 = vec(MAP_LIFT.x + 2.0, MAP_LIFT.y, FLOOR + 1.0),
+            configure = function(Config) Config.WorkshopLiftSystem.existingProps.autoDiscover.enabled = autoDiscover end,
+        })
+        W.run(2000)
+        local offered
+        W.clients[1].call(function() offered = W.clients[1].env.isLiftRadialActionAvailable() end)
+        W.run(100)
+        return offered
+    end
+    assert(mapLiftOffered(true) == true, "the map lift is found")
+    assert(mapLiftOffered(false) == false, "auto discovery switched off")
+end
+
+print("PASS: workshop lift raised and lowered by one mechanic, taken over by a second one (no drop, no double height, not through the floor), a raised car deleted (platform back down for everyone, the next car not sunk), and Up pressed at any moment keeps the platform under the car for other players, a quick tap releases the car for them too, map lifts found unless auto discovery is switched off.")

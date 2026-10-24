@@ -607,7 +607,11 @@ local function respawnVehicleWithProps(vehicle)
 
     if not HasModelLoaded(modelHash) then return 0 end
 
+    -- Only the network owner can delete the car: without control the new car appeared next to
+    -- the old one (another player driving it, or the owner standing closer).
+    if not requestVehicleControl(vehicle, 1500) then return 0 end
     deleteVehicleForRespawn(vehicle)
+    if DoesEntityExist(vehicle) then return 0 end
 
     local newVeh = CreateVehicle(modelHash, coords.x, coords.y, coords.z, heading, true, false)
     if newVeh == 0 or not DoesEntityExist(newVeh) then

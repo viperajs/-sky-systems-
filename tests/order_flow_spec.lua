@@ -1045,6 +1045,54 @@ do
     assert(W.veh.toggles[20] == true and W.veh.smoke and W.veh.smoke[1] == 255 and W.veh.smoke[2] == 0, "red tyre smoke on")
 end
 
+-- 6f. Resetting the stance after a direct purchase respawns the car; without network control
+--     of it the old car could not be deleted and a second one was created next to it.
+do
+    local W = newWorld({ job = "mechanic" })
+    local env = W.client.env
+    local created, deleted = 0, 0
+    env.CreateVehicle = function() created = created + 1 return 77 end
+    env.DeleteVehicle = function() if W.hasControl ~= false then deleted = deleted + 1; W.vehDeleted = true end end
+    local exists = env.DoesEntityExist
+    env.DoesEntityExist = function(entity)
+        if entity == VEH and W.vehDeleted then return false end
+        return entity == 77 or exists(entity)
+    end
+    W.openSelfService()
+    env.TuningState.persistChangesOnClose = true
+    W.hasControl = false
+    local res = W.nui("tuning:resetStance", {})
+    assert(res.success == false and res.error == "respawn_failed", "refused without control")
+    assert(created == 0, "no second car")
+    W.hasControl = true
+    res = W.nui("tuning:resetStance", {})
+    assert(res.success == true and deleted == 1 and created == 1, "respawned with control")
+end
+
+-- 6g. With the real stance kit: the track width sliders show the car's own width, which is no
+--     stance; the list of tuning to remove from a stock car has none in it.
+do
+    local W = newWorld({ job = "mechanic" })
+    local env = W.client.env
+    env.StanceKit = nil
+    local offsets = { [0] = -0.8, [1] = 0.8, [2] = -0.82, [3] = 0.82 }
+    env.GetVehicleWheelXOffset = function(_, idx) return offsets[idx] end
+    env.GetVehicleWheelSize = function() return 1.0 end
+    env.GetVehicleWheelWidth = function() return 1.0 end
+    env.GetVehicleSuspensionHeight = function() return 0.0 end
+    W.server.callbacks["sky_mechanicjob:stance:loadDefault"] = function()
+        return { success = true, stance = { trackFront = 0.8, trackRear = 0.82 } }
+    end
+    W.client.load("sky_mechanicjob/source/client/stance_kit.lua")
+    W.player.items.mechanic_tools = 1
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    local res = W.nui("tuningRemoval:listApplied", {})
+    assert(res.success == true, tostring(res.error))
+    for _, entry in ipairs(res.data.entries) do
+        assert(entry.id ~= "stancer_bundle", "a stock car has no stance to remove")
+    end
+end
+
 -- 7. Another car connected (parked next to the customer's): the part went on the connected
 --    car while the order counted it as installed. It goes on the order's car now.
 do
@@ -1307,4 +1355,4 @@ do
     assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke.")
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car.")
