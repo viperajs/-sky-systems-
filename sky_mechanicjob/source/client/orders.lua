@@ -1030,6 +1030,7 @@ function clearOrderInstallState()
     OrderInstallState.simpleChecklistSignature = ""
     OrderInstallState.simpleStep = "idle"
     OrderInstallState.stanceCompletedWheels = {}
+    OrderInstallState.propsBeforePart = nil
 end
 
 function notify(msg, ntype)
@@ -1482,6 +1483,9 @@ function runJobWheelAttach(vehicle, options)
     -- The part goes on with the last wheel; if that fails, the wheel can be attached again.
     local done, total = countReplacedWheels()
     done = done + 1
+    if done >= total and not OrderInstallState.repairMode then
+        rememberVehicleBeforeOrderPart(vehicle)
+    end
     if done >= total and not OrderInstallState.repairMode and not applyOrderPartToVehicle(vehicle, OrderInstallState.part) then
         return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
     end

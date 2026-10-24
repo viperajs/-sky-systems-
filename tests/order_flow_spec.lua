@@ -473,7 +473,11 @@ local function newWorld(opts)
         for name, idx in pairs(CAR_BONES) do if idx == index then return W.veh.pos + BONE_POS[name] end end
         return W.veh.pos
     end
-    cenv.GetNumVehicleMods = function(_, modType) return NUM_MODS[modType] or 0 end
+    -- The High End wheels (type 7) have more rims than the Sport wheels (type 0).
+    cenv.GetNumVehicleMods = function(_, modType)
+        if modType == 23 and W.veh.wheelType == 7 then return 40 end
+        return NUM_MODS[modType] or 0
+    end
     cenv.GetVehicleMod = function(_, modType) return W.veh.mods[modType] or -1 end
     cenv.SetVehicleMod = function(_, modType, index) W.veh.mods[modType] = index end
     cenv.GetVehicleModVariation = function() return false end
@@ -577,8 +581,12 @@ local function newWorld(opts)
         Vehicle = {
             new = function(vehicle)
                 return {
-                    GetVehicleProperties = function() return { plate = W.veh.plate, model = W.veh.model, mods = copy(W.veh.mods) } end,
-                    SetVehicleProperties = function(_, props) W.restoredProps = (W.restoredProps or 0) + 1 end,
+                    GetVehicleProperties = function() return { plate = W.veh.plate, model = W.veh.model, mods = copy(W.veh.mods), toggleMods = copy(W.veh.toggles) } end,
+                    SetVehicleProperties = function(_, props)
+                        W.restoredProps = (W.restoredProps or 0) + 1
+                        if props.mods then W.veh.mods = copy(props.mods) end
+                        if props.toggleMods then W.veh.toggles = copy(props.toggleMods) end
+                    end,
                 }
             end,
         },
@@ -1143,4 +1151,42 @@ do
     assert(state.simpleStep == "install_neon", "raised by a colleague: " .. tostring(state.simpleStep))
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates.")
+-- 16. Rims of another wheel type: rim 30 of the High End wheels was clamped to the 10 rims of
+--     the car's Sport wheels, and rim 9 went on.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    W.veh.wheelType = 0
+    local ok = W.run(function() return C.env.applyOrderPartToVehicle(VEH, { id = "mod_23", value = 30, wheelType = 7 }) end)
+    assert(ok and W.veh.wheelType == 7, "wheel type changed")
+    assert(W.veh.mods[23] == 30, "the ordered rim went on: " .. tostring(W.veh.mods[23]))
+end
+
+-- 17. The server does not count the install (the turbo was used up before Install Part): the
+--     turbo stayed on the car and was saved while the order stayed open and refundable.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "toggle_18", value = 1 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    W.player.items.turbo = 1
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    W.player.items.turbo = 0 -- sold, dropped or used elsewhere
+    local saves = W.saves or 0
+    W.act("install_order_part")
+    assert(W.veh.toggles[18] ~= true, "the turbo stayed on the car")
+    assert((W.saves or 0) == saves, "the car was saved with the turbo")
+    assert(json.decode(W.db.orders[1].items)[1].installed ~= true and W.db.orders[1].status == "pending", "order untouched")
+    assert(C.env.OrderInstallState.active == false, "install ended")
+
+    -- With the turbo back, the same install goes through and is saved.
+    W.player.items.turbo = 1
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood") and W.act("install_order_part"))
+    assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
+end
+
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install.")

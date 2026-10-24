@@ -34,7 +34,7 @@ local function newClient(bones, wheelCount)
     local f = {
         bones = bones, boneNames = {}, coords = { [VEHICLE] = vec(0, 0, 0), [PED] = vec(-1.6, 0, 0) },
         exports = {}, nuiCallbacks = {}, off = {}, burst = {}, stateBag = {}, notes = {}, checklists = {},
-        calls = {}, applied = 0, applyFailures = 0, nextObject = 500, stateBagHandlers = {},
+        calls = {}, applied = 0, applyFailures = 0, nextObject = 500, stateBagHandlers = {}, serverEvents = {},
         orderPart = { id = "mod_23", label = "Rims", value = 7, requiredItem = "wheels" },
     }
     local i = 0
@@ -114,6 +114,7 @@ local function newClient(bones, wheelCount)
         f.off[tyre] = true
     end
     env.AddStateBagChangeHandler = function(key, _, fn) f.stateBagHandlers[key] = fn end
+    env.TriggerServerEvent = function(name, ...) f.serverEvents[#f.serverEvents + 1] = { name = name, args = table.pack(...) } end
     env.GetEntityFromStateBagName = function() return VEHICLE end
     env.SetVehicleFixed = function() f.off, f.burst = {}, {} end
     env.SetVehicleTyreFixed = function(_, idx) f.burst[idx] = nil end
@@ -367,4 +368,74 @@ do
     assert(bike.off[4], "a motorcycle's rear wheel came off")
 end
 
-print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft.")
+-- 8. New rims on a car whose rear left wheel was stolen: once the order counts, the wheel damage
+--    of the replaced wheels is cleared for everyone. It stayed "detached": the new wheel came off
+--    again for other players and the theft bricks stayed.
+do
+    local f = newClient(CAR_BONES, 4)
+    f.stateBag[STATE_BAG_KEY] = { wheels = { ["4"] = { damage = 200, detached = true, source = "theft" } } }
+    f.env.getDetachedWheelDamageIndexes = function() return { 4 } end
+    assert(f.nui("orders:startInstall", { orderId = 7, partIndex = 1, vehicleNetId = VEHICLE_NET_ID }).success)
+    f.standAt("wheel_lf")
+    f.act("car_jack")
+    for _, bone in ipairs({ "wheel_lf", "wheel_rf", "wheel_rr" }) do
+        f.standAt(bone)
+        f.act("detach_wheel")
+        f.act("attach_wheel")
+    end
+    f.standAt("wheel_lr")
+    f.act("attach_wheel") -- the stolen wheel: only the new one goes on
+    f.act("remove_car_jack")
+    assert(f.completions(ORDER_DONE) == 1)
+    local reset
+    for _, event in ipairs(f.serverEvents) do
+        if event.name == "sky_mechanicjob:wheelDamage:reset" then reset = event end
+    end
+    assert(reset and reset.args[1] == VEHICLE_NET_ID, "wheel damage reset sent")
+    local cleared = {}
+    for _, idx in ipairs(reset.args[2]) do cleared[idx] = true end
+    assert(cleared[0] and cleared[1] and cleared[4] and cleared[5], "every replaced wheel cleared")
+end
+
+-- 9. The server clears only the wheels a job replaced; the clients put a cleared wheel back on and
+--    keep the damage of the others.
+do
+    local bags = {}
+    local senv = setmetatable({}, { __index = _G })
+    local handlers = {}
+    senv.RegisterNetEvent = function(name, fn) handlers[name] = fn end
+    senv.AddEventHandler = function() end
+    senv.GetGameTimer = function() return 0 end
+    senv.Entity = function(entity)
+        bags[entity] = bags[entity] or {}
+        local state = setmetatable({ set = function(_, key, value) bags[entity][key] = value end }, { __index = function(_, key) return bags[entity][key] end })
+        return { state = state }
+    end
+    senv.Functions = {
+        IsMechanicOnDuty = function() return true end,
+        HasPermission = function() return false end,
+        GetVehicleByNetId = function() return VEHICLE end,
+    }
+    assert(loadfile("sky_mechanicjob/source/server/wheel_damage.lua", "t", senv))()
+    bags[VEHICLE] = { [STATE_BAG_KEY] = { wheels = {
+        ["0"] = { damage = 120, popped = true }, ["5"] = { damage = 200, popped = true, detached = true },
+    } } }
+    senv.source = 1
+    handlers["sky_mechanicjob:wheelDamage:reset"](VEHICLE_NET_ID, { 5 })
+    local bag = bags[VEHICLE][STATE_BAG_KEY]
+    assert(bag and bag.wheels["5"] == nil and bag.wheels["0"] and bag.wheels["0"].popped, "only the replaced wheel was cleared")
+    handlers["sky_mechanicjob:wheelDamage:reset"](VEHICLE_NET_ID)
+    assert(bags[VEHICLE][STATE_BAG_KEY] == nil, "without wheels the whole state is cleared")
+
+    local f = newClient(CAR_BONES, 4)
+    local handler = f.stateBagHandlers[STATE_BAG_KEY]
+    handler("entity:109", STATE_BAG_KEY, { wheels = {
+        ["0"] = { damage = 120, popped = true }, ["5"] = { damage = 200, popped = true, detached = true },
+    } })
+    assert(f.burst[0] and f.off[5], "damage applied")
+    handler("entity:109", STATE_BAG_KEY, { wheels = { ["0"] = { damage = 120, popped = true } } })
+    assert(not f.off[5], "the replaced wheel is back on")
+    assert(f.burst[0], "the other tyre is still burst")
+end
+
+print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft, wheel damage cleared for the wheels an order replaced.")

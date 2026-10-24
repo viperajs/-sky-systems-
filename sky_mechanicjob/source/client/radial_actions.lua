@@ -969,6 +969,7 @@ exports("triggerRadialMenuAction", function(actionId)
             return false, mgErr
         end
 
+        rememberVehicleBeforeOrderPart(veh)
         if not applyOrderPartToVehicle(veh, OrderInstallState.part) then
             return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
         end
@@ -1135,6 +1136,7 @@ exports("triggerRadialMenuAction", function(actionId)
         end
 
         if not OrderInstallState.repairMode then
+            rememberVehicleBeforeOrderPart(targetVeh)
             if not applyOrderPartToVehicle(targetVeh, OrderInstallState.part) then
                 return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
             end

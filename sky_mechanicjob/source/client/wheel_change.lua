@@ -1389,6 +1389,13 @@ function applyOrderPartToVehicle(vehicle, partPayload)
                     TuningState.suppressPreviews = curSupp
                     return false
                 end
+                -- The rims of the new wheel type: the ordered rim was clamped to the rim count of
+                -- the vehicle's old wheel type, so a different rim went on (e.g. rim 30 of the
+                -- High End wheels became rim 9 on a car with Sport wheels).
+                local rimCount = GetNumVehicleMods(vehicle, opt.modType)
+                if rimCount > 0 then
+                    opt.max = rimCount - 1
+                end
             else
                 Sky.Debug("debug", ("[sky_mechanicjob][orders] apply warning: wheel_type option missing for %s (requested=%s)"):format(optionId, tostring(wType)))
             end
@@ -1471,6 +1478,13 @@ function startDirectStanceInstall(vehicle, stancePart)
     return true
 end
 
+-- The vehicle just before an order part goes on. It is put back when the server does not count
+-- the install (the item gone at the last step, the order changed by a colleague, no answer):
+-- the part stayed on the car and was saved while the order stayed open and refundable.
+function rememberVehicleBeforeOrderPart(vehicle)
+    OrderInstallState.propsBeforePart = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+end
+
 function completeActiveOrderInstall(vehicle, force)
     local isRepair = (OrderInstallState.repairMode == true)
     local flowType = resolveSimpleInstallFlow()
@@ -1531,6 +1545,7 @@ function completeActiveOrderInstall(vehicle, force)
         end
 
         if not isRepair then
+            rememberVehicleBeforeOrderPart(vehicle)
             if not applyOrderPartToVehicle(vehicle, OrderInstallState.part) then
                 local failMsg = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
                 notify(failMsg, "error")
@@ -1619,7 +1634,8 @@ function completeActiveOrderInstall(vehicle, force)
     end
 
     local res = Sky.Cb.Trigger(eventName, payload) or {}
-    if type(res) == "table" and res.success == true then
+    local counted = type(res) == "table" and res.success == true
+    if counted then
         if OrderInstallState.tuningRemovalMode then
             notify(getNuiLocale("tablet.tuningRemoval.removeSuccess", "Tuning removed and item returned."), "success")
         elseif OrderInstallState.repairMode then
@@ -1632,6 +1648,9 @@ function completeActiveOrderInstall(vehicle, force)
             end
         end
     else
+        if OrderInstallState.propsBeforePart then
+            Sky.Vehicle.new(vehicle):SetVehicleProperties(OrderInstallState.propsBeforePart)
+        end
         if type(res) == "table" and res.error == "missing_item" then
             local reqItem = tostring(res.requiredItem or OrderInstallState.requiredItem or DEFAULT_PART_ITEM)
             notify(("%s: %s"):format(
@@ -1639,15 +1658,28 @@ function completeActiveOrderInstall(vehicle, force)
                 getNuiLocale(("tablet.orders.items.%s"):format(reqItem), reqItem)
             ), "error")
         else
-            notify(getNuiLocale("tablet.orders.install_finalize_failed", "Part was applied but order update failed."), "error")
+            notify(getNuiLocale("tablet.orders.install_finalize_failed", "The order could not be updated, so the part was taken off again."), "error")
         end
     end
 
-    saveTuningForVehicle(vehicle)
-    if TuningState.active and TuningState.vehicle == vehicle and DoesEntityExist(vehicle) then
-        TuningState.snapshotProps = Sky.Vehicle.new(vehicle):GetVehicleProperties()
-        TuningState.antiLagSnapshot = AntiLag.GetPersistedState(vehicle)
-        TuningState.twoStepSnapshot = TwoStep.GetPersistedState(vehicle)
+    if counted then
+        -- New wheels replace damaged or stolen ones: a wheel that was missing came off again for
+        -- other players and the theft bricks stayed, as the wheel damage still had it detached.
+        if not OrderInstallState.repairMode and WheelOrderInstallState.allWheels then
+            local replaced = {}
+            for _, wheel in ipairs(WheelOrderInstallState.wheels or {}) do
+                for _, idx in ipairs(wheel.indexes or {}) do replaced[#replaced + 1] = idx end
+            end
+            if #replaced > 0 then
+                TriggerServerEvent("sky_mechanicjob:wheelDamage:reset", NetworkGetNetworkIdFromEntity(vehicle), replaced)
+            end
+        end
+        saveTuningForVehicle(vehicle)
+        if TuningState.active and TuningState.vehicle == vehicle and DoesEntityExist(vehicle) then
+            TuningState.snapshotProps = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+            TuningState.antiLagSnapshot = AntiLag.GetPersistedState(vehicle)
+            TuningState.twoStepSnapshot = TwoStep.GetPersistedState(vehicle)
+        end
     end
 
     clearOrderInstallState()

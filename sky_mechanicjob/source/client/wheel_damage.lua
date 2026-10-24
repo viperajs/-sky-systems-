@@ -548,6 +548,16 @@ local function syncVehicleStateBagData(vehicle, stateBagVal)
     if next(applied) and not next(wheelsData) then
         fixAllTyresAndRemoveKeyCache(vehicle)
         removeBricksForVehicle(vehicle)
+    elseif next(wheelsData) then
+        -- Some wheels cleared (a job replaced them) while others stay damaged: a wheel broken off
+        -- only comes back with the whole vehicle fixed, then the remaining damage goes on again.
+        for key, entry in pairs(applied) do
+            if wheelsData[key] == nil and (entry.detached or entry.popped) then
+                fixAllTyresAndRemoveKeyCache(vehicle)
+                applied = {}
+                break
+            end
+        end
     end
 
     for k, v in pairs(wheelsData) do

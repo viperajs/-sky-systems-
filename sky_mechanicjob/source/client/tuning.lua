@@ -201,6 +201,7 @@ function attachNearestVehicleWheel()
         return false
     end
 
+    rememberVehicleBeforeOrderPart(OrderInstallState.vehicle)
     if not applyOrderPartToVehicle(OrderInstallState.vehicle, OrderInstallState.part) then
         notify(getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle."), "error")
         return false
