@@ -33,5 +33,19 @@ for folder in (Path("sky_mechanicjob/source/client"), Path("sky_jobs_base/source
     for path in folder.glob("*.lua"):
         prints = len(re.findall(r"(?<![\w.:])print\(", path.read_text()))
         assert prints == allowed_prints.get(path, 0), f"Bare print() in a client script, use Sky.Debug: {path}"
-print(f"PASS: {lua_count} Lua scripts/manifests and {js_count} JS files compile; no diagnostics instrumentation; client prints are debug-only.")
+# A server callback a client asks for but no server registers prints "ServerCallback ... does not
+# exist!" in F8 (the management app asked for one on every open). Known gaps: other resources'
+# callbacks (sky_policejob), the multijob menu (off by default, no server side) and the legacy
+# creator's point editing.
+registered, triggered = set(), {}
+for root in roots:
+    for path in root.rglob("*.lua"):
+        text = path.read_text()
+        registered.update(re.findall(r'(?:Sky\.Cb\.Register|register\w*Callback)\(\s*"([^"]+)"', text))
+        for name in re.findall(r'Sky\.Cb\.(?:Trigger|TriggerAsync|TriggerWithTimeout)\(\s*"([^"]+)"', text):
+            triggered.setdefault(name, path)
+known_gaps = re.compile(r"^sky_policejob:|^sky_jobs_base:multijob:(switch|setDuty|removeSelf)$|^sky_jobs_base:creator:(addPoint|clearPoint|createEntry|deleteEntry|removePoint|renameEntry|setJobStationBlip|setPoint)$")
+for name, path in sorted(triggered.items()):
+    assert name in registered or known_gaps.match(name), f"Server callback {name} is never registered ({path})"
+print(f"PASS: {lua_count} Lua scripts/manifests and {js_count} JS files compile; no diagnostics instrumentation; client prints are debug-only; every server callback asked for is registered.")
 print("One pre-existing CfxLua optional-chain expression was normalized in-memory for the stock Lua syntax check.")

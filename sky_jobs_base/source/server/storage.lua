@@ -343,6 +343,17 @@ local function capacityFor(job, entry, slot)
     return math.floor(tonumber(entry[key]) or tonumber(jobStorage[key]) or tonumber(Config and Config.Storage and Config.Storage[key]) or 0)
 end
 
+-- The roles editor offers weapon restrictions when one of the job's storages takes weapons. The
+-- management app asked for it on every open and got "ServerCallback does not exist" in F8.
+Sky.Cb.Register("sky_jobs_base:getJobStorageContainsWeapons", function(source)
+    local job = requireEmployee(tonumber(source), false)
+    if not job then return false end
+    for _, item in ipairs(loadStationEntries()) do
+        if entryJob(item) == job and item.entry.storageContainsWeapons == true then return true end
+    end
+    return false
+end)
+
 Sky.Cb.Register("sky_jobs_base:openStorage", function(source, data)
     local src = tonumber(source)
     if not oxStarted() then return { success = false, error = "inventory_unavailable" } end

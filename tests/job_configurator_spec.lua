@@ -418,4 +418,12 @@ for _, path in ipairs(changed) do
         "applying the configurator defaults changed " .. path)
 end
 
-print("PASS: mechanic configurator schema, sections, locale keys, config defaults, workshop tabs, interactions, list context, typed saves, server use of saved workshops and settings.")
+-- 3. A character switch keeps the player's source: the next character started with the duty of
+--    the previous one. sky_base raises playerUnloaded / playerLoaded server-side.
+local dutyCache = jobs.env.Sky_Jobs.PlayerCache
+dutyCache.SetDuty(7, false)
+assert(dutyCache.IsOnDuty(7) == false, "off duty")
+for _, fn in ipairs(jobs.events["sky_base:playerUnloaded"] or {}) do fn(7) end
+assert(dutyCache.IsOnDuty(7) == true, "the next character starts with the framework's duty")
+
+print("PASS: mechanic configurator schema, sections, locale keys, config defaults, workshop tabs, interactions, list context, typed saves, server use of saved workshops and settings, duty forgotten on a character switch.")

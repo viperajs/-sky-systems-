@@ -249,6 +249,18 @@ AddEventHandler("playerDropped", function()
     playerJobCache[src] = nil
 end)
 
+-- A character switch keeps the player's source: the next character started with the duty of
+-- the previous one. Both events are raised server-side by sky_base's framework bridge.
+local function forgetCharacter(src)
+    src = tonumber(src)
+    if src then
+        playerDutyState[src] = nil
+        playerJobCache[src] = nil
+    end
+end
+AddEventHandler("sky_base:playerUnloaded", forgetCharacter)
+AddEventHandler("sky_base:playerLoaded", forgetCharacter)
+
 -- -----------------------------------------------------
 --  FRAMEWORK & DATA HELPERS (Contract J)
 -- -----------------------------------------------------
