@@ -1974,18 +1974,26 @@ RegisterNUICallback("close", function(data, cb)
         closeTuningSafely()
     else
         releaseNuiFocus()
+        OrderTabletState.mechanicUiShown = false
         TriggerEvent("sky_jobs_base:tablet:setOpenState", false)
         TriggerEvent("sky_jobs:nuiClosed")
     end
     cb({ success = true })
 end)
 
+-- The mechanic UI reports its route whenever it changes. A "closed" report only counts while the
+-- tablet on screen is the mechanic UI's: after the back arrow handed over to the jobs tablet,
+-- the late report closed that tablet's state (the tablet left the player's hands while its
+-- home screen stayed open).
 RegisterNUICallback("tablet:setOpenState", function(data, cb)
     local openState = data and data.open == true
     local appKey = data and (data.appKey or data.key)
     local route = data and data.route
 
-    TriggerEvent("sky_jobs_base:tablet:setOpenState", openState, { appKey = appKey, route = route })
+    if openState or OrderTabletState.mechanicUiShown then
+        OrderTabletState.mechanicUiShown = openState
+        TriggerEvent("sky_jobs_base:tablet:setOpenState", openState, { appKey = appKey, route = route })
+    end
     cb({ success = true })
 end)
 
@@ -1997,6 +2005,7 @@ RegisterNUICallback("tablet:returnHome", function(data, cb)
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
     sendUi("close")
+    OrderTabletState.mechanicUiShown = false
     TriggerEvent("sky_jobs_base:tablet:setOpenState", false)
     cb({ success = true })
 

@@ -1093,6 +1093,25 @@ do
     end
 end
 
+-- 6h. The back arrow of a mechanic app hands over to the jobs tablet's home screen. The mechanic
+--     UI's late "closed" report (its route changed) closed the jobs tablet's state: the tablet
+--     left the player's hands while its home screen stayed open.
+do
+    local W = newWorld({ job = "mechanic" })
+    local states = {}
+    W.client.env.AddEventHandler("sky_jobs_base:tablet:setOpenState", function(open) states[#states + 1] = open end)
+    W.external.client = { sky_jobs_base = { OpenOnJobsBase = function() W.client.emit("sky_jobs_base:tablet:setOpenState", true, { appKey = "home" }) end } }
+    W.nui("tablet:setOpenState", { open = true, appKey = "mechanic_orders", route = "/tablet/mechanic-orders" })
+    W.nui("tablet:returnHome", {})
+    W.nui("tablet:setOpenState", { open = false, route = "/" })
+    assert(states[#states] == true, "the jobs tablet stays open")
+
+    -- Closed from the mechanic app itself, it is closed.
+    W.nui("tablet:setOpenState", { open = true, appKey = "mechanic_orders", route = "/tablet/mechanic-orders" })
+    W.nui("tablet:setOpenState", { open = false, route = "/" })
+    assert(states[#states] == false, "closed from the mechanic app")
+end
+
 -- 7. Another car connected (parked next to the customer's): the part went on the connected
 --    car while the order counted it as installed. It goes on the order's car now.
 do
@@ -1355,4 +1374,4 @@ do
     assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car.")
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car, the jobs tablet kept open after a mechanic app's back arrow.")

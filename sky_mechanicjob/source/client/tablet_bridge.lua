@@ -65,6 +65,7 @@ local function openMechanicTabletRoute(route, extra)
     end
     checkConnectedVehicle()
 
+    OrderTabletState.mechanicUiShown = true
     TriggerEvent("sky_jobs_base:tablet:setOpenState", true, {
         appKey = extra.appKey,
         route = route

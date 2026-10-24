@@ -4,7 +4,8 @@
 -- =====================================================
 
 -- 3: parts deliveries tables from older versions get every column parts_delivery.lua uses.
-local SCHEMA_VERSION = "3"
+-- 4: missing columns are added on MySQL too (the statements were MariaDB only).
+local SCHEMA_VERSION = "4"
 local SCHEMA_VERSION_KVP = "sky_mechanicjob_schema_version"
 
 local function executeSchemaMigrations()
@@ -137,40 +138,68 @@ local function executeSchemaMigrations()
         run(query)
     end
 
-    -- Run column migrations in case tables existed from older schemas
-    local alterQueries = {
-        "ALTER TABLE `sky_mechanic_vehicle_tuning` ADD COLUMN IF NOT EXISTS `tuning` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_tuning` ADD COLUMN IF NOT EXISTS `stance` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_tuning` ADD COLUMN IF NOT EXISTS `rgb` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_tuning` ADD COLUMN IF NOT EXISTS `nitro` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_tuning` ADD COLUMN IF NOT EXISTS `custom_handling` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_wear` ADD COLUMN IF NOT EXISTS `mileage` DOUBLE DEFAULT 0",
-        "ALTER TABLE `sky_mechanic_vehicle_wear` ADD COLUMN IF NOT EXISTS `wear` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_stance_defaults` ADD COLUMN IF NOT EXISTS `stance` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `items` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `paid` TINYINT(1) DEFAULT 1",
-        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `payment_method` VARCHAR(16) DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `payer_job` VARCHAR(50) DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_orders` ADD COLUMN IF NOT EXISTS `society_revenue` INT DEFAULT 0",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `items` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `job` VARCHAR(50) DEFAULT 'mechanic'",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `identifier` VARCHAR(64) DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `delivery_point` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `total_price` INT DEFAULT 0",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `status` VARCHAR(20) DEFAULT 'ready'",
-        "ALTER TABLE `sky_mechanic_parts_deliveries` ADD COLUMN IF NOT EXISTS `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `action` VARCHAR(50) NOT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `description` TEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `mechanic_identifier` VARCHAR(64) DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `mechanic_name` VARCHAR(100) DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_history` ADD COLUMN IF NOT EXISTS `price` INT DEFAULT 0",
-        "ALTER TABLE `sky_mechanic_vehicle_registry` ADD COLUMN IF NOT EXISTS `image_url` TEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_registry` ADD COLUMN IF NOT EXISTS `tags` LONGTEXT DEFAULT NULL",
-        "ALTER TABLE `sky_mechanic_vehicle_registry` ADD COLUMN IF NOT EXISTS `notes` TEXT DEFAULT NULL"
+    -- Columns tables from older schemas may lack. "ADD COLUMN IF NOT EXISTS" is MariaDB only: on
+    -- MySQL every statement failed, on every start, and a missing column stayed missing.
+    local addedColumns = {
+        { "sky_mechanic_vehicle_tuning", "tuning", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_tuning", "stance", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_tuning", "rgb", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_tuning", "nitro", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_tuning", "custom_handling", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_wear", "mileage", "DOUBLE DEFAULT 0" },
+        { "sky_mechanic_vehicle_wear", "wear", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_stance_defaults", "stance", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_orders", "items", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_orders", "paid", "TINYINT(1) DEFAULT 1" },
+        { "sky_mechanic_orders", "payment_method", "VARCHAR(16) DEFAULT NULL" },
+        { "sky_mechanic_orders", "payer_job", "VARCHAR(50) DEFAULT NULL" },
+        { "sky_mechanic_orders", "society_revenue", "INT DEFAULT 0" },
+        { "sky_mechanic_parts_deliveries", "items", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_parts_deliveries", "job", "VARCHAR(50) DEFAULT 'mechanic'" },
+        { "sky_mechanic_parts_deliveries", "identifier", "VARCHAR(64) DEFAULT NULL" },
+        { "sky_mechanic_parts_deliveries", "delivery_point", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_parts_deliveries", "total_price", "INT DEFAULT 0" },
+        { "sky_mechanic_parts_deliveries", "status", "VARCHAR(20) DEFAULT 'ready'" },
+        { "sky_mechanic_parts_deliveries", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" },
+        { "sky_mechanic_vehicle_history", "action", "VARCHAR(50) NOT NULL" },
+        { "sky_mechanic_vehicle_history", "description", "TEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_history", "mechanic_identifier", "VARCHAR(64) DEFAULT NULL" },
+        { "sky_mechanic_vehicle_history", "mechanic_name", "VARCHAR(100) DEFAULT NULL" },
+        { "sky_mechanic_vehicle_history", "price", "INT DEFAULT 0" },
+        { "sky_mechanic_vehicle_registry", "image_url", "TEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_registry", "tags", "LONGTEXT DEFAULT NULL" },
+        { "sky_mechanic_vehicle_registry", "notes", "TEXT DEFAULT NULL" },
     }
 
-    for _, alterQuery in ipairs(alterQueries) do
-        run(alterQuery)
+    local columnsByTable = {}
+    local function hasColumn(tableName, columnName)
+        local columns = columnsByTable[tableName]
+        if columns == nil then
+            local ok, rows = pcall(function()
+                return MySQL.query.await("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", { tableName })
+            end)
+            if ok and type(rows) == "table" then
+                columns = {}
+                for _, row in ipairs(rows) do
+                    local name = row.COLUMN_NAME or row.column_name
+                    if name then columns[string.lower(tostring(name))] = true end
+                end
+            else
+                -- Not known: the table is left alone and checked again on the next start.
+                allOk = false
+                Functions.Log("error", "[db_migrate] %s", tostring(rows))
+                columns = false
+            end
+            columnsByTable[tableName] = columns
+        end
+        return columns == false or columns[string.lower(columnName)] == true
+    end
+
+    for _, column in ipairs(addedColumns) do
+        local tableName, columnName, definition = column[1], column[2], column[3]
+        if not hasColumn(tableName, columnName) then
+            run(("ALTER TABLE `%s` ADD COLUMN `%s` %s"):format(tableName, columnName, definition))
+        end
     end
 
     if not allOk then

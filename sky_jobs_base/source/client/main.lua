@@ -277,6 +277,8 @@ end
 
 RegisterCommand("jobtablet", openTabletCommand, false)
 RegisterCommand("tablet", openTabletCommand, false)
+-- The tablet item (Config.Tablet.item) used from the inventory.
+RegisterNetEvent("sky_jobs_base:tablet:useItem", openTabletCommand)
 
 RegisterCommand("bossmenu", function()
     if not isEmployed() then return end
