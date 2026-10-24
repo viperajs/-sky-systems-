@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/tablet_apps.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/server/tablet_apps.lua
 --  Server-Side Tablet Apps Registry & Callbacks
@@ -16,7 +14,7 @@ function Sky_Jobs.RegisterTabletApps(resourceName, apps)
     Sky_Jobs.RegisteredTabletApps[resourceName] = apps
 end
 
-registerExport("RegisterTabletApps", function(resourceName, apps)
+exports("RegisterTabletApps", function(resourceName, apps)
     Sky_Jobs.RegisterTabletApps(resourceName, apps)
 end)
 
@@ -82,4 +80,38 @@ Sky.Cb.Register("sky_jobs_base:tablet:hasRequiredItem", function(source)
 
     local itemName = (type(tabletCfg.item) == "string" and tabletCfg.item ~= "") and tabletCfg.item or "tablet"
     return Sky_Jobs.GetInventoryItemCount(source, itemName) > 0
+end)
+
+-- ── Tablet item ─────────────────────────────────────
+-- Config.Tablet.item is the usable item that opens the tablet. It was never registered with the
+-- framework, so using it from the inventory did nothing.
+local function registerTabletItem()
+    local tabletCfg = Config and Config.Tablet or {}
+    local itemName = type(tabletCfg.item) == "string" and tabletCfg.item or ""
+    if tabletCfg.enabled == false or itemName == "" then return end
+
+    local function onUse(source)
+        TriggerClientEvent("sky_jobs_base:tablet:useItem", source)
+    end
+
+    local ok, err = pcall(function()
+        if GetResourceState("qbx_core") == "started" then
+            exports.qbx_core:CreateUseableItem(itemName, onUse)
+        elseif GetResourceState("qb-core") == "started" then
+            exports["qb-core"]:GetCoreObject().Functions.CreateUseableItem(itemName, onUse)
+        elseif GetResourceState("es_extended") == "started" then
+            exports.es_extended:getSharedObject().RegisterUsableItem(itemName, onUse)
+        end
+    end)
+    if not ok then
+        Sky.Debug("error", ("[sky_jobs_base] tablet item '%s' could not be registered: %s"):format(itemName, tostring(err)))
+    end
+end
+
+CreateThread(registerTabletItem)
+
+-- A restarted framework forgets the registration.
+AddEventHandler("onResourceStart", function(resourceName)
+    if resourceName ~= "qbx_core" and resourceName ~= "qb-core" and resourceName ~= "es_extended" then return end
+    SetTimeout(1000, registerTabletItem)
 end)

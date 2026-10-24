@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/lift.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/lift.lua
 --  Deobfuscated by Claude
@@ -271,9 +270,12 @@ local function findExistingLiftProps(liftPoint)
     return nil
 end
 
+-- existingProps.autoDiscover.enabled = false turned nothing off: map lifts were still found
+-- without a workshop_lift point.
 local function isAutoDiscoverEnabled()
     local existingCfg = Config and Config.WorkshopLiftSystem and Config.WorkshopLiftSystem.existingProps or {}
-    return existingCfg.enabled == true
+    local autoCfg = type(existingCfg.autoDiscover) == "table" and existingCfg.autoDiscover or {}
+    return existingCfg.enabled == true and autoCfg.enabled ~= false
 end
 
 local function buildAutoLiftKey(setName, coords)
@@ -525,7 +527,7 @@ local function lowerAndDetachVehicleBeforeDestroy(liftPoint)
     end
 
     if not requestVehicleControl(vehicle, 500) then
-        print(("[sky_mechanicjob][lift] failed: could not lower vehicle before destroying point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: could not lower vehicle before destroying point '%s'"):format(liftPoint.key))
         return
     end
 
@@ -685,17 +687,17 @@ end
 
 local function attachVehicleToLift(liftPoint, vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][lift] failed: attach target vehicle missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: attach target vehicle missing for point '%s'"):format(liftPoint.key))
         return false
     end
 
     if liftPoint.platformEntity == 0 or not DoesEntityExist(liftPoint.platformEntity) then
-        print(("[sky_mechanicjob][lift] failed: moving platform missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: moving platform missing for point '%s'"):format(liftPoint.key))
         return false
     end
 
     if not requestVehicleControl(vehicle, 1200) then
-        print(("[sky_mechanicjob][lift] failed: could not get network control for vehicle at point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: could not get network control for vehicle at point '%s'"):format(liftPoint.key))
         return false
     end
 
@@ -705,6 +707,12 @@ local function attachVehicleToLift(liftPoint, vehicle)
     local offsetCoords = GetOffsetFromEntityGivenWorldCoords(vehicle, platformCoords.x, platformCoords.y, platformCoords.z)
     local vehRotation = GetEntityRotation(vehicle, 2)
     local platformRotation = GetEntityRotation(liftPoint.platformEntity, 2)
+
+    -- positionZ only moves for the player operating the lift. The platform rides on the car
+    -- on every client, so its height is the lift's real height: a second mechanic taking over
+    -- a raised car still had it at the floor, so Down dropped the car and Up lifted it twice
+    -- as high (and the first mechanic later lowered it through the floor).
+    liftPoint.positionZ = math.max(liftPoint.floorZ, math.min(liftPoint.topZ, platformCoords.z))
 
     FreezeEntityPosition(liftPoint.platformEntity, false)
     FreezeEntityPosition(vehicle, true)
@@ -760,7 +768,7 @@ local function handleVehicleEnter(vehicle)
         end
 
         if liftPoint.attachedVehicle == vehicle or isPlatformAttachedToVehicle then
-            print(("[sky_mechanicjob][lift] cleanup: reset lift point '%s' still attached on vehicle enter"):format(liftPoint.key))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] cleanup: reset lift point '%s' still attached on vehicle enter"):format(liftPoint.key))
             destroyLiftPoint(liftPoint)
             spawnLiftPoint(liftPoint)
         end
@@ -781,7 +789,7 @@ local function handleVehicleEnter(vehicle)
                     end
                 end
 
-                print(("[sky_mechanicjob][lift] cleanup: reset nearby orphaned platform still attached on vehicle enter model '%s'"):format(platformModel))
+                Sky.Debug("debug", ("[sky_mechanicjob][lift] cleanup: reset nearby orphaned platform still attached on vehicle enter model '%s'"):format(platformModel))
                 requestVehicleControl(nearbyPlatform, 500)
                 DetachEntity(nearbyPlatform, true, true)
 
@@ -816,12 +824,12 @@ end
 
 local function applySyncedAttachment(liftPoint, vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][lift] failed: synced attach vehicle missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: synced attach vehicle missing for point '%s'"):format(liftPoint.key))
         return
     end
 
     if liftPoint.platformEntity == 0 or not DoesEntityExist(liftPoint.platformEntity) then
-        print(("[sky_mechanicjob][lift] failed: synced attach platform missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: synced attach platform missing for point '%s'"):format(liftPoint.key))
         return
     end
 
@@ -863,6 +871,14 @@ local function applySyncedDetach(liftPoint)
     liftPoint.positionZ = liftPoint.floorZ
 end
 
+-- A raised car deleted on the lift (impound, garage, /dv) left the platform hanging at that
+-- height; the next car then sank through the floor on Down. The platform goes back to the
+-- floor and the lift stops.
+local function releaseLiftOfMissingVehicle(liftPoint)
+    applySyncedDetach(liftPoint)
+    liftPoint.motion = 0
+end
+
 -- ============================================================
 --  OBJECT SPAWNING & LIFTCYCLE
 -- ============================================================
@@ -874,7 +890,7 @@ local function createLiftObject(modelName, centerCoords, heading, targetZ, disab
         tonumber(heading) or 0.0, boolToString(disableCollision ~= false), boolToString(IsModelValid(modelHash)))
 
     if not IsModelValid(modelHash) then
-        print(("[sky_mechanicjob][lift] failed: invalid model '%s'"):format(tostring(modelName)))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: invalid model '%s'"):format(tostring(modelName)))
         return 0
     end
 
@@ -882,7 +898,7 @@ local function createLiftObject(modelName, centerCoords, heading, targetZ, disab
     local entity = CreateObject(modelHash, centerCoords.x, centerCoords.y, targetZ, false, false, false)
 
     if entity == 0 or not DoesEntityExist(entity) then
-        print(("[sky_mechanicjob][lift] failed: could not create object for model '%s'"):format(tostring(modelName)))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: could not create object for model '%s'"):format(tostring(modelName)))
         return 0
     end
 
@@ -1378,7 +1394,7 @@ local function processLiftMotionTick()
             local hasFrame = liftPoint.frameEntity ~= 0 and DoesEntityExist(liftPoint.frameEntity)
 
             if not hasPlatform or not hasFrame then
-                print(("[sky_mechanicjob][lift] failed: missing lift object for point '%s'"):format(liftPoint.key))
+                Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: missing lift object for point '%s'"):format(liftPoint.key))
                 destroyLiftPoint(liftPoint)
                 spawnLiftPoint(liftPoint)
             else
@@ -1394,10 +1410,10 @@ local function processLiftMotionTick()
                     end
 
                     if liftPoint.attachedVehicle == 0 or not DoesEntityExist(liftPoint.attachedVehicle) then
-                        print(("[sky_mechanicjob][lift] failed: moving lift requires a vehicle for point '%s'"):format(liftPoint.key))
+                        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: moving lift requires a vehicle for point '%s'"):format(liftPoint.key))
                         liftPoint.motion = 0
                     elseif not requestVehicleControl(liftPoint.attachedVehicle, 200) then
-                        print(("[sky_mechanicjob][lift] failed: lost network control for vehicle at point '%s'"):format(liftPoint.key))
+                        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: lost network control for vehicle at point '%s'"):format(liftPoint.key))
                         liftPoint.motion = 0
                     else
                         local targetZ = liftPoint.positionZ + (unitsPerTick * liftPoint.motion)
@@ -1424,17 +1440,14 @@ local function processLiftMotionTick()
                 liftPoint.wasMoving = liftPoint.motion ~= 0
 
                 if liftPoint.attachedVehicle ~= 0 and not DoesEntityExist(liftPoint.attachedVehicle) then
-                    print(("[sky_mechanicjob][lift] failed: attached vehicle missing for point '%s'"):format(liftPoint.key))
-                    if liftPoint.platformEntity ~= 0 and DoesEntityExist(liftPoint.platformEntity) then
-                        if IsEntityAttached(liftPoint.platformEntity) then
-                            DetachEntity(liftPoint.platformEntity, true, true)
-                            FreezeEntityPosition(liftPoint.platformEntity, true)
-                        end
-                    end
-                    liftPoint.attachedVehicle = 0
+                    Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: attached vehicle missing for point '%s'"):format(liftPoint.key))
+                    releaseLiftOfMissingVehicle(liftPoint)
                 end
 
-                if liftPoint.attachedVehicle ~= 0 and not liftPoint.syncedAttachment then
+                -- At the floor and stopped. While going up the first ticks are within 2 cm of
+                -- the floor too: the car was released and attached again each tick, and other
+                -- players could be left with "released" while the car went up.
+                if liftPoint.attachedVehicle ~= 0 and not liftPoint.syncedAttachment and liftPoint.motion == 0 then
                     if liftPoint.positionZ <= (liftPoint.floorZ + 0.02) then
                         detachVehicleFromLift(liftPoint)
                     end
@@ -1611,7 +1624,7 @@ local function setLiftDirection(direction)
 
     if dirNum ~= 0 then
         if liftPoint.attachedVehicle == 0 or not DoesEntityExist(liftPoint.attachedVehicle) then
-            print(("[sky_mechanicjob][lift] failed: no vehicle available to move lift point '%s'"):format(liftPoint.key))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: no vehicle available to move lift point '%s'"):format(liftPoint.key))
             liftPoint.motion = 0
             return false, {
                 key = "radial.errors.generic",
@@ -1750,7 +1763,7 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
         tostring(data and data.action), tostring(data and data.key), tostring(data and data.vehicleNetId))
 
     if type(data) ~= "table" or type(data.key) ~= "string" then
-        print("[sky_mechanicjob][lift] failed: invalid synced attachment payload")
+        Sky.Debug("debug", "[sky_mechanicjob][lift] failed: invalid synced attachment payload")
         return
     end
 
@@ -1768,7 +1781,7 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
     if data.action == "attach" then
         local vehNetId = tonumber(data.vehicleNetId) or 0
         if vehNetId <= 0 then
-            print(("[sky_mechanicjob][lift] failed: invalid synced vehicle net id for point '%s'"):format(liftPoint.key))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: invalid synced vehicle net id for point '%s'"):format(liftPoint.key))
             return
         end
         local vehicle = NetToVeh(vehNetId)
@@ -1776,7 +1789,7 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
     elseif data.action == "detach" then
         applySyncedDetach(liftPoint)
     else
-        print(("[sky_mechanicjob][lift] failed: invalid synced attachment action '%s'"):format(tostring(data.action)))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: invalid synced attachment action '%s'"):format(tostring(data.action)))
     end
 end)
 
@@ -1829,7 +1842,7 @@ local function requestLiftSync()
             end
         end)
         if not ok then
-            print(("[sky_mechanicjob][lift] failed: lift sync error: %s"):format(tostring(err)))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: lift sync error: %s"):format(tostring(err)))
         end
     until not syncQueued
     syncRunning = false
@@ -1888,6 +1901,19 @@ CreateThread(function()
         Wait(interval)
         if isLiftFeatureEnabled() then
             requestLiftSync()
+        end
+    end
+end)
+
+-- The motion loop only runs for the player operating a lift; everyone else's platform stayed
+-- in the air when the raised car was deleted.
+CreateThread(function()
+    while true do
+        Wait(2000)
+        for _, liftPoint in ipairs(State.pointList) do
+            if liftPoint.attachedVehicle ~= 0 and not DoesEntityExist(liftPoint.attachedVehicle) then
+                releaseLiftOfMissingVehicle(liftPoint)
+            end
         end
     end
 end)

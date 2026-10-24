@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/creator.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/creator.lua
 --  Deobfuscated & Cleaned
@@ -51,7 +49,7 @@ local function triggerPedSpawnedHook(creatorKey, pointType, pointIdKey, pedEntit
     if hook and hook.onSpawn then
         local ok, err = pcall(hook.onSpawn, pedEntity)
         if not ok then
-            print(string.format("[sky_jobs_base] onSpawn hook for %s/%s failed: %s", tostring(creatorKey), tostring(pointType), tostring(err)))
+            Sky.Debug("debug", string.format("[sky_jobs_base] onSpawn hook for %s/%s failed: %s", tostring(creatorKey), tostring(pointType), tostring(err)))
         end
     end
 end
@@ -170,7 +168,7 @@ local function triggerDebouncedRebuild()
         local ok, err = pcall(rebuildAllInteractions)
         isDutyRebuildRunning = false
         if not ok then
-            print(("[sky_jobs_base][creator] rebuilding interaction points failed: %s"):format(tostring(err)))
+            Sky.Debug("debug", ("[sky_jobs_base][creator] rebuilding interaction points failed: %s"):format(tostring(err)))
         end
 
         if isDutyRebuildQueued then
@@ -633,7 +631,7 @@ local function spawnSingleInteraction(creatorKey, entryData, pointData, typeDef,
     local npcCfg = deepCopyTable(ensureTableOrEmpty(typeDef and typeDef.npc))
 
     if next(npcCfg) ~= nil and not npcCfg.pedHash then
-        print(string.format("[sky_jobs_base][creator] %s/%s: npc enabled but pedHash missing, skipping ped", tostring(creatorKey), tostring(pointData.type)))
+        Sky.Debug("debug", string.format("[sky_jobs_base][creator] %s/%s: npc enabled but pedHash missing, skipping ped", tostring(creatorKey), tostring(pointData.type)))
         npcCfg = {}
     end
 
@@ -763,7 +761,7 @@ local function rebuildCreatorInteractions(creatorKey)
             if posPt then
                 local ok, err = pcall(createStationBlip, creatorKey, entry, posPt, creatorData.creator)
                 if not ok then
-                    print(string.format("[sky_jobs_base][creator] station blip failed for %s/%s: %s", tostring(creatorKey), tostring(entry.id), tostring(err)))
+                    Sky.Debug("debug", string.format("[sky_jobs_base][creator] station blip failed for %s/%s: %s", tostring(creatorKey), tostring(entry.id), tostring(err)))
                 end
             end
 
@@ -775,7 +773,7 @@ local function rebuildCreatorInteractions(creatorKey)
                         if canUseInteractionPoint(entry, pt, typeDef, pointType) then
                             local ok, err = pcall(spawnSingleInteraction, creatorKey, entry, pt, typeDef, false, preservedPeds)
                             if not ok then
-                                print(string.format("[sky_jobs_base][creator] spawnInteraction failed for %s/%s/%s: %s", tostring(creatorKey), tostring(entry.id), tostring(pt.type), tostring(err)))
+                                Sky.Debug("debug", string.format("[sky_jobs_base][creator] spawnInteraction failed for %s/%s/%s: %s", tostring(creatorKey), tostring(entry.id), tostring(pt.type), tostring(err)))
                             end
                         elseif hasNpcConfig(typeDef) and not (typeDef.interaction == false) then
                             -- The NPC stays visible for players who cannot use the point.
@@ -799,7 +797,7 @@ function rebuildAllInteractions()
     for creatorKey in pairs(cachedCreatorsData) do
         local ok, err = pcall(rebuildCreatorInteractions, creatorKey)
         if not ok then
-            print(string.format("[sky_jobs_base][creator] rebuild of %s failed: %s", tostring(creatorKey), tostring(err)))
+            Sky.Debug("debug", string.format("[sky_jobs_base][creator] rebuild of %s failed: %s", tostring(creatorKey), tostring(err)))
         end
     end
 end
@@ -1176,7 +1174,7 @@ local function triggerCustomSetPointHandlers(data)
     for hName, handler in pairs(registeredSetPointHandlers) do
         local ok, res = pcall(handler, data)
         if not ok then
-            print(string.format("[sky_jobs_base][creator] custom setPoint handler failed (%s): %s", tostring(hName), tostring(res)))
+            Sky.Debug("debug", string.format("[sky_jobs_base][creator] custom setPoint handler failed (%s): %s", tostring(hName), tostring(res)))
         elseif type(res) == "table" and res.handled == true then
             return res
         end
@@ -1184,13 +1182,13 @@ local function triggerCustomSetPointHandlers(data)
     return nil
 end
 
-registerExport("registerSetPointHandler", function(name, fn)
+exports("registerSetPointHandler", function(name, fn)
     if type(name) ~= "string" or name == "" or type(fn) ~= "function" then return false end
     registeredSetPointHandlers[name] = fn
     return true
 end)
 
-registerExport("unregisterSetPointHandler", function(name)
+exports("unregisterSetPointHandler", function(name)
     if type(name) ~= "string" or name == "" then return false end
     registeredSetPointHandlers[name] = nil
     return true

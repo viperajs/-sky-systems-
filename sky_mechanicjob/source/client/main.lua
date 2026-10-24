@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/main.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/main.lua
 --  Deobfuscated by Claude
@@ -7,7 +6,7 @@ if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client
 
 -- Build check warning
 if GetGameBuildNumber() < 3258 then
-    print("[sky_mechanicjob] game build is lower than 3258; electric vehicle detection uses Config.ElectricVehicleFallback.models")
+    Sky.Debug("debug", "[sky_mechanicjob] game build is lower than 3258; electric vehicle detection uses Config.ElectricVehicleFallback.models")
 end
 
 -- Locale Setup
@@ -562,9 +561,8 @@ local CREATOR_POINT_INTERACTIONS = {
     engine_swap = "engine_hoist_location"
 }
 
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 
-registerExport("GetCreatorTypeDefinitions", function(creatorKey)
+exports("GetCreatorTypeDefinitions", function(creatorKey)
     if creatorKey ~= nil and creatorKey ~= "workshopcreator" then
         return {}
     end
@@ -798,12 +796,12 @@ end
 
 function requestModelLoaded(modelHash, timeoutMs)
     if type(modelHash) ~= "number" then
-        print(("[sky_mechanicjob][car_jack] failed: invalid model hash type (%s)"):format(type(modelHash)))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: invalid model hash type (%s)"):format(type(modelHash)))
         return false
     end
 
     if not IsModelInCdimage(modelHash) then
-        print(("[sky_mechanicjob][car_jack] failed: model missing in cdimage for hash %s"):format(modelHash))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: model missing in cdimage for hash %s"):format(modelHash))
         return false
     end
 
@@ -819,13 +817,13 @@ function requestModelLoaded(modelHash, timeoutMs)
         return true
     end
 
-    print(("[sky_mechanicjob][car_jack] failed: model not loaded for hash %s"):format(modelHash))
+    Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: model not loaded for hash %s"):format(modelHash))
     return false
 end
 
 function requestAnimDictLoaded(animDict, timeoutMs)
     if type(animDict) ~= "string" or animDict == "" then
-        print(("[sky_mechanicjob][car_jack] failed: invalid anim dict (%s)"):format(tostring(animDict)))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: invalid anim dict (%s)"):format(tostring(animDict)))
         return false
     end
 
@@ -841,7 +839,7 @@ function requestAnimDictLoaded(animDict, timeoutMs)
         return true
     end
 
-    print(("[sky_mechanicjob][car_jack] failed: anim dict not loaded (%s)"):format(animDict))
+    Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: anim dict not loaded (%s)"):format(animDict))
     return false
 end
 
@@ -991,7 +989,7 @@ function requestPtfxAssetLoaded(assetName)
         return true
     end
 
-    print(("[sky_mechanicjob][repaint_minigame] failed: ptfx asset not loaded (%s)"):format(tostring(assetName)))
+    Sky.Debug("debug", ("[sky_mechanicjob][repaint_minigame] failed: ptfx asset not loaded (%s)"):format(tostring(assetName)))
     return false
 end
 
@@ -1002,13 +1000,15 @@ function startRepaintPointing()
 
     local ped = PlayerPedId()
     if not requestAnimDictLoaded("anim@mp_point", 2500) then
-        print("[sky_mechanicjob][repaint_minigame] failed: point anim dict not loaded (anim@mp_point)")
+        Sky.Debug("debug", "[sky_mechanicjob][repaint_minigame] failed: point anim dict not loaded (anim@mp_point)")
         return false
     end
 
     SetPedCurrentWeaponVisible(ped, false, true, true, true)
     SetPedConfigFlag(ped, 36, true)
-    Citizen.InvokeNative(0x2D72267B29F4B20A, ped, "task_mp_pointing", 0.5, 0, "anim@mp_point", 24)
+    -- The pointing move network. Its natives were called by four hashes that do not exist,
+    -- so the pose never played while painting or waxing.
+    TaskMoveNetworkByName(ped, "task_mp_pointing", 0.5, false, "anim@mp_point", 24)
     RemoveAnimDict("anim@mp_point")
 
     RepaintPointingActive = true
@@ -1019,7 +1019,7 @@ function stopRepaintPointing()
     if not RepaintPointingActive then return end
 
     local ped = PlayerPedId()
-    Citizen.InvokeNative(0xD01015B7316E1746, ped, "Stop")
+    RequestTaskMoveNetworkStateTransition(ped, "Stop")
 
     if not IsPedInjured(ped) then
         ClearPedSecondaryTask(ped)
@@ -1058,10 +1058,11 @@ function updateRepaintPointing()
     local rayHandle = Cast_3dRayPointToPoint(rayStart.x, rayStart.y, rayStart.z - 0.2, rayStart.x, rayStart.y, rayStart.z + 0.2, 0.4, 95, ped, 7)
     local _, hit = GetRaycastResult(rayHandle)
 
-    Citizen.InvokeNative(0xD5B3512262B9B06A, ped, "Pitch", pitch)
-    Citizen.InvokeNative(0xD5B3512262B9B06A, ped, "Heading", (relHeading * -1.0) + 1.0)
-    Citizen.InvokeNative(0xB0A6D637CD8F6942, ped, "isBlocked", hit)
-    Citizen.InvokeNative(0xB0A6D637CD8F6942, ped, "isFirstPerson", Citizen.InvokeNative(0xEE778F8C7E1142E2, Citizen.InvokeNative(0x19CAFA3C87F7C2FF)) == 4)
+    -- The move network takes the pitch as 0..1, like the heading.
+    SetTaskMoveNetworkSignalFloat(ped, "Pitch", relPitch)
+    SetTaskMoveNetworkSignalFloat(ped, "Heading", (relHeading * -1.0) + 1.0)
+    SetTaskMoveNetworkSignalBool(ped, "isBlocked", hit == true or hit == 1)
+    SetTaskMoveNetworkSignalBool(ped, "isFirstPerson", GetCamViewModeForContext(GetCamActiveViewModeContext()) == 4)
 end
 
 function clearCarJackState(resetVehicle)
@@ -1163,6 +1164,21 @@ function expandWheelIndexes(wheelIndex)
         table.insert(result, 3)
     end
     return result
+end
+
+-- BreakOffVehicleWheel takes the wheel's place in the vehicle's wheel list, not the tyre index
+-- every other wheel native uses: a car's rear wheels are 2 and 3 there (tyres 4 and 5) and a
+-- motorbike's rear wheel is 1 (tyre 4). Tyre 4 or 5 broke nothing off a car, so stolen or
+-- damaged rear wheels stayed on.
+function breakOffVehicleWheelByTyre(vehicle, tyreIndex, leaveDebrisTrail, deleteWheel, unknownFlag, putOnFire)
+    local wheelCount = tonumber(GetVehicleNumberOfWheels(vehicle)) or 0
+    local wheelIndex = tyreIndex
+    if wheelCount <= 2 then
+        if tyreIndex == 4 then wheelIndex = 1 end
+    elseif wheelCount < 6 then
+        if tyreIndex == 4 then wheelIndex = 2 elseif tyreIndex == 5 then wheelIndex = 3 end
+    end
+    BreakOffVehicleWheel(vehicle, wheelIndex, leaveDebrisTrail, deleteWheel, unknownFlag, putOnFire)
 end
 
 function resolveAttachWheelIndexes(vehicle, wheelIndexes)

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/lift.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/lift.lua
 --  Lift Platform Network Attachment Synchronization
@@ -9,6 +8,33 @@ local RELAY_INTERVAL_MS = 200
 local RELAY_VEHICLE_DISTANCE = 15.0
 
 local lastRelayAt = {}
+local pendingRelay = {}
+
+local function relay(src, payload)
+    lastRelayAt[src] = GetGameTimer()
+    TriggerClientEvent("sky_mechanicjob:lift:attachment", -1, payload)
+end
+
+-- Within the interval the latest state of each lift goes out when it ends. Dropped messages
+-- left other players with a state the operator had already left: the platform resting on
+-- the floor while the car went up.
+local function queueRelay(src, payload, delayMs)
+    local queued = pendingRelay[src]
+    if queued then
+        queued[payload.key] = payload
+        return
+    end
+
+    pendingRelay[src] = { [payload.key] = payload }
+    SetTimeout(math.max(0, delayMs), function()
+        local batch = pendingRelay[src]
+        pendingRelay[src] = nil
+        if not batch or not GetPlayerName(src) then return end
+        for _, queuedPayload in pairs(batch) do
+            relay(src, queuedPayload)
+        end
+    end)
+end
 
 RegisterNetEvent("sky_mechanicjob:lift:syncAttachment", function(data)
     local src = tonumber(source)
@@ -18,24 +44,32 @@ RegisterNetEvent("sky_mechanicjob:lift:syncAttachment", function(data)
     local action = data.action
     if action ~= "attach" and action ~= "detach" then return end
 
-    local now = GetGameTimer()
-    if lastRelayAt[src] and now - lastRelayAt[src] < RELAY_INTERVAL_MS then return end
-    lastRelayAt[src] = now
-
     local vehNetId = math.floor(tonumber(data.vehicleNetId) or 0)
     if not (vehNetId > 0 and vehNetId <= 65535) then return end
     if not Functions.IsMechanic(src) then return end
     if not (Functions.GetVehicleByNetId and Functions.GetVehicleByNetId(src, vehNetId, RELAY_VEHICLE_DISTANCE)) then return end
 
-    TriggerClientEvent("sky_mechanicjob:lift:attachment", -1, {
+    local payload = {
         key = data.key,
         action = action,
         vehicleNetId = vehNetId,
         source = src
-    })
+    }
+
+    -- Queued while one is waiting too, so an older state never goes out after a newer one.
+    local sinceLast = lastRelayAt[src] and (GetGameTimer() - lastRelayAt[src]) or nil
+    if pendingRelay[src] or (sinceLast and sinceLast < RELAY_INTERVAL_MS) then
+        queueRelay(src, payload, RELAY_INTERVAL_MS - (sinceLast or 0))
+        return
+    end
+
+    relay(src, payload)
 end)
 
 AddEventHandler("playerDropped", function()
     local src = tonumber(source)
-    if src then lastRelayAt[src] = nil end
+    if src then
+        lastRelayAt[src] = nil
+        pendingRelay[src] = nil
+    end
 end)

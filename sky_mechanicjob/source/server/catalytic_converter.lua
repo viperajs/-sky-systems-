@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/catalytic_converter.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/catalytic_converter.lua
 --  Catalytic Converter Theft, Missing State & Smoke Sync

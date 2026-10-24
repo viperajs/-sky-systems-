@@ -18,7 +18,6 @@ local function newClient(skyBase)
         return stub
     end })
     env._G = env
-    env.SkyDiagnostics = false
     env.print = function() end
     env.IsDuplicityVersion = function() return false end
     env.GetCurrentResourceName = function() return "sky_jobs_base" end
@@ -29,6 +28,7 @@ local function newClient(skyBase)
     env.Citizen = { CreateThread = env.CreateThread, Wait = env.Wait }
     env.Sky = {
         Config = {},
+        Debug = function() end,
         Functions = { IsPlayerDead = function() return false end },
         Cb = { Trigger = function(name)
             if name == "sky_jobs_base:getRegisteredJobs" then return { "mechanic" } end

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/change_parts.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/change_parts.lua
 --  Deobfuscated & Cleaned
@@ -21,6 +20,23 @@ local MINIGAME_TIMEOUT_MS = 45000
 
 local ANIM_REPAIR_DICT = "mini@repair"
 local ANIM_REPAIR_CLIP = "fixing_a_ped"
+
+-- Turns the mechanic to the spot they work on. TaskTurnPedToFace* was followed straight away
+-- by the work animation or scenario, which replaced the turn, so the work was done facing
+-- wherever the mechanic happened to look.
+local function facePedTowards(ped, coords)
+    local pedCoords = GetEntityCoords(ped)
+    SetEntityHeading(ped, GetHeadingFromVector_2d(coords.x - pedCoords.x, coords.y - pedCoords.y))
+end
+
+-- The engine bay: the hood bone, or the middle of the vehicle without one.
+local function getEngineBayCoords(vehicle)
+    local boneIdx = GetEntityBoneIndexByName(vehicle, "bonnet")
+    if boneIdx ~= -1 then
+        return GetWorldPositionOfEntityBone(vehicle, boneIdx)
+    end
+    return GetEntityCoords(vehicle)
+end
 
 local REMOVABLE_PANELS = {
     { key = "door_lf", bone = "door_dside_f", doorIndex = 0 },
@@ -79,7 +95,7 @@ local function findNearestRemovablePanel(vehicle, pedCoords)
     end
 
     if not bestPanel then
-        print("[sky_mechanicjob][orders][armor] grinder failed: no removable target found")
+        Sky.Debug("debug", "[sky_mechanicjob][orders][armor] grinder failed: no removable target found")
         return nil, {
             key = "radial.errors.generic",
             fallback = tuningLocales.ArmorInstallNoTarget or "No removable door, hood, or trunk found nearby.",
@@ -88,7 +104,7 @@ local function findNearestRemovablePanel(vehicle, pedCoords)
     end
 
     if shortestDist > ARMOR_CUT_RADIUS then
-        print(string.format("[sky_mechanicjob][orders][armor] grinder failed: nearest panel too far (distance=%.2f max=%.2f)", shortestDist, ARMOR_CUT_RADIUS))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][orders][armor] grinder failed: nearest panel too far (distance=%.2f max=%.2f)", shortestDist, ARMOR_CUT_RADIUS))
         return nil, {
             key = "radial.errors.generic",
             fallback = tuningLocales.ArmorInstallTooFar or "Move closer to the door, hood, or trunk you want to cut.",
@@ -103,7 +119,7 @@ end
 
 function runArmorPanelCutStep(vehicle, partData)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders][armor] grinder failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders][armor] grinder failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -112,7 +128,7 @@ function runArmorPanelCutStep(vehicle, partData)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][orders][armor] grinder failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][orders][armor] grinder failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
@@ -121,7 +137,7 @@ function runArmorPanelCutStep(vehicle, partData)
 
     local partId = tostring((partData and partData.id) or "")
     if partId ~= ARMOR_MOD_KEY then
-        print("[sky_mechanicjob][orders][armor] grinder failed: order part is not armor")
+        Sky.Debug("debug", "[sky_mechanicjob][orders][armor] grinder failed: order part is not armor")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
@@ -140,7 +156,7 @@ end
 
 function runSimpleBodyworkWeldingInstallAnim(vehicle, partData)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders] welding install failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] welding install failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -149,7 +165,7 @@ function runSimpleBodyworkWeldingInstallAnim(vehicle, partData)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][orders] welding install failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] welding install failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
@@ -173,7 +189,7 @@ function runSimpleBodyworkWeldingInstallAnim(vehicle, partData)
         local dist = #(pedCoords - targetCoords)
 
         if dist > limit then
-            print(string.format("[sky_mechanicjob][orders] welding install failed: install target too far (distance=%.2f max=%.2f)", dist, limit))
+            Sky.Debug("debug", string.format("[sky_mechanicjob][orders] welding install failed: install target too far (distance=%.2f max=%.2f)", dist, limit))
             return false, {
                 key = "radial.errors.generic",
                 fallback = tuningLocales.BodyworkInstallTooFar or "Move closer to the part's install position.",
@@ -182,12 +198,7 @@ function runSimpleBodyworkWeldingInstallAnim(vehicle, partData)
         end
     end
 
-    if targetCoords then
-        TaskTurnPedToFaceCoord(ped, targetCoords.x, targetCoords.y, targetCoords.z, 700)
-    else
-        TaskTurnPedToFaceEntity(ped, vehicle, 700)
-    end
-
+    facePedTowards(ped, targetCoords or GetEntityCoords(vehicle))
     TaskStartScenarioInPlace(ped, "WORLD_HUMAN_WELDING", 0, true)
 
     local duration = startNonMinigameInstallProgress(
@@ -202,7 +213,7 @@ end
 
 function runSimpleHoodInstallAnim(vehicle, partData)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders] hood install failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] hood install failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -211,14 +222,14 @@ function runSimpleHoodInstallAnim(vehicle, partData)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][orders] hood install failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] hood install failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
         }
     end
 
-    TaskTurnPedToFaceEntity(ped, vehicle, 700)
+    facePedTowards(ped, getEngineBayCoords(vehicle))
     Sky.Load.AnimDict(ANIM_REPAIR_DICT)
     TaskPlayAnim(ped, ANIM_REPAIR_DICT, ANIM_REPAIR_CLIP, 8.0, -8.0, -1, 1, 0.0, false, false, false)
 
@@ -236,7 +247,7 @@ end
 
 function runWheelBrakeInstallAnim(vehicle, partData)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders] brake install failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] brake install failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -245,7 +256,7 @@ function runWheelBrakeInstallAnim(vehicle, partData)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][orders] brake install failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] brake install failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
@@ -275,7 +286,7 @@ end
 
 function restoreArmorPanelAfterInstall(vehicle, partData)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders][armor] restore failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders][armor] restore failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -284,7 +295,7 @@ function restoreArmorPanelAfterInstall(vehicle, partData)
 
     local partId = tostring((partData and partData.id) or "")
     if partId ~= ARMOR_MOD_KEY then
-        print("[sky_mechanicjob][orders][armor] restore failed: order part is not armor")
+        Sky.Debug("debug", "[sky_mechanicjob][orders][armor] restore failed: order part is not armor")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
@@ -338,7 +349,7 @@ end
 
 function runEngineSwapInstallMinigame(vehicle, partData)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][engine_swap] failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_swap] failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available."),
@@ -348,7 +359,7 @@ function runEngineSwapInstallMinigame(vehicle, partData)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][engine_swap] failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_swap] failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapMinigameFailed or "Engine swap minigame failed.",
@@ -358,7 +369,7 @@ function runEngineSwapInstallMinigame(vehicle, partData)
 
     -- The hood may have been synced shut again since the Open Hood step (ensureVehicleHoodOpen).
     if not ensureVehicleHoodOpen(vehicle) then
-        print("[sky_mechanicjob][engine_swap] failed: hood is not open")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_swap] failed: hood is not open")
         return false, {
             key = "radial.errors.generic",
             code = "hood_closed",
@@ -367,7 +378,7 @@ function runEngineSwapInstallMinigame(vehicle, partData)
         }
     end
 
-    TaskTurnPedToFaceEntity(ped, vehicle, 700)
+    facePedTowards(ped, getEngineBayCoords(vehicle))
     startEngineSwapAnim()
 
     local sessionOk, session = TuningMinigames.StartSession("engine_swap", {
@@ -429,3 +440,11 @@ function runEngineSwapInstallMinigame(vehicle, partData)
 end
 
 TuningMinigames.Register("engine_swap", runEngineSwapInstallMinigame)
+
+-- Stopped mid-swap, the minigame never returns to stop the looping repair pose. (The minigame
+-- state is already cancelled by then: spray_paint.lua's stop handler runs first.)
+AddEventHandler("onResourceStop", function(resName)
+    if resName == GetCurrentResourceName() and IsEntityPlayingAnim(PlayerPedId(), ANIM_REPAIR_DICT, ANIM_REPAIR_CLIP, 3) then
+        stopEngineSwapAnim()
+    end
+end)

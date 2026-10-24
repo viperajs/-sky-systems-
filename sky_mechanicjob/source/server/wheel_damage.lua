@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/wheel_damage.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/wheel_damage.lua
 --  Wheel Damage State Bag & Physical Tyre Sync
@@ -101,14 +100,24 @@ end
 -- ── Net Events ───────────────────────────────────────
 
 -- Only a mechanic on duty (or an admin) next to the vehicle may clear its wheel state; repairs
--- completed on the server reset it themselves.
-RegisterNetEvent("sky_mechanicjob:wheelDamage:reset", function(netId)
+-- completed on the server reset it themselves. With wheel indexes (the wheels a job replaced)
+-- only those are cleared.
+RegisterNetEvent("sky_mechanicjob:wheelDamage:reset", function(netId, wheelIndexes)
     local src = tonumber(source)
     if not src then return end
     if not (Functions.IsMechanicOnDuty(src) or Functions.HasPermission(src, "adminrepair")) then return end
 
     local entity = Functions.GetVehicleByNetId(src, math.floor(tonumber(netId) or 0), RESET_VEHICLE_RANGE)
-    if entity then
+    if not entity then return end
+
+    if type(wheelIndexes) == "table" and next(wheelIndexes) then
+        local wheels = MechanicWheelDamage.Read(entity)
+        for _, idx in ipairs(wheelIndexes) do
+            local wheelKey = toWheelKey(idx)
+            if wheelKey then wheels[wheelKey] = nil end
+        end
+        MechanicWheelDamage.Write(entity, wheels)
+    else
         MechanicWheelDamage.Reset(entity)
     end
 end)

@@ -153,7 +153,7 @@ local MODULE_GLOBALS = {
     VehicleHistory = true, VehiclePersistence = true, Sky_Jobs = true, CustomTuning = true, StanceKit = true,
     AntiLag = true, TwoStep = true, OrderInstallState = true, WheelOrderInstallState = true,
     OrderTabletState = true, TuningState = true, tuningLocales = true, nuiLocales = true, locales = true,
-    MechanicWorkshopData = true, MechanicTheft = true,
+    MechanicWorkshopData = true, MechanicTheft = true, TuningMinigames = true,
 }
 
 local VEH, NET, PED = 9, 109, 1
@@ -192,6 +192,7 @@ local function newWorld(opts)
                 W.onAwait()
             else
                 W.clock = W.clock + math.max(16, tonumber(res[2]) or 0)
+                if W.onWait then W.onWait() end
             end
         end
     end
@@ -208,7 +209,6 @@ local function newWorld(opts)
         env.vector3 = vec
         env.vec3 = vec
         env.type = function(value) return getmetatable(value) == vec_mt and "vector3" or type(value) end
-        env.SkyDiagnostics = false
         env.print = function() end
         env.GetCurrentResourceName = function() return "sky_mechanicjob" end
         env.IsDuplicityVersion = function() return side == "server" end
@@ -474,7 +474,11 @@ local function newWorld(opts)
         for name, idx in pairs(CAR_BONES) do if idx == index then return W.veh.pos + BONE_POS[name] end end
         return W.veh.pos
     end
-    cenv.GetNumVehicleMods = function(_, modType) return NUM_MODS[modType] or 0 end
+    -- The High End wheels (type 7) have more rims than the Sport wheels (type 0).
+    cenv.GetNumVehicleMods = function(_, modType)
+        if modType == 23 and W.veh.wheelType == 7 then return 40 end
+        return NUM_MODS[modType] or 0
+    end
     cenv.GetVehicleMod = function(_, modType) return W.veh.mods[modType] or -1 end
     cenv.SetVehicleMod = function(_, modType, index) W.veh.mods[modType] = index end
     cenv.GetVehicleModVariation = function() return false end
@@ -483,7 +487,8 @@ local function newWorld(opts)
     cenv.IsToggleModOn = function(_, modType) return W.veh.toggles[modType] == true end
     cenv.GetVehicleWheelType = function() return W.veh.wheelType end
     cenv.SetVehicleWheelType = function(_, value) W.veh.wheelType = value end
-    cenv.GetVehicleTyreSmokeColor = function() return 254, 254, 254 end
+    cenv.GetVehicleTyreSmokeColor = function() return table.unpack(W.veh.smoke or { 254, 254, 254 }) end
+    cenv.SetVehicleTyreSmokeColor = function(_, r, g, b) W.veh.smoke = { r, g, b } end
     cenv.GetVehicleXenonLightsColor = function() return -1 end
     cenv.GetVehicleXenonLightsCustomColor = function() return false, 0, 0, 0 end
     cenv.IsVehicleNeonLightEnabled = function() return false end
@@ -511,7 +516,41 @@ local function newWorld(opts)
     cenv.IsModelValid = function() return true end
     cenv.HasModelLoaded = function() return true end
     cenv.HasAnimDictLoaded = function() return true end
-    cenv.IsEntityPlayingAnim = function() return false end
+    cenv.HasNamedPtfxAssetLoaded = function() return true end
+    cenv.StartParticleFxLoopedOnEntity = function() return 0 end
+    cenv.StartParticleFxLoopedOnEntityBone = function() return 0 end
+    -- The mechanic's animation and heading, and the props the engine hoist moves.
+    cenv.TaskPlayAnim = function(ped, dict, clip) if ped == PED then W.pedAnim = dict .. "/" .. clip end end
+    cenv.StopAnimTask = function(ped, dict, clip) if ped == PED and W.pedAnim == dict .. "/" .. clip then W.pedAnim = nil end end
+    cenv.ClearPedTasks = function(ped) if ped == PED then W.pedAnim = nil end end
+    cenv.ClearPedTasksImmediately = cenv.ClearPedTasks
+    cenv.IsEntityPlayingAnim = function(ped, dict, clip) return ped == PED and W.pedAnim == dict .. "/" .. clip end
+    cenv.SetEntityHeading = function(entity, heading)
+        if entity == PED then W.player.heading = heading elseif W.objects[entity] then W.objects[entity].heading = heading end
+    end
+    cenv.GetEntityHeading = function(entity)
+        if entity == PED then return W.player.heading or 0.0 end
+        return W.objects[entity] and W.objects[entity].heading or 0.0
+    end
+    -- GTA headings turn counter-clockwise from north (+Y).
+    cenv.GetHeadingFromVector_2d = function(x, y) return math.deg(math.atan(-x, y)) % 360 end
+    cenv.GetEntityForwardVector = function() return vec(1, 0, 0) end
+    cenv.SetEntityCoordsNoOffset = function(entity, x, y, z) if W.objects[entity] then W.objects[entity].pos = vec(x, y, z) end end
+    cenv.FreezeEntityPosition = function(entity, frozen) if W.objects[entity] then W.objects[entity].frozen = frozen end end
+    cenv.AttachEntityToEntity = function(child, parent) if W.objects[child] then W.objects[child].attachedTo = parent end end
+    cenv.DetachEntity = function(entity) if W.objects[entity] then W.objects[entity].attachedTo = nil end end
+    cenv.IsEntityAttachedToEntity = function(a, b) return W.objects[a] ~= nil and W.objects[a].attachedTo == b end
+    cenv.TaskStartScenarioInPlace = function(ped, scenario) if ped == PED then W.pedScenario = scenario end end
+    cenv.TaskMoveNetworkByName = function(ped, network) if ped == PED then W.moveNetwork, W.signals = network, {} end end
+    cenv.SetTaskMoveNetworkSignalFloat = function(_, name, value) W.signals[name] = value end
+    cenv.SetTaskMoveNetworkSignalBool = function(_, name, value) W.signals[name] = value end
+    cenv.RequestTaskMoveNetworkStateTransition = function(_, state) W.moveNetworkState = state end
+    cenv.GetGameplayCamRelativePitch = function() return W.camPitch or 0.0 end
+    cenv.GetGameplayCamRelativeHeading = function() return 0.0 end
+    cenv.Cos = function(deg) return math.cos(math.rad(deg)) end
+    cenv.Sin = function(deg) return math.sin(math.rad(deg)) end
+    cenv.GetRaycastResult = function() return 1, false end
+    cenv.IsControlJustPressed = function(_, control) return W.pressEscape == true and control == 202 end
     cenv.CreateObjectNoOffset = function(_, x, y, z)
         W.nextObject = W.nextObject + 1
         W.objects[W.nextObject] = { pos = vec(x, y, z) }
@@ -529,8 +568,9 @@ local function newWorld(opts)
     cenv.TriggerServerEvent = function(name, ...) C.serverEvents[#C.serverEvents + 1] = { name = name, args = copy(table.pack(...)) } end
     cenv.Sky = {
         Config = { locale = "en" },
+        Debug = function() end,
         Math = { Trim = function(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end },
-        Load = { Model = function() end, AnimDict = function() end },
+        Load = { Model = function() end, AnimDict = function() end, NamedPtfxAsset = function() end },
         Show = {
             Notification = function(_, message, kind) C.notifications[#C.notifications + 1] = { msg = message, kind = kind } end,
             HelpNotification = function(text, key) C.help = { text = text, key = key } end,
@@ -543,8 +583,13 @@ local function newWorld(opts)
         Vehicle = {
             new = function(vehicle)
                 return {
-                    GetVehicleProperties = function() return { plate = W.veh.plate, model = W.veh.model, mods = copy(W.veh.mods) } end,
-                    SetVehicleProperties = function(_, props) W.restoredProps = (W.restoredProps or 0) + 1 end,
+                    GetVehicleProperties = function() return { plate = W.veh.plate, model = W.veh.model, mods = copy(W.veh.mods), toggleMods = copy(W.veh.toggles), paint = W.veh.paint } end,
+                    SetVehicleProperties = function(_, props)
+                        W.restoredProps = (W.restoredProps or 0) + 1
+                        if props.mods then W.veh.mods = copy(props.mods) end
+                        if props.toggleMods then W.veh.toggles = copy(props.toggleMods) end
+                        if props.paint then W.veh.paint = props.paint end
+                    end,
                 }
             end,
         },
@@ -624,8 +669,9 @@ local function newWorld(opts)
     C.load("sky_mechanicjob/source/client/orders.lua")
     C.load("sky_mechanicjob/source/client/change_parts.lua")
     C.load("sky_mechanicjob/source/client/wheel_change.lua")
+    C.load("sky_mechanicjob/source/client/spray_paint.lua")
 
-    -- Files not under test (import.lua, spray_paint.lua).
+    -- Files not under test (import.lua).
     cenv.saveTuningForVehicle = function() W.saves = (W.saves or 0) + 1 end
     cenv.isRepaintOrderPart = function(part) return tostring(part and part.id or ""):find("^color_") ~= nil end
 
@@ -839,6 +885,28 @@ do
     assert(#W.server.clientEvents == before, "no relay to the installer")
 end
 
+-- 4b. Removing a part from a car another player owns: that player's client takes it off as
+--     well. The part came back with the owner's next sync while the item had been returned.
+do
+    local W = newWorld({ job = "mechanic" })
+    W.veh.mods[13] = 2
+    W.player.items.mechanic_tools = 1
+    W.vehOwner = 2
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    local res = W.nui("tuningRemoval:remove", { id = "mod_13" })
+    assert(res.success == true, "removal started: " .. tostring(res.error))
+    assert(W.act("open_hood"))
+    assert(W.act("install_order_part"))
+    assert(W.veh.mods[13] == -1, "taken off by the mechanic")
+
+    local relay = W.server.clientEvents[#W.server.clientEvents]
+    assert(relay and relay.name == "sky_mechanicjob:orders:applyInstalledPart" and relay.target == 2, "removal handed to the owner")
+    assert(relay.args[1] == NET and relay.args[2].id == "mod_13" and relay.args[2].value == -1, "with the stock value")
+    W.veh.mods[13] = 2
+    W.client.emit(relay.name, table.unpack(relay.args, 1, relay.args.n))
+    assert(W.veh.mods[13] == -1, "taken off on the owner's client")
+end
+
 -- 5. Without network control the hood and the part still get control requests; the part is
 --    applied locally either way.
 do
@@ -882,6 +950,211 @@ do
     W.onAwait = W.playEngineSwap(true)
     assert(W.act("engine_swap"))
     assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "installed on the order's car")
+end
+
+-- 6b. Finishing fails before the server is asked (here: the install needs the self-service
+--     tuning point and the mechanic left it): the job stayed at "complete" with only Cancel
+--     Install in the radial menu. Install Part finishes it without swapping the engine again.
+do
+    local W = newWorld({ job = "mechanic" })
+    engineOrder(W)
+    local env = W.client.env
+    env.Config.TuningWorkshopRequirement = { requireForInstall = true }
+    local nearPoint = true
+    env.isNearSelfServiceTuningPoint = function() return nearPoint end
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    nearPoint = false
+    W.onAwait = W.playEngineSwap(true)
+    assert(not W.act("engine_swap"), "not finished away from the tuning point")
+    assert(env.OrderInstallState.active and W.db.orders[1].status ~= "completed", "install still open")
+    assert(W.actions().install_order_part, "Install Part offered to finish")
+
+    nearPoint = true
+    W.onAwait = function() error("the engine swap minigame started again") end
+    assert(W.act("install_order_part"))
+    assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "finished")
+end
+
+-- 6c. Install Part picked again from the radial menu while its animation plays: refused, the
+--     part is installed once. It ran twice: two animations, then "the order could not be
+--     updated" for the second.
+do
+    local W = newWorld({ job = "mechanic" })
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "toggle_18", value = 1 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    W.player.items.turbo = 1
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    local second
+    W.onWait = function()
+        W.onWait = nil
+        second = table.pack(W.run(function() return W.client.exports.triggerRadialMenuAction("install_order_part") end, "second pick"))
+    end
+    local ok, err = W.act("install_order_part")
+    assert(ok, "the first pick failed: " .. tostring(err and err.fallback))
+    assert(second and second[1] == false, "second pick refused")
+    local finishes = 0
+    for _, name in ipairs(W.client.calls or {}) do
+        if name == ORDER_DONE then finishes = finishes + 1 end
+    end
+    assert(finishes == 1, "finished once, not " .. finishes .. " times")
+    assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed")
+    assert(W.lastNotification() == "Order completed successfully.", tostring(W.lastNotification()))
+end
+
+-- 6d. A catalytic converter repair keeps its own checklist next to the car: the install
+--     checklist of other parts replaced it.
+do
+    local W = newWorld({ job = "mechanic" })
+    W.client.load("sky_mechanicjob/source/client/catalytic_converter.lua")
+    local env = W.client.env
+    env.OrderInstallState.active = true
+    env.OrderInstallState.repairMode = true
+    env.OrderInstallState.installFlow = "catalytic_converter"
+    env.OrderInstallState.vehicleNetId = NET
+    env.startCatalyticInstallState(VEH, NET, W.veh.plate)
+    local title = W.lastMessage("wheelInstall:checklist:update").payload.title
+    env.sendSimpleInstallChecklistUpdate()
+    assert(W.lastMessage("wheelInstall:checklist:update").payload.title == title, "catalytic checklist kept")
+end
+
+-- 6e. Tyre smoke and its colour ordered together, the colour installed first: a colour shows only
+--     with the Tire Smoke mod on, and it failed to go on ("Failed to apply this part").
+do
+    local W = newWorld({ job = "mechanic" })
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "toggle_20", value = 1 })
+    W.nui("tuning:apply", { id = "tire_smoke_color", value = 2 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    assert(not W.veh.toggles[20], "the preview is undone until the mechanic installs it")
+    local colorIndex
+    for i, part in ipairs(json.decode(W.db.orders[1].items)) do
+        if part.id == "tire_smoke_color" then colorIndex = i end
+    end
+    assert(colorIndex, "the colour is part of the order")
+    W.player.items.spray_can = 1
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = colorIndex, vehicleNetId = NET }).success == true)
+    local ok, err = W.act("install_order_part")
+    assert(ok, "colour installed first: " .. tostring(err and err.fallback))
+    assert(W.veh.toggles[20] == true and W.veh.smoke and W.veh.smoke[1] == 255 and W.veh.smoke[2] == 0, "red tyre smoke on")
+end
+
+-- 6f. Resetting the stance after a direct purchase respawns the car; without network control
+--     of it the old car could not be deleted and a second one was created next to it.
+do
+    local W = newWorld({ job = "mechanic" })
+    local env = W.client.env
+    local created, deleted = 0, 0
+    env.CreateVehicle = function() created = created + 1 return 77 end
+    env.DeleteVehicle = function() if W.hasControl ~= false then deleted = deleted + 1; W.vehDeleted = true end end
+    local exists = env.DoesEntityExist
+    env.DoesEntityExist = function(entity)
+        if entity == VEH and W.vehDeleted then return false end
+        return entity == 77 or exists(entity)
+    end
+    W.openSelfService()
+    env.TuningState.persistChangesOnClose = true
+    W.hasControl = false
+    local res = W.nui("tuning:resetStance", {})
+    assert(res.success == false and res.error == "respawn_failed", "refused without control")
+    assert(created == 0, "no second car")
+    W.hasControl = true
+    res = W.nui("tuning:resetStance", {})
+    assert(res.success == true and deleted == 1 and created == 1, "respawned with control")
+end
+
+-- 6g. With the real stance kit: the track width sliders show the car's own width, which is no
+--     stance; the list of tuning to remove from a stock car has none in it.
+do
+    local W = newWorld({ job = "mechanic" })
+    local env = W.client.env
+    env.StanceKit = nil
+    local offsets = { [0] = -0.8, [1] = 0.8, [2] = -0.82, [3] = 0.82 }
+    env.GetVehicleWheelXOffset = function(_, idx) return offsets[idx] end
+    env.GetVehicleWheelSize = function() return 1.0 end
+    env.GetVehicleWheelWidth = function() return 1.0 end
+    env.GetVehicleSuspensionHeight = function() return 0.0 end
+    W.server.callbacks["sky_mechanicjob:stance:loadDefault"] = function()
+        return { success = true, stance = { trackFront = 0.8, trackRear = 0.82 } }
+    end
+    W.client.load("sky_mechanicjob/source/client/stance_kit.lua")
+    W.player.items.mechanic_tools = 1
+    assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+    local res = W.nui("tuningRemoval:listApplied", {})
+    assert(res.success == true, tostring(res.error))
+    for _, entry in ipairs(res.data.entries) do
+        assert(entry.id ~= "stancer_bundle", "a stock car has no stance to remove")
+    end
+end
+
+-- 6h. The back arrow of a mechanic app hands over to the jobs tablet's home screen. The mechanic
+--     UI's late "closed" report (its route changed) closed the jobs tablet's state: the tablet
+--     left the player's hands while its home screen stayed open.
+do
+    local W = newWorld({ job = "mechanic" })
+    local states = {}
+    W.client.env.AddEventHandler("sky_jobs_base:tablet:setOpenState", function(open) states[#states + 1] = open end)
+    W.external.client = { sky_jobs_base = { OpenOnJobsBase = function() W.client.emit("sky_jobs_base:tablet:setOpenState", true, { appKey = "home" }) end } }
+    W.nui("tablet:setOpenState", { open = true, appKey = "mechanic_orders", route = "/tablet/mechanic-orders" })
+    W.nui("tablet:returnHome", {})
+    W.nui("tablet:setOpenState", { open = false, route = "/" })
+    assert(states[#states] == true, "the jobs tablet stays open")
+
+    -- Closed from the mechanic app itself, it is closed.
+    W.nui("tablet:setOpenState", { open = true, appKey = "mechanic_orders", route = "/tablet/mechanic-orders" })
+    W.nui("tablet:setOpenState", { open = false, route = "/" })
+    assert(states[#states] == false, "closed from the mechanic app")
+end
+
+-- 6i. A repaint puts the paint as it was back when it is cancelled after sanding (the car stayed
+--     primer grey) and when the server does not count it (the car kept the new paint: the
+--     painting minigame shows it before the part is applied).
+do
+    local function repaintOrder()
+        local W = newWorld({ job = "mechanic" })
+        W.openSelfService()
+        W.nui("tuning:apply", { id = "color_primary", value = 5 })
+        assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+        W.nui("close")
+        local env = W.client.env
+        W.veh.paint = "red"
+        env.runTuningMinigame = function(name, _, _, stage)
+            if name == "spray_paint" then W.veh.paint = stage == "sanding" and "primer" or "new (shown by the minigame)" end
+            return true
+        end
+        local apply = env.applyOrderPartToVehicle
+        env.applyOrderPartToVehicle = function(vehicle, part)
+            local ok = apply(vehicle, part)
+            if ok and part.id == "color_primary" then W.veh.paint = "new" end
+            return ok
+        end
+        W.player.items.spray_can = 1
+        assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+        local started = W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET })
+        assert(started.success == true, "repaint started: " .. tostring(started.error))
+        return W
+    end
+
+    local W = repaintOrder()
+    local ok, err = W.act("sand_vehicle")
+    assert(ok, "sanding: " .. tostring(err and err.fallback))
+    assert(W.veh.paint == "primer")
+    assert(W.act("cancel_repaint"))
+    assert(W.veh.paint == "red", "cancelled after sanding: " .. W.veh.paint)
+
+    W = repaintOrder()
+    assert(W.act("sand_vehicle"))
+    W.player.items.spray_can = 0
+    W.act("paint_vehicle")
+    assert(W.db.orders[1].status ~= "completed", "not counted without the spray can")
+    assert(W.veh.paint == "red", "not counted: " .. W.veh.paint)
 end
 
 -- 7. Another car connected (parked next to the customer's): the part went on the connected
@@ -935,4 +1208,293 @@ do
     assert(C.env.showOrderInstallStepPrompt() == false)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle.")
+-- ── Engine hoist (carry items on: the engine is moved with a workshop hoist) ──
+local HOIST_POS = vec(6.0, 0.0, 0.0)
+local CARRY_ANIM = "anim@heists@box_carry@/idle"
+
+-- An engine order with the workshop's hoist placed 4.5 m from the mechanic at the car.
+local function hoistWorld()
+    local W = newWorld({ job = "mechanic", clientConfig = function(cfg) cfg.ToggleFeatures.carryItems = true end })
+    engineOrder(W)
+    W.placeHoist = function(pos)
+        W.client.emit("sky_jobs_base:creatorUpdated", "workshopcreator", { entries = { {
+            id = 1, jobKey = "mechanic",
+            points = { { uid = "h1", type = "engine_swap", x = pos.x, y = pos.y, z = pos.z, heading = 90.0 } },
+        } } })
+    end
+    W.placeHoist(HOIST_POS)
+    W.hoistState = W.client.env.EngineHoistActiveState
+    -- Background loops do not run here; the hoist's follow loop is kept to step it by hand.
+    W.client.env.CreateThread = function(fn) W.followLoop = coroutine.create(fn) end
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    assert(W.client.env.OrderInstallState.simpleStep == "take_hoist", "the hoist comes after the hood")
+    return W
+end
+
+local function hoistAtWorkshop(W)
+    for _, obj in pairs(W.objects) do
+        if #(obj.pos - HOIST_POS) < 0.01 and obj.frozen == true and obj.attachedTo == nil and obj.heading == 90.0 then return true end
+    end
+    return false
+end
+
+-- 10. The mechanic walks to the hoist, takes it, pushes it to the car and attaches it, and
+--     swaps the engine facing the engine bay. The hoist used to be summoned from 20 m, the
+--     pushing pose stayed on after attaching, and finishing deleted the workshop's hoist and
+--     left its engine prop hanging in front of the car.
+do
+    local W = hoistWorld()
+    local C = W.client
+    assert(not W.actions().take_engine_hoist, "no hoist to take from the car, 4.5 m away")
+    local ok, err = W.act("take_engine_hoist")
+    assert(not ok and err.fallback:find("No engine hoist nearby"), tostring(err and err.fallback))
+
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.actions().take_engine_hoist, "Take Engine Hoist offered next to it")
+    assert(W.act("take_engine_hoist"))
+    local hoist, engine = W.hoistState.hoistProp, W.hoistState.engineProp
+    assert(hoist ~= 0 and engine ~= 0 and W.objects[engine].attachedTo == hoist, "the engine hangs on the hoist")
+    assert(C.env.OrderInstallState.heldProp == hoist and W.pedAnim == CARRY_ANIM, "pushing the hoist")
+
+    -- The follow loop keeps the hoist in front of the mechanic.
+    coroutine.resume(W.followLoop)
+    W.player.pos = vec(1.5, 0.0, 0.0)
+    coroutine.resume(W.followLoop)
+    assert(#(W.objects[hoist].pos - vec(3.25, 0.0, 0.0)) < 0.01, "the hoist follows the mechanic")
+
+    assert(W.act("attach_engine_hoist"))
+    assert(W.objects[hoist].attachedTo == VEH and W.pedAnim == nil, "attached to the car, pushing pose stopped")
+    -- The loop was waiting while the hoist was attached; it must not move it or restart the pose.
+    coroutine.resume(W.followLoop)
+    assert(coroutine.status(W.followLoop) == "dead", "follow loop ended")
+    assert(W.objects[hoist].attachedTo == VEH and W.pedAnim == nil, "still attached, still no pushing pose")
+
+    W.onAwait = function()
+        W.swapHeading, W.swapAnim = W.player.heading, W.pedAnim
+        W.playEngineSwap(true)()
+    end
+    assert(W.act("engine_swap"))
+    -- From (1.5, 0) to the hood bone at (0, 1.8): 39.8 degrees.
+    assert(math.abs(W.swapHeading - 39.81) < 0.1, "faces the engine bay: " .. tostring(W.swapHeading))
+    assert(W.swapAnim == "mini@repair/fixing_a_ped", "repair animation during the swap")
+    assert(W.veh.mods[11] == 1 and W.db.orders[1].status == "completed", "engine installed")
+    assert(W.objects[engine] == nil, "engine prop removed")
+    assert(W.objects[hoist] and hoistAtWorkshop(W), "the hoist is back at its workshop spot")
+    assert(W.hoistState.hoistProp == 0 and W.hoistState.active == false, "hoist released")
+end
+
+-- 11. Cancelling while pushing the hoist puts it back and ends the pushing pose.
+do
+    local W = hoistWorld()
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.act("take_engine_hoist"))
+    local engine = W.hoistState.engineProp
+    assert(W.act("cancel_order_install"))
+    assert(W.pedAnim == nil, "pushing pose stopped")
+    assert(W.objects[engine] == nil and hoistAtWorkshop(W), "engine prop removed, hoist back in place")
+end
+
+-- 12. The hoist is put back while being pushed (the workshop moved it in /jobconfig): Attach
+--     used to fail forever with "Take an engine hoist first"; Take Engine Hoist is offered again.
+do
+    local W = hoistWorld()
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.act("take_engine_hoist"))
+    W.placeHoist(vec(8.0, 0.0, 0.0))
+    assert(W.pedAnim == nil and W.hoistState.hoistProp == 0, "hoist put back, pushing pose stopped")
+
+    W.player.pos = vec(1.5, 0.0, 0.0)
+    local ok, err = W.act("attach_engine_hoist")
+    assert(not ok and err.code == "no_active_hoist", tostring(err and err.fallback))
+    assert(W.client.env.OrderInstallState.simpleStep == "take_hoist", "back at the take step")
+    W.player.pos = vec(7.5, 0.0, 0.0)
+    assert(W.actions().take_engine_hoist and W.act("take_engine_hoist"), "the hoist is taken at its new spot")
+end
+
+-- 12b. The hoist pushed head-on to the front of the car is at its spot while the mechanic behind
+--      it is 5 m from the car's centre: Attach was only offered once the hoist was pushed into
+--      the bumper. The step prompt shows there and at the hoist's own spot, and Open Hood says
+--      to take the hoist (every locale's "Start the engine swap" was shown).
+do
+    local W = hoistWorld()
+    local C = W.client
+    assert(W.lastNotification() == "Hood opened. Take the engine hoist from its spot.", tostring(W.lastNotification()))
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    C.help = nil
+    assert(C.env.showOrderInstallStepPrompt() == true and C.help.text:find("Take Engine Hoist"), "prompt at the hoist's spot")
+    assert(W.act("take_engine_hoist"))
+
+    C.env.GetEntityForwardVector = function() return vec(0, -1, 0) end
+    coroutine.resume(W.followLoop)
+    W.player.pos = vec(0.0, 5.1, 0.0)
+    coroutine.resume(W.followLoop)
+    local hoist = W.hoistState.hoistProp
+    assert(#(W.objects[hoist].pos - vec(0.0, 3.35, 0.0)) < 0.01, "the hoist at the front of the car")
+    assert(W.actions().attach_engine_hoist, "Attach offered with the hoist at the bumper")
+    C.help = nil
+    W.clock = W.clock + 1000 -- the prompt text is refreshed twice a second
+    assert(C.env.showOrderInstallStepPrompt() == true and C.help.text:find("Attach Engine Hoist"), "prompt behind the hoist")
+    assert(W.act("attach_engine_hoist"))
+    assert(W.objects[hoist].attachedTo == VEH, "attached")
+
+    -- Pushed somewhere else, far from the car: not attached.
+    local W2 = hoistWorld()
+    W2.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W2.act("take_engine_hoist"))
+    W2.player.pos = vec(9.0, 0.0, 0.0)
+    coroutine.resume(W2.followLoop)
+    coroutine.resume(W2.followLoop)
+    assert(not W2.actions().attach_engine_hoist and not W2.act("attach_engine_hoist"), "too far from the car")
+end
+
+-- 12c. The hood shuts after the hoist was attached: Open Hood leads back to the swap. It sent the
+--      mechanic to Take Engine Hoist at its now empty spot. A hood that cannot be opened (someone
+--      in the car) says so instead of "Hood opened"; the radial menu kept offering the swap.
+do
+    local W = hoistWorld()
+    W.player.pos = vec(5.0, 0.0, 0.0)
+    assert(W.act("take_engine_hoist"))
+    W.player.pos = vec(1.5, 0.0, 0.0)
+    assert(W.act("attach_engine_hoist"))
+    W.veh.hood = 0.0
+    W.hoodStuck = true
+    W.onAwait = W.playEngineSwap(true)
+    local ok, err = W.act("engine_swap")
+    assert(not ok and W.client.env.OrderInstallState.simpleStep == "open_hood", "back at Open Hood")
+    ok, err = W.act("open_hood")
+    assert(not ok and err.fallback:find("could not be opened"), tostring(err and err.fallback))
+    W.hoodStuck = false
+    assert(W.act("open_hood"))
+    assert(W.client.env.OrderInstallState.simpleStep == "engine_swap", "back to the swap: " .. tostring(W.client.env.OrderInstallState.simpleStep))
+    assert(W.act("engine_swap"))
+    assert(W.db.orders[1].status == "completed", "engine installed")
+
+    -- A restart mid-swap: the minigame never returns to stop the repair pose.
+    W.pedAnim = "mini@repair/fixing_a_ped"
+    W.client.emit("onResourceStop", "sky_mechanicjob")
+    assert(W.pedAnim == nil, "repair pose stopped with the resource")
+end
+
+-- 12d. Carry items on but no Engine Hoist location for the workshop: Take Engine Hoist could
+--      never be done and only Cancel Install was offered. The engine is swapped without one.
+do
+    local W = newWorld({ job = "mechanic", clientConfig = function(cfg) cfg.ToggleFeatures.carryItems = true end })
+    engineOrder(W)
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    assert(W.client.env.OrderInstallState.simpleStep == "engine_swap", tostring(W.client.env.OrderInstallState.simpleStep))
+    assert(W.lastNotification() == "Hood opened. Start the engine swap.", tostring(W.lastNotification()))
+    W.onAwait = W.playEngineSwap(true)
+    assert(W.act("engine_swap"))
+    assert(W.db.orders[1].status == "completed", "engine installed")
+end
+
+-- 13. Work poses. A wheel put on for an order is done kneeling at the wheel; any options table
+--     used to switch to the catalytic converter's pose, lying under the car.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    local function playWheelMinigame(options)
+        W.onAwait = function()
+            W.poseDuringMinigame = W.pedScenario or W.pedAnim
+            local start = W.lastMessage("wheelDetach:minigame:start")
+            W.nui("wheelDetach:result", { token = start.payload.token, success = true })
+        end
+        W.pedScenario, W.pedAnim = nil, nil
+        return W.run(function() return C.env.runWheelDetachMinigame("attach", VEH, options) end)
+    end
+    assert(playWheelMinigame({ attachUsesDirtyWheel = false }))
+    assert(W.poseDuringMinigame ~= "WORLD_HUMAN_VEHICLE_MECHANIC", "a wheel was put on lying under the car")
+    assert(playWheelMinigame({ target = "catalytic_converter", boltCount = 4, requiredRotation = 300 }))
+    assert(W.poseDuringMinigame == "WORLD_HUMAN_VEHICLE_MECHANIC", "the catalytic converter is worked on under the car")
+end
+
+-- 14. Painting and waxing: the pointing pose plays (its natives were called by hashes that do
+--     not exist) and gets its pitch as 0..1; the sanding motion stops when painting starts and
+--     when the minigame ends.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    W.run(function() C.env.equipRepaintTool("sanding") end)
+    local SANDING = C.env.REPAINT_SANDING_ANIM_DICT .. "/" .. C.env.REPAINT_SANDING_ANIM_CLIP
+    assert(W.pedAnim == SANDING, "sanding: " .. tostring(W.pedAnim))
+    W.run(function() C.env.equipRepaintTool("painting") end)
+    assert(W.pedAnim == nil, "the sanding motion went on while painting")
+    assert(W.moveNetwork == "task_mp_pointing", "pointing pose started")
+    W.camPitch = 42.0
+    C.env.updateRepaintPointing()
+    assert(W.signals.Pitch == 1.0 and W.signals.isFirstPerson ~= nil, "pitch sent as 0..1: " .. tostring(W.signals.Pitch))
+    W.camPitch = -70.0
+    C.env.updateRepaintPointing()
+    assert(W.signals.Pitch == 0.0)
+    C.env.stopRepaintPointing()
+    assert(W.moveNetworkState == "Stop", "pointing pose stopped")
+    W.run(function() C.env.releaseOrderHeldProp() end)
+
+    -- Sanding cancelled with ESC: the motion stops with the minigame.
+    W.pressEscape = true
+    local ok = W.run(function() return C.env.runRepaintInstallMinigame(VEH, { id = "color_primary", value = 5 }, "sanding", true) end)
+    assert(ok == false and W.lastMessage("repaint:minigame:start"), "sanding minigame ran and was cancelled")
+    assert(W.pedAnim == nil, "the sanding motion went on after the minigame: " .. tostring(W.pedAnim))
+end
+
+-- 15. A colleague raises the car on the lift: the install waiting at "Lift the vehicle" only
+--     heard the lift of the player operating it and stayed there.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    local state = C.env.OrderInstallState
+    state.active, state.vehicleNetId, state.vehicle = true, NET, VEH
+    state.part = { id = "neon_0", label = "Underglow", value = 1 }
+    W.run(function() C.env.startSimpleInstallState() end)
+    assert(C.env.resolveSimpleInstallFlow() == "underbody_neon" and state.simpleStep == "lift_vehicle", tostring(state.simpleStep))
+
+    C.env.getWorkshopLiftStateForVehicle = function() return W.liftState end
+    W.liftState = { raised = false, atFloor = true }
+    W.run(function() C.env.syncInstallStepWithLift() end)
+    assert(state.simpleStep == "lift_vehicle", "still waiting while the car is down")
+    W.liftState = { raised = true, atFloor = false }
+    W.run(function() C.env.syncInstallStepWithLift() end)
+    assert(state.simpleStep == "install_neon", "raised by a colleague: " .. tostring(state.simpleStep))
+end
+
+-- 16. Rims of another wheel type: rim 30 of the High End wheels was clamped to the 10 rims of
+--     the car's Sport wheels, and rim 9 went on.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    W.veh.wheelType = 0
+    local ok = W.run(function() return C.env.applyOrderPartToVehicle(VEH, { id = "mod_23", value = 30, wheelType = 7 }) end)
+    assert(ok and W.veh.wheelType == 7, "wheel type changed")
+    assert(W.veh.mods[23] == 30, "the ordered rim went on: " .. tostring(W.veh.mods[23]))
+end
+
+-- 17. The server does not count the install (the turbo was used up before Install Part): the
+--     turbo stayed on the car and was saved while the order stayed open and refundable.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    W.openSelfService()
+    W.nui("tuning:apply", { id = "toggle_18", value = 1 })
+    assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+    W.nui("close")
+    W.player.items.turbo = 1
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood"))
+    W.player.items.turbo = 0 -- sold, dropped or used elsewhere
+    local saves = W.saves or 0
+    W.act("install_order_part")
+    assert(W.veh.toggles[18] ~= true, "the turbo stayed on the car")
+    assert((W.saves or 0) == saves, "the car was saved with the turbo")
+    assert(json.decode(W.db.orders[1].items)[1].installed ~= true and W.db.orders[1].status == "pending", "order untouched")
+    assert(C.env.OrderInstallState.active == false, "install ended")
+
+    -- With the turbo back, the same install goes through and is saved.
+    W.player.items.turbo = 1
+    assert(W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET }).success == true)
+    assert(W.act("open_hood") and W.act("install_order_part"))
+    assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
+end
+
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car, the jobs tablet kept open after a mechanic app's back arrow, the old paint back after a cancelled or uncounted repaint, the hoist attached from behind it at the front of the car, the hoist steps prompted away from the car, Open Hood after the hoist is attached, a hood that cannot be opened, no hoist step without a hoist location, the repair pose stopped with the resource.")

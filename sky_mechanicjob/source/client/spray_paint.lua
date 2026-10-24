@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/spray_paint.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/spray_paint.lua
 --  Deobfuscated & Cleaned
@@ -88,7 +87,7 @@ end
 
 function applyVehicleColorIndexes(vehicle, colorState)
     if type(colorState) ~= "table" then
-        print("[sky_mechanicjob][repaint_minigame] failed: invalid colorState in applyVehicleColorIndexes")
+        Sky.Debug("debug", "[sky_mechanicjob][repaint_minigame] failed: invalid colorState in applyVehicleColorIndexes")
         return
     end
 
@@ -209,6 +208,15 @@ end
 
 -- ── Tool Equipping ────────────────────────────────────
 
+-- The sanding motion loops on the upper body until it is stopped. Only the pointing pose
+-- was stopped, so the mechanic kept sanding with empty hands after the sanding step and
+-- kept the motion under the spray pose while painting.
+local function stopSandingAnim(ped)
+    if IsEntityPlayingAnim(ped, REPAINT_SANDING_ANIM_DICT, REPAINT_SANDING_ANIM_CLIP, 3) then
+        StopAnimTask(ped, REPAINT_SANDING_ANIM_DICT, REPAINT_SANDING_ANIM_CLIP, 1.0)
+    end
+end
+
 function equipRepaintTool(stage)
     local ped = PlayerPedId()
     releaseOrderHeldProp()
@@ -221,14 +229,14 @@ function equipRepaintTool(stage)
             modelName = REPAINT_SPRAY_PROP_MODEL_FALLBACK
             modelHash = GetHashKey(modelName)
             if not requestModelLoaded(modelHash, 2500) then
-                print(string.format("[sky_mechanicjob][repaint_minigame] failed: spray model could not be loaded (%s, fallback=%s)", REPAINT_SPRAY_PROP_MODEL, REPAINT_SPRAY_PROP_MODEL_FALLBACK))
+                Sky.Debug("debug", string.format("[sky_mechanicjob][repaint_minigame] failed: spray model could not be loaded (%s, fallback=%s)", REPAINT_SPRAY_PROP_MODEL, REPAINT_SPRAY_PROP_MODEL_FALLBACK))
                 return
             end
         else
             modelName = REPAINT_SPRAY_PROP_MODEL
             modelHash = GetHashKey(modelName)
             if not requestModelLoaded(modelHash, 2500) then
-                print(string.format("[sky_mechanicjob][repaint_minigame] failed: tool model could not be loaded (%s)", modelName))
+                Sky.Debug("debug", string.format("[sky_mechanicjob][repaint_minigame] failed: tool model could not be loaded (%s)", modelName))
                 return
             end
         end
@@ -250,6 +258,7 @@ function equipRepaintTool(stage)
     OrderInstallState.heldProp = propObj
 
     if stage == "painting" then
+        stopSandingAnim(ped)
         startRepaintPointing()
         return
     end
@@ -508,6 +517,7 @@ function runRepaintInstallMinigame(vehicle, partData, mode, skipSanding)
     stopSprayPtfx()
     stopSandingPtfx()
     stopRepaintPointing()
+    stopSandingAnim(PlayerPedId())
     releaseOrderHeldProp()
 
     local wasSuccess = RepaintMinigameState.resolved and RepaintMinigameState.success

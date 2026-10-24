@@ -1,8 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/import.lua") end
-if not SkyDiagnostics and not _SKY_LOGGING_UNAVAILABLE_WARNED then
-    _SKY_LOGGING_UNAVAILABLE_WARNED = true
-    print("^3[sky_base][WARN][logging.unavailable] source/diagnostics.lua did not load. Update this resource including fxmanifest.lua and source/diagnostics.lua, then restart it. Native gameplay registration remains enabled.^0")
-end
 -- =====================================================
 --  sky_base · source/import.lua
 --  Universal Framework Bridge & Core API Importer
@@ -50,8 +45,6 @@ function Sky.Debug(level, formatStr, ...)
     local formattedMsg
     local ok, result = pcall(string.format, tostring(formatStr), unpackFn(args, 1, argCount))
     formattedMsg = ok and result or tostring(formatStr)
-
-    if SkyDiagnostics then SkyDiagnostics.Message(level, formattedMsg); return end
 
     if level == "info" then
         print("^0[^2INFO^0] ^2" .. formattedMsg .. "^0")
@@ -323,7 +316,6 @@ if IsDuplicityVersion() then
     local localServerCallbacks = {}
 
     function Sky.Cb.Register(name, callbackFunction)
-    if SkyDiagnostics then callbackFunction = SkyDiagnostics.Wrap("callback", name, callbackFunction) end
         assert(name ~= nil, 'Parameter "name" must be a string!')
         assert(callbackFunction ~= nil, 'Parameter "callbackFunction" must be a function!')
         localServerCallbacks[name] = callbackFunction
@@ -361,7 +353,6 @@ else
     local currentRequestId = 0
 
     function Sky.Cb.Register(name, callbackFunction)
-    if SkyDiagnostics then callbackFunction = SkyDiagnostics.Wrap("callback", name, callbackFunction) end
         assert(name ~= nil, 'Parameter "name" must be a string!')
         assert(callbackFunction ~= nil, 'Parameter "callbackFunction" must be a function!')
         clientCallbacks[name] = callbackFunction

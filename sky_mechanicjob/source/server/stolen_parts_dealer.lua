@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/stolen_parts_dealer.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/stolen_parts_dealer.lua
 --  Stolen Vehicle Parts Fence / Dealer Trading

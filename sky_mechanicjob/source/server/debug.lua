@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/debug.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/debug.lua
 --  Admin & Debug Commands for Tuning, Wear and Repair

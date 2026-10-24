@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/wardrobe.lua") end
 -- =====================================================
 --  sky_jobs_base · source/client/wardrobe.lua
 --  Deobfuscated & Cleaned
@@ -82,7 +81,7 @@ local function openCustomWardrobe(ctx)
 
     local ok, res = pcall(custom.open, ctx or buildInteractionContext())
     if not ok then
-        print(string.format("[sky_jobs_base][Wardrobe] custom open failed: %s", tostring(res)))
+        Sky.Debug("debug", string.format("[sky_jobs_base][Wardrobe] custom open failed: %s", tostring(res)))
         return false
     end
     return res ~= false
@@ -113,7 +112,7 @@ local function openTgiannClothing()
         return exports["tgiann-clothing"]:OpenWardobeMenu("clothing")
     end)
     if not ok then
-        print(string.format("[sky_jobs_base][Wardrobe] tgiann-clothing OpenWardobeMenu failed: %s", tostring(res)))
+        Sky.Debug("debug", string.format("[sky_jobs_base][Wardrobe] tgiann-clothing OpenWardobeMenu failed: %s", tostring(res)))
         return false
     end
     return res ~= false

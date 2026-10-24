@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/vehicle_history.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/server/vehicle_history.lua
 --  Vehicle Service & Tuning History Logging
@@ -55,7 +53,7 @@ function VehicleHistory.Add(plate, action, description, mechanicSourceOrName, pr
     return true
 end
 
-registerExport("AddVehicleHistory", function(plate, action, description, mechanic, price)
+exports("AddVehicleHistory", function(plate, action, description, mechanic, price)
     return VehicleHistory.Add(plate, action, description, mechanic, price)
 end)
 

@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/tablet_apps.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/server/tablet_apps.lua
 --  Mechanic Tablet App Registrations & Integration
@@ -177,6 +175,6 @@ end)
 -- pricing.lua reloaded the saved workshops (at start and after every /jobconfig save).
 AddEventHandler("sky_mechanicjob:server:jobConfiguratorLoaded", registerMechanicAppsWithJobsBase)
 
-registerExport("GetMechanicTabletApps", function()
+exports("GetMechanicTabletApps", function()
     return MECHANIC_TABLET_APPS
 end)

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/twostep.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/twostep.lua
 --  Deobfuscated & Cleaned
@@ -408,7 +407,7 @@ function TwoStep.ApplyOption(vehicle, option, rawValue)
 
     local plate = getVehiclePlate(vehicle)
     if plate == "" then
-        print("[sky_mechanicjob][twostep] apply failed: vehicle plate missing")
+        Sky.Debug("debug", "[sky_mechanicjob][twostep] apply failed: vehicle plate missing")
         return false
     end
 
@@ -421,7 +420,7 @@ function TwoStep.ApplyOption(vehicle, option, rawValue)
 
         record = setRecordByPlate(plate, createDefaultRecord(valNum == 1))
         if not record then
-            print(string.format("[sky_mechanicjob][twostep] apply failed: unable to create record for plate %s", tostring(plate)))
+            Sky.Debug("debug", string.format("[sky_mechanicjob][twostep] apply failed: unable to create record for plate %s", tostring(plate)))
             return false
         end
     end
@@ -507,7 +506,9 @@ function TwoStep.TickVehicle(vehicle, now, state, plate, record)
 
         if now >= (twostepState.nextBurstAt or 0) then
             local intensity = math.max(0.35, math.min(1.0, (state.rpm - config.rpmWindowMin) / config.rpmWindowSize))
-            triggerBackfireEffect(vehicle, record, intensity)
+            -- Flames and the pop, as the anti-lag plays them for its driver: the driver only saw
+            -- the flames while everybody else also heard the pop.
+            playTwostepBurst(vehicle, record, intensity)
 
             if now >= (twostepState.nextSyncAt or 0) then
                 TriggerServerEvent("sky_mechanicjob:twostep:syncBurst", VehToNet(vehicle), {

@@ -1,12 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/nui_jobs_bridge.lua") end
-local function logDiagnostics(level, event, details)
-    if SkyDiagnostics and SkyDiagnostics.Log then
-        SkyDiagnostics.Log(level, event, details)
-    elseif level == "warn" or level == "error" then
-        local ok, message = pcall(json.encode, details or {})
-        print(("[sky_mechanicjob][%s][%s] %s"):format(level:upper(), event, ok and message or "Diagnostics unavailable"))
-    end
-end
 -- =====================================================
 --  sky_mechanicjob · source/client/nui_jobs_bridge.lua
 --  Proxies sky_jobs_base NUI callbacks into mechanic NUI
@@ -64,8 +55,8 @@ local mechanicOwnedCallbacks = {
 -- build that predates the registry export), so the mechanic UI keeps working
 -- instead of losing every proxied callback. The dynamic registry is always
 -- preferred; keep this list in sync with sky_jobs_base RegisterNUICallback calls.
--- Names owned by mechanic or the "sky:diagnostics:" namespace are filtered at
--- registration time, so it is safe to list the full jobs_base set here.
+-- Names owned by mechanic are filtered at registration time, so it is safe to
+-- list the full jobs_base set here.
 local jobsBaseFallbackCallbacks = {
     "billingSpecs:list",
     "billingSpecs:save",
@@ -278,15 +269,12 @@ local function proxyJobsBaseCallback(name)
         local originalCb = cb
         cb = function(result)
             if replied then
-                logDiagnostics("warn", "nui.proxy_duplicate_reply", { name = name, file = "sky_mechanicjob/source/client/nui_jobs_bridge.lua" })
                 return
             end
             replied = true
             return originalCb(result)
         end
-        logDiagnostics("debug", "nui.proxy_started", { name = name, jobsBaseState = GetResourceState("sky_jobs_base") })
         if GetResourceState("sky_jobs_base") ~= "started" then
-            logDiagnostics("warn", "nui.proxy_not_ready", { name = name, message = "sky_jobs_base is not started; trying fallback." })
             local fallback = getFallbackCallbackResponse(name, data)
             if fallback then
                 cb(fallback)
@@ -299,7 +287,6 @@ local function proxyJobsBaseCallback(name)
         local ok, handled = pcall(function()
             return exports.sky_jobs_base:RunNuiCallback(name, data, function(res)
                 if res == nil then
-                    logDiagnostics("warn", "nui.proxy_empty", { name = name, message = "Jobs base returned nil; trying fallback." })
                     local fallback = getFallbackCallbackResponse(name, data)
                     if fallback then
                         cb(fallback)
@@ -311,7 +298,6 @@ local function proxyJobsBaseCallback(name)
         end)
 
         if not ok or handled == false then
-            logDiagnostics("error", "nui.proxy_failed", { name = name, message = not ok and tostring(handled) or "Callback was not handled." })
             if replied then return end
             local fallback = getFallbackCallbackResponse(name, data)
             if fallback then
@@ -323,16 +309,15 @@ local function proxyJobsBaseCallback(name)
     end)
 end
 
-local function proxyCallbackNames(names, source)
+local function proxyCallbackNames(names)
     local registered = 0
     for _, name in ipairs(names) do
-        if not mechanicOwnedCallbacks[name] and name:sub(1, 16) ~= "sky:diagnostics:" then
+        if not mechanicOwnedCallbacks[name] then
             proxyJobsBaseCallback(name)
             registered = registered + 1
         end
     end
 
-    logDiagnostics("info", "nui.proxy_registered", { count = registered, jobsCallbacks = #names, source = source })
     return registered > 0
 end
 
@@ -348,17 +333,14 @@ local function registerJobsBaseProxies(allowFallback)
     end)
 
     if ok and type(names) == "table" then
-        return proxyCallbackNames(names, "registry")
+        return proxyCallbackNames(names)
     end
 
-    local detail = not ok and tostring(names) or "Registry response is not a table."
     if not allowFallback then
-        logDiagnostics("warn", "nui.proxy_registry_unavailable", { message = detail })
         return false
     end
 
-    logDiagnostics("warn", "nui.proxy_registry_fallback", { message = detail, fallbackCallbacks = #jobsBaseFallbackCallbacks })
-    return proxyCallbackNames(jobsBaseFallbackCallbacks, "fallback")
+    return proxyCallbackNames(jobsBaseFallbackCallbacks)
 end
 
 CreateThread(function()
@@ -369,18 +351,13 @@ CreateThread(function()
             return
         end
         attempts = attempts + 1
-        if attempts == 1 or attempts % 10 == 0 then
-            logDiagnostics("warn", "nui.proxy_retry", { attempt = attempts, maxAttempts = maxAttempts, jobsBaseState = GetResourceState("sky_jobs_base") })
-        end
         Wait(500)
     end
 
     -- Live registry never became available: fall back to the known callback set
     -- so the mechanic UI keeps working (calls degrade gracefully per-callback if
     -- sky_jobs_base is truly outdated and also lacks RunNuiCallback).
-    if not registerJobsBaseProxies(true) then
-        logDiagnostics("error", "nui.proxy_exhausted", { attempts = attempts, message = "Jobs NUI callbacks could not be registered; sky_jobs_base may need a restart." })
-    end
+    registerJobsBaseProxies(true)
 end)
 
 AddEventHandler("onClientResourceStart", function(resourceName)

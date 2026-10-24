@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/config/sv_functions.lua") end
 -- =====================================================
 --  sky_mechanicjob · config/sv_functions.lua
 --  Server-Side Framework & Utility Functions

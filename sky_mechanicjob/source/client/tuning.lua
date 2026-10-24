@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/tuning.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/tuning.lua
 --  Deobfuscated by Claude
@@ -33,7 +32,7 @@ function tryDetachNearestVehicleWheel()
     end
 
     if not requestVehicleControl(veh, 700) then
-        print("[sky_mechanicjob][wheel_detach] failed: no entity control for target vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][wheel_detach] failed: no entity control for target vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = (tuningLocales and tuningLocales.DetachWheelControlFailed) or "Unable to detach wheel right now."
@@ -42,7 +41,7 @@ function tryDetachNearestVehicleWheel()
 
     local expandedIndexes = expandWheelIndexes(wheelTarget.index)
     for _, idx in ipairs(expandedIndexes) do
-        BreakOffVehicleWheel(veh, idx, true, true, false, false)
+        breakOffVehicleWheelByTyre(veh, idx, true, true, false, false)
         Wait(0)
         if IsVehicleTyreBurst(veh, idx, false) then
             break
@@ -71,7 +70,7 @@ function tryAttachNearestVehicleWheel(vehicle, detachedIndexes, options)
     end
 
     if not requestVehicleControl(vehicle, 700) then
-        print("[sky_mechanicjob][wheel_attach] failed: no entity control for target vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][wheel_attach] failed: no entity control for target vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = (tuningLocales and tuningLocales.AttachWheelControlFailed) or "Unable to attach wheel right now."
@@ -118,7 +117,7 @@ function tryAttachNearestVehicleWheel(vehicle, detachedIndexes, options)
     -- missing wheel or burst tyre (runJobWheelAttach).
     for _, wheel in ipairs(type(options) == "table" and type(options.restoreWheels) == "table" and options.restoreWheels or {}) do
         for _, idx in ipairs(wheel.detached or {}) do
-            BreakOffVehicleWheel(vehicle, idx, false, true, false, false)
+            breakOffVehicleWheelByTyre(vehicle, idx, false, true, false, false)
         end
         for _, idx in ipairs(wheel.burst or {}) do
             SetVehicleTyreBurst(vehicle, idx, true, 1000.0)
@@ -202,6 +201,7 @@ function attachNearestVehicleWheel()
         return false
     end
 
+    rememberVehicleBeforeOrderPart(OrderInstallState.vehicle)
     if not applyOrderPartToVehicle(OrderInstallState.vehicle, OrderInstallState.part) then
         notify(getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle."), "error")
         return false
@@ -254,7 +254,7 @@ function tryUseVehicleCarJack()
     end
 
     if not requestVehicleControl(targetVeh, 900) then
-        print("[sky_mechanicjob][car_jack] failed: no entity control for target vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][car_jack] failed: no entity control for target vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = (tuningLocales and tuningLocales.CarJackControlFailed) or "Unable to use car jack right now."
@@ -286,7 +286,7 @@ function tryUseVehicleCarJack()
 
     local jackObj = CreateObjectNoOffset(propHash, propPosX, propPosY, propPosZ, true, true, false)
     if jackObj == 0 or not DoesEntityExist(jackObj) then
-        print(("[sky_mechanicjob][car_jack] failed: could not create jack object (%s)"):format(CAR_JACK_PROP_MODEL))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: could not create jack object (%s)"):format(CAR_JACK_PROP_MODEL))
         SetModelAsNoLongerNeeded(propHash)
         return false, {
             key = "radial.errors.generic",
@@ -369,7 +369,7 @@ function tryRemoveVehicleCarJack()
     end
 
     if not requestVehicleControl(veh, 900) then
-        print("[sky_mechanicjob][car_jack] failed: no entity control for jack removal")
+        Sky.Debug("debug", "[sky_mechanicjob][car_jack] failed: no entity control for jack removal")
         return false, {
             key = "radial.errors.generic",
             fallback = (tuningLocales and tuningLocales.CarJackControlFailed) or "Unable to use car jack right now."
@@ -436,7 +436,7 @@ RegisterNUICallback("tuning:apply", function(data, cb)
     if valNum > opt.max then valNum = opt.max end
 
     if not isAllowedOptionValue(opt, valNum) then
-        print(("[sky_mechanicjob][tuning] apply rejected: value %s is not allowed for option %s"):format(tostring(valNum), tostring(opt.id)))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] apply rejected: value %s is not allowed for option %s"):format(tostring(valNum), tostring(opt.id)))
         cb({ success = false, error = "invalid_value" })
         return
     end
@@ -493,7 +493,7 @@ RegisterNUICallback("tuning:applyCustomColor", function(data, cb)
 
     local customCol = data and data.customColor
     if customCol ~= nil and type(customCol) ~= "table" then
-        print("[sky_mechanicjob][tuning] applyCustomColor rejected: invalid_color (customColor is not nil or table)")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning] applyCustomColor rejected: invalid_color (customColor is not nil or table)")
         cb({ success = false, error = "invalid_color" })
         return
     end
@@ -506,7 +506,7 @@ RegisterNUICallback("tuning:applyCustomColor", function(data, cb)
     ))
 
     if not applyCustomColorOption(opt, data.paintType, customCol) then
-        print(("[sky_mechanicjob][tuning] applyCustomColor failed id=%s"):format(tostring(optionId)))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] applyCustomColor failed id=%s"):format(tostring(optionId)))
         cb({ success = false, error = "apply_failed" })
         return
     end
@@ -607,7 +607,11 @@ local function respawnVehicleWithProps(vehicle)
 
     if not HasModelLoaded(modelHash) then return 0 end
 
+    -- Only the network owner can delete the car: without control the new car appeared next to
+    -- the old one (another player driving it, or the owner standing closer).
+    if not requestVehicleControl(vehicle, 1500) then return 0 end
     deleteVehicleForRespawn(vehicle)
+    if DoesEntityExist(vehicle) then return 0 end
 
     local newVeh = CreateVehicle(modelHash, coords.x, coords.y, coords.z, heading, true, false)
     if newVeh == 0 or not DoesEntityExist(newVeh) then
@@ -758,7 +762,7 @@ function isNearSelfServiceTuningPoint()
     if #points == 0 then
         local now = GetGameTimer()
         if (now - selfServiceCache.lastMissingPrint) > 10000 then
-            print("[sky_mechanicjob][tuning] workshop requirement failed: no self_service_tuning points are configured")
+            Sky.Debug("debug", "[sky_mechanicjob][tuning] workshop requirement failed: no self_service_tuning points are configured")
             selfServiceCache.lastMissingPrint = now
         end
         return false
@@ -825,7 +829,7 @@ local function parseLocationCoords(coords)
 
     local x, y, z = tonumber(coords.x), tonumber(coords.y), tonumber(coords.z)
     if not x or not y or not z then
-        print("[sky_mechanicjob][instant_tuning] location skipped: coords must include numeric x, y, and z")
+        Sky.Debug("debug", "[sky_mechanicjob][instant_tuning] location skipped: coords must include numeric x, y, and z")
         return nil
     end
 
@@ -908,13 +912,13 @@ local function createInstantTuningPoints()
     end
 
     if type(rootCfg.locations) ~= "table" then
-        print("[sky_mechanicjob][instant_tuning] config check failed: Config.InstantTuning.locations must be a table")
+        Sky.Debug("debug", "[sky_mechanicjob][instant_tuning] config check failed: Config.InstantTuning.locations must be a table")
         return
     end
 
     for idx, loc in ipairs(rootCfg.locations) do
         if type(loc) ~= "table" then
-            print(("[sky_mechanicjob][instant_tuning] location skipped: entry %s is not a table"):format(tostring(idx)))
+            Sky.Debug("debug", ("[sky_mechanicjob][instant_tuning] location skipped: entry %s is not a table"):format(tostring(idx)))
         else
             local parsedCoords = parseLocationCoords(loc.coords or loc)
             if parsedCoords then
@@ -989,7 +993,7 @@ RegisterNUICallback("tuning:purchase", function(data, cb)
 
     local method = tostring((data and data.method) or "cash")
     if method ~= "cash" and method ~= "card" then
-        print(("[sky_mechanicjob][tuning] purchase rejected: invalid method %s"):format(method))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] purchase rejected: invalid method %s"):format(method))
         cb({ success = false, error = "invalid_method" })
         return
     end

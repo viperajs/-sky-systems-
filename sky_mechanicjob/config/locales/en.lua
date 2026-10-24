@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/config/locales/en.lua") end
 --   ____  _____ ____ ______   ______ _____ _____ ____     ___     _____ _____  _______ ____    ______   __  _______  __    _    ____    _____ ____  ___ _  _____ _____ ___  _   _    _        _     _   _                  ____  _ _                       _                 _______ _____ _  __     _   _ ____      _ ____ _____ _____
 --  |  _ \| ____/ ___|  _ \ \ / /  _ \_   _| ____|  _ \   ( _ )   |  ___|_ _\ \/ / ____|  _ \  | __ ) \ / / |  ___\ \/ /   / \  |  _ \  |  ___|  _ \|_ _| |/ /_ _|_   _/ _ \| \ | |  / \      | |__ | |_| |_ _ __  ___ _   / / /_| (_)___  ___ ___  _ __ __| |  __ _  __ _   / / ____|_   _| |/ /__ _| | | | ___|  __| | ___|___  |___  |
 --  | | | |  _|| |   | |_) \ V /| |_) || | |  _| | | | |  / _ \/\ | |_   | | \  /|  _| | | | | |  _ \\ V /  | |_   \  /   / _ \ | |_) | | |_  | |_) || || ' / | |  | || | | |  \| | / _ \     | '_ \| __| __| '_ \/ __(_) / / / _` | / __|/ __/ _ \| '__/ _` | / _` |/ _` | / /|  _|   | | | ' // _` | |_| |___ \ / _` |___ \  / /   / /
@@ -70,6 +69,7 @@ Locales["en"] = {
         OrderInstallOpenHoodRadialDescription = "Open the hood before installing this performance part.",
         OrderInstallHoodOpened = "Hood opened. Install the selected part.",
         OrderInstallHoodAlreadyOpen = "Hood is missing/damaged, continue by installing the selected part.",
+        OrderInstallHoodOpenFailed = "The hood could not be opened. Ask anyone in the car to get out, then try again.",
         OrderInstallRadialPrompt = "Radial menu: %s",
         BrakeInstallSuccess = "Brake components installed.",
         SuspensionInstallSuccess = "Suspension components installed.",
@@ -107,6 +107,8 @@ Locales["en"] = {
         EngineSwapHoodClosed = "Open the hood from the radial menu before swapping the engine.",
         EngineSwapHoodOpened = "Hood opened. Start the engine swap.",
         EngineSwapHoodAlreadyOpen = "Hood is already open. Start the engine swap.",
+        EngineSwapHoodOpenedTakeHoist = "Hood opened. Take the engine hoist from its spot.",
+        EngineSwapHoodAlreadyOpenTakeHoist = "The engine bay is open. Take the engine hoist from its spot.",
         EngineSwapOpenHoodRadialLabel = "Open Hood",
         EngineSwapOpenHoodRadialDescription = "Open the hood before starting the engine swap.",
         EngineSwapRadialLabel = "Swap Engine",
@@ -821,7 +823,7 @@ Locales["en"] = {
                 apply_failed = "Failed to apply this part on the vehicle.",
                 order_completed = "Order completed successfully.",
                 part_installed = "Part installed successfully.",
-                install_finalize_failed = "Part was applied but order update failed.",
+                install_finalize_failed = "The order could not be updated, so the part was taken off again.",
                 items = {
                     wheels = "Wheels",
                     spray_can = "Spray Can",

@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/jobs.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/server/jobs.lua
 --  Player Duty Tracking, Job Cache & Core Callbacks
@@ -87,12 +85,12 @@ local playerJobCache = {}
 -- -----------------------------------------------------
 --  EXPORTS & PUBLIC INTERFACE
 -- -----------------------------------------------------
-registerExport("Get", function()
+exports("Get", function()
     return Sky_Jobs
 end)
 
 -- sky_mechanicjob's server asks this first for a player's duty state.
-registerExport("isOnDuty", function(source)
+exports("isOnDuty", function(source)
     return Sky_Jobs.PlayerCache.IsOnDuty(source)
 end)
 
@@ -250,6 +248,18 @@ AddEventHandler("playerDropped", function()
     playerDutyState[src] = nil
     playerJobCache[src] = nil
 end)
+
+-- A character switch keeps the player's source: the next character started with the duty of
+-- the previous one. Both events are raised server-side by sky_base's framework bridge.
+local function forgetCharacter(src)
+    src = tonumber(src)
+    if src then
+        playerDutyState[src] = nil
+        playerJobCache[src] = nil
+    end
+end
+AddEventHandler("sky_base:playerUnloaded", forgetCharacter)
+AddEventHandler("sky_base:playerLoaded", forgetCharacter)
 
 -- -----------------------------------------------------
 --  FRAMEWORK & DATA HELPERS (Contract J)
@@ -635,19 +645,19 @@ local function invokingResource()
     return type(GetInvokingResource) == "function" and GetInvokingResource() or nil
 end
 
-registerExport("GetSocietyMoney", function(job)
+exports("GetSocietyMoney", function(job)
     return Sky_Jobs.GetSocietyBalance(job)
 end)
 
-registerExport("AddSocietyMoney", function(job, amount, reason)
+exports("AddSocietyMoney", function(job, amount, reason)
     return Sky_Jobs.CreditSociety(job, amount, reason, invokingResource())
 end)
 
-registerExport("RemoveSocietyMoney", function(job, amount, reason)
+exports("RemoveSocietyMoney", function(job, amount, reason)
     return Sky_Jobs.DebitSociety(job, amount, reason, invokingResource())
 end)
 
-registerExport("HasJobPermission", function(source, permission)
+exports("HasJobPermission", function(source, permission)
     return Sky_Jobs.HasJobPermission(source, permission)
 end)
 
@@ -717,7 +727,7 @@ function Sky_Jobs.GetRegisteredJobNames()
     return names
 end
 
-registerExport("RegisterJobs", function(resourceName, jobs)
+exports("RegisterJobs", function(resourceName, jobs)
     resourceName = type(resourceName) == "string" and resourceName ~= "" and resourceName or invokingResource()
     if not resourceName then return false end
     local previous = jobRegistry.byResource[resourceName] or {}
@@ -2889,7 +2899,7 @@ local function publishWorkshopJobNames(entries)
     TriggerEvent("sky_jobs_base:jobConfigurator:jobNamesUpdated", "sky_mechanicjob", names)
 end
 
-registerExport("GetJobConfiguratorJobNames", function()
+exports("GetJobConfiguratorJobNames", function()
     return workshopJobNames
 end)
 

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/shared/main.lua") end
 -- =====================================================
 --  sky_base · source/shared/main.lua
 --  Deobfuscated & Cleaned
@@ -49,8 +48,6 @@ function Sky.Debug(level, formatStr, ...)
     local formattedMsg
     local ok, result = pcall(string.format, tostring(formatStr), unpackFn(args, 1, argCount))
     formattedMsg = ok and result or tostring(formatStr)
-
-    if SkyDiagnostics then SkyDiagnostics.Message(level, formattedMsg); return end
 
     if level == "info" then
         print("^0[^2INFO^0] ^2" .. formattedMsg .. "^0")

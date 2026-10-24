@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/nitro.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/nitro.lua
 --  Deobfuscated by Claude
@@ -468,7 +467,7 @@ local function playLoopedParticleEffect(assetName, effectName, entity, offset, r
     )
 
     if not ptfxHandle or ptfxHandle == 0 then
-        print(("[sky_mechanicjob][nitro] particle effect start failed: effect=%s vehicle=%s offset=(%.2f,%.2f,%.2f)")
+        Sky.Debug("debug", ("[sky_mechanicjob][nitro] particle effect start failed: effect=%s vehicle=%s offset=(%.2f,%.2f,%.2f)")
             :format(tostring(effectName), tostring(entity), offset.x, offset.y, offset.z))
         return
     end

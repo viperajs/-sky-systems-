@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/creator.lua") end
 -- =====================================================
 --  sky_jobs_base · source/server/creator.lua
 --  Workshop, Station & Jail Creator Server Callbacks

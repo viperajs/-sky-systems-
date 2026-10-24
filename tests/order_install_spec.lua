@@ -25,13 +25,12 @@ local env = setmetatable({}, { __index = function(_, key)
     return stub
 end })
 env._G = env
-env.SkyDiagnostics = false
 env.print = function() end
 env.CreateThread = function() end
 env.GetGameBuildNumber = function() return 3258 end
 env.vector3 = vec
 env.vec3 = vec
-env.Sky = { Config = { locale = "en" }, Cb = { Trigger = function() return nil end } }
+env.Sky = { Config = { locale = "en" }, Debug = function() end, Cb = { Trigger = function() return nil end } }
 env.exports = setmetatable({}, {
     __call = function(_, name, fn) f.exports[name] = fn end,
     __index = function() return stub end,

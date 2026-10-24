@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/parts_delivery.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/parts_delivery.lua
 --  Deobfuscated & Cleaned
@@ -175,7 +173,7 @@ local function notifyMissingDeliveryPoint(reason, jobKey)
     if text:find("%s", 1, true) then
         text = text:gsub("%%s", (tostring(jobKey or "-"):gsub("%%", "%%%%")))
     end
-    print(("[sky_mechanicjob][parts_delivery] no delivery point for the Parts Shop: %s (job: %s)"):format(tostring(reason), tostring(jobKey)))
+    Sky.Debug("debug", ("[sky_mechanicjob][parts_delivery] no delivery point for the Parts Shop: %s (job: %s)"):format(tostring(reason), tostring(jobKey)))
     Sky.Show.Notification(getLocale("PartsDeliveryTitle", "Parts Delivery"), text, "error")
 end
 
@@ -192,7 +190,7 @@ local ORDER_ERROR_MESSAGES = {
 
 local function notifyOrderFailed(errorCode)
     local message = ORDER_ERROR_MESSAGES[tostring(errorCode)]
-    print(("[sky_mechanicjob][parts_delivery] parts order rejected: %s"):format(tostring(errorCode)))
+    Sky.Debug("debug", ("[sky_mechanicjob][parts_delivery] parts order rejected: %s"):format(tostring(errorCode)))
     if message then
         Sky.Show.Notification(getLocale("PartsDeliveryTitle", "Parts Delivery"), getLocale(message[1], message[2]), "error")
     end
@@ -477,7 +475,7 @@ local function spawnDeliveryEntity(deliveryId, target)
 
     local modelHash = GetHashKey(modelName)
     if not IsModelValid(modelHash) then
-        print(string.format("[sky_mechanicjob][parts_delivery] spawn failed: invalid model '%s'", modelName))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][parts_delivery] spawn failed: invalid model '%s'", modelName))
         return
     end
 
@@ -492,7 +490,7 @@ local function spawnDeliveryEntity(deliveryId, target)
     local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, false, false, false)
 
     if obj == 0 or not DoesEntityExist(obj) then
-        print(string.format("[sky_mechanicjob][parts_delivery] spawn failed: object creation failed for delivery %s", deliveryId))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][parts_delivery] spawn failed: object creation failed for delivery %s", deliveryId))
         return
     end
 
@@ -971,7 +969,7 @@ local function clearHeldDeliveryCarry()
 end
 
 -- ─── Export: Deposit Carry Item To Storage ──────────
-registerExport("TryDepositCarryItemToStorage", function(stationId)
+exports("TryDepositCarryItemToStorage", function(stationId)
     -- Only a part carried out of a delivery goes to storage; parts held for an order
     -- install keep the normal storage interaction.
     local heldItem = OrderInstallState and OrderInstallState.heldCarryItem or nil

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/config/locales/fr.lua") end
 --   ____  _____ ____ ______   ______ _____ _____ ____     ___     _____ _____  _______ ____    ______   __  _______  __    _    ____    _____ ____  ___ _  _____ _____ ___  _   _    _        _     _   _                  ____  _ _                       _                 _______ _____ _  __     _   _ ____      _ ____ _____ _____
 --  |  _ \| ____/ ___|  _ \ \ / /  _ \_   _| ____|  _ \   ( _ )   |  ___|_ _\ \/ / ____|  _ \  | __ ) \ / / |  ___\ \/ /   / \  |  _ \  |  ___|  _ \|_ _| |/ /_ _|_   _/ _ \| \ | |  / \      | |__ | |_| |_ _ __  ___ _   / / /_| (_)___  ___ ___  _ __ __| |  __ _  __ _   / / ____|_   _| |/ /__ _| | | | ___|  __| | ___|___  |___  |
 --  | | | |  _|| |   | |_) \ V /| |_) || | |  _| | | | |  / _ \/\ | |_   | | \  /|  _| | | | | |  _ \\ V /  | |_   \  /   / _ \ | |_) | | |_  | |_) || || ' / | |  | || | | |  \| | / _ \     | '_ \| __| __| '_ \/ __(_) / / / _` | / __|/ __/ _ \| '__/ _` | / _` |/ _` | / /|  _|   | | | ' // _` | |_| |___ \ / _` |___ \  / /   / /
@@ -70,6 +69,7 @@ OrderInstallRadialDescription = "Installer la pièce de commande sélectionnée 
         OrderInstallOpenHoodRadialDescription = "Ouvrez le capot avant d'installer cette pièce de performance.",
         OrderInstallHoodOpened = "Capot ouvert. Installez la pièce sélectionnée.",
         OrderInstallHoodAlreadyOpen = "Le capot est manquant/endommagé, continuez en installant la pièce sélectionnée.",
+        OrderInstallHoodOpenFailed = "Le capot n'a pas pu être ouvert. Demandez aux occupants de sortir du véhicule, puis réessayez.",
         OrderInstallRadialPrompt = "Menu radial : %s",
         BrakeInstallSuccess = "Composants de frein installés.",
         SuspensionInstallSuccess = "Composants de suspension installés.",
@@ -107,6 +107,8 @@ OilPourMinigameFailed = "Échec du mini-jeu de remplissage d’huile.",
 EngineSwapHoodClosed = "Ouvrez le capot via le menu radial avant de changer le moteur.",
 EngineSwapHoodOpened = "Capot ouvert. Lancez le changement de moteur.",
 EngineSwapHoodAlreadyOpen = "Le capot est déjà ouvert. Lancez le changement de moteur.",
+EngineSwapHoodOpenedTakeHoist = "Capot ouvert. Prenez le palan à moteur à son emplacement.",
+EngineSwapHoodAlreadyOpenTakeHoist = "Le compartiment moteur est ouvert. Prenez le palan à moteur à son emplacement.",
 EngineSwapOpenHoodRadialLabel = "Ouvrir le capot",
 EngineSwapOpenHoodRadialDescription = "Ouvrir le capot avant de commencer le changement de moteur.",
 EngineSwapRadialLabel = "Changer le moteur",
@@ -821,7 +823,7 @@ tablet = {
         apply_failed = "Impossible d’appliquer cette pièce sur le véhicule.",
         order_completed = "Commande terminée avec succès.",
         part_installed = "Pièce installée avec succès.",
-        install_finalize_failed = "La pièce a été appliquée mais la mise à jour de la commande a échoué.",
+        install_finalize_failed = "La commande n'a pas pu être mise à jour, la pièce a donc été retirée.",
         items = {
             wheels = "Jantes",
             spray_can = "Aérosol",

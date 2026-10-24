@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/engine_swap.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/engine_swap.lua
 --  Deobfuscated & Cleaned
@@ -8,7 +7,9 @@ local ENGINE_PROP_MODEL = "prop_car_engine_01"
 local HOIST_PROP_MODEL = "xs_prop_x18_engine_hoist_02a"
 local ANIM_BOX_CARRY_DICT = "anim@heists@box_carry@"
 local ANIM_BOX_CARRY_CLIP = "idle"
-local MAX_SEARCH_DIST = 20.0
+-- The mechanic walks up to a hoist to take it. Taking one from 20 m away teleported it
+-- from its workshop spot to the mechanic standing at the car.
+local HOIST_TAKE_DISTANCE = 3.5
 local CREATOR_KEY = "workshopcreator"
 local POINT_TYPE_HOIST = "engine_swap"
 
@@ -37,6 +38,14 @@ local function playBoxCarryAnim(ped)
 
     Sky.Load.AnimDict(ANIM_BOX_CARRY_DICT)
     TaskPlayAnim(ped, ANIM_BOX_CARRY_DICT, ANIM_BOX_CARRY_CLIP, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+end
+
+-- The pushing pose loops until it is stopped; it was left on after the hoist was attached
+-- to the car or put back, so the mechanic kept walking around holding nothing.
+local function stopBoxCarryAnim(ped)
+    if IsEntityPlayingAnim(ped, ANIM_BOX_CARRY_DICT, ANIM_BOX_CARRY_CLIP, 3) then
+        StopAnimTask(ped, ANIM_BOX_CARRY_DICT, ANIM_BOX_CARRY_CLIP, 1.0)
+    end
 end
 
 -- ── Point Key Formatter ──────────────────────────────
@@ -100,7 +109,7 @@ end
 local function spawnPointHoistProp(pointEntry)
     local modelHash = GetHashKey(HOIST_PROP_MODEL)
     if not IsModelValid(modelHash) then
-        print(string.format("[sky_mechanicjob][engine_hoist] failed: invalid model '%s'", HOIST_PROP_MODEL))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][engine_hoist] failed: invalid model '%s'", HOIST_PROP_MODEL))
         return false
     end
 
@@ -116,7 +125,7 @@ local function spawnPointHoistProp(pointEntry)
     local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, false, false, false)
 
     if obj == 0 or not DoesEntityExist(obj) then
-        print("[sky_mechanicjob][engine_hoist] failed: could not create hoist object")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] failed: could not create hoist object")
         return false
     end
 
@@ -144,6 +153,7 @@ end
 function clearEngineHoistState()
     local hoist = EngineHoistActiveState.hoistProp
     local engine = EngineHoistActiveState.engineProp
+    local wasPushing = EngineHoistActiveState.active
 
     if engine ~= 0 and DoesEntityExist(engine) then
         DeleteEntity(engine)
@@ -176,6 +186,10 @@ function clearEngineHoistState()
     EngineHoistActiveState.originHeading = 0.0
     EngineHoistActiveState.originFrozen = false
     EngineHoistActiveState.attachedToVehicle = false
+
+    if wasPushing then
+        stopBoxCarryAnim(PlayerPedId())
+    end
 end
 
 local function cleanupOrphanedAttachedHoists(vehicle)
@@ -183,7 +197,7 @@ local function cleanupOrphanedAttachedHoists(vehicle)
 
     local activeHoist = EngineHoistActiveState.hoistProp
     if activeHoist ~= 0 and DoesEntityExist(activeHoist) and IsEntityAttachedToEntity(activeHoist, vehicle) then
-        print("[sky_mechanicjob][engine_hoist] cleanup: removed active hoist still attached on vehicle enter")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] cleanup: removed active hoist still attached on vehicle enter")
         clearEngineHoistState()
     end
 
@@ -192,7 +206,7 @@ local function cleanupOrphanedAttachedHoists(vehicle)
     local nearbyHoist = GetClosestObjectOfType(coords.x, coords.y, coords.z, 8.0, hoistHash, false, false, false)
 
     if nearbyHoist ~= 0 and DoesEntityExist(nearbyHoist) and IsEntityAttachedToEntity(nearbyHoist, vehicle) then
-        print("[sky_mechanicjob][engine_hoist] cleanup: removed nearby orphaned hoist still attached on vehicle enter")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] cleanup: removed nearby orphaned hoist still attached on vehicle enter")
         local hoistPos = GetEntityCoords(nearbyHoist)
         local engineHash = GetHashKey(ENGINE_PROP_MODEL)
         local attachedEngine = GetClosestObjectOfType(hoistPos.x, hoistPos.y, hoistPos.z, 4.0, engineHash, false, false, false)
@@ -292,7 +306,7 @@ local function canUseHoistPoint(point)
 end
 
 local function findNearestHoistPoint(maxRadius)
-    local radius = tonumber(maxRadius) or MAX_SEARCH_DIST
+    local radius = tonumber(maxRadius) or HOIST_TAKE_DISTANCE
     local pedCoords = GetEntityCoords(PlayerPedId())
     local bestPoint = nil
     local bestDist = radius + 0.001
@@ -310,14 +324,22 @@ end
 
 -- ── Following Loop ───────────────────────────────────
 
+local followLoopId = 0
+
 local function startHoistFollowLoop()
+    followLoopId = followLoopId + 1
+    local loopId = followLoopId
     CreateThread(function()
-        while EngineHoistActiveState.active do
+        while EngineHoistActiveState.active and loopId == followLoopId do
             Wait(0)
+            -- Attaching the hoist (or taking it again) runs while this loop waits; one more
+            -- pass moved the attached hoist back in front of the mechanic and restarted the
+            -- pushing pose.
+            if not EngineHoistActiveState.active or loopId ~= followLoopId then break end
 
             local hoist = EngineHoistActiveState.hoistProp
             if hoist == 0 or not DoesEntityExist(hoist) then
-                print("[sky_mechanicjob][engine_hoist] follow loop aborted: hoist prop missing")
+                Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] follow loop aborted: hoist prop missing")
                 clearEngineHoistState()
                 break
             end
@@ -363,7 +385,7 @@ end
 function takeNearestEngineHoistForOrderInstall()
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][engine_hoist] take failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapTakeHoistFailed or "Leave the vehicle before taking an engine hoist."
@@ -372,9 +394,9 @@ function takeNearestEngineHoistForOrderInstall()
 
     clearEngineHoistState()
 
-    local point, dist = findNearestHoistPoint(MAX_SEARCH_DIST)
+    local point, dist = findNearestHoistPoint(HOIST_TAKE_DISTANCE)
     if point == nil then
-        print("[sky_mechanicjob][engine_hoist] take failed: no workshopcreator hoist location nearby")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: no workshopcreator hoist location nearby")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapNoHoistNearby or "No engine hoist nearby. Place an Engine Hoist location for this workshop in /jobconfig and move closer."
@@ -387,7 +409,7 @@ function takeNearestEngineHoistForOrderInstall()
 
     local hoistObj = point.hoistProp
     if hoistObj == 0 or not DoesEntityExist(hoistObj) then
-        print("[sky_mechanicjob][engine_hoist] take failed: unable to create hoist prop at workshop location")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: unable to create hoist prop at workshop location")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapNoActiveHoist or "Unable to prepare engine hoist."
@@ -414,20 +436,52 @@ function takeNearestEngineHoistForOrderInstall()
     startHoistFollowLoop()
 
     if type(dist) == "number" then
-        print(string.format("[sky_mechanicjob][engine_hoist] workshop hoist acquired at %.2f meters", dist))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][engine_hoist] workshop hoist acquired at %.2f meters", dist))
     end
 
     return true
 end
 
 function isNearAnyEngineHoistForOrderInstall(maxDist)
-    local point = select(1, findNearestHoistPoint(tonumber(maxDist) or MAX_SEARCH_DIST))
+    local point = select(1, findNearestHoistPoint(tonumber(maxDist) or HOIST_TAKE_DISTANCE))
     return point ~= nil
+end
+
+--- Whether this workshop has an Engine Hoist location the player may use.
+function hasUsableEngineHoistPoint()
+    for _, pt in ipairs(EngineHoistState.pointList) do
+        if canUseHoistPoint(pt) then return true end
+    end
+    return false
+end
+
+-- The hoist goes this far in front of the bumper.
+local HOIST_FRONT_GAP = 0.95
+-- How close the pushed hoist must be to that spot to attach it.
+local HOIST_ATTACH_REACH = 2.0
+
+local function getHoistAttachOffset(vehicle)
+    local minDim, maxDim = GetModelDimensions(GetEntityModel(vehicle))
+    return maxDim.y + HOIST_FRONT_GAP, minDim.z
+end
+
+--- Whether the pushed hoist can be attached: the mechanic next to the car, or the hoist at its
+--- front. Pushed head-on, the hoist reaches the bumper with the mechanic behind it, more than
+--- 4 m from the car's centre: Attach was only offered once the hoist was pushed into the car.
+function canAttachEngineHoistToVehicle(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return false end
+    if #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(vehicle)) <= 4.0 then return true end
+
+    local hoist = EngineHoistActiveState.hoistProp
+    if not EngineHoistActiveState.active or hoist == 0 or not DoesEntityExist(hoist) then return false end
+    local spot = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, (getHoistAttachOffset(vehicle)), 0.0)
+    local hoistCoords = GetEntityCoords(hoist)
+    return #(vector3(hoistCoords.x, hoistCoords.y, 0.0) - vector3(spot.x, spot.y, 0.0)) <= HOIST_ATTACH_REACH
 end
 
 function attachEngineHoistToVehicleFront(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][engine_hoist] attach failed: vehicle missing")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: vehicle missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -436,17 +490,16 @@ function attachEngineHoistToVehicleFront(vehicle)
 
     local hoistObj = EngineHoistActiveState.hoistProp
     if hoistObj == 0 or not DoesEntityExist(hoistObj) then
-        print("[sky_mechanicjob][engine_hoist] attach failed: hoist not active")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: hoist not active")
         return false, {
             key = "radial.errors.generic",
+            code = "no_active_hoist",
             fallback = tuningLocales.EngineSwapNoActiveHoist or "Take an engine hoist first."
         }
     end
 
-    local pedCoords = GetEntityCoords(PlayerPedId())
-    local vehCoords = GetEntityCoords(vehicle)
-    if #(pedCoords - vehCoords) > 4.0 then
-        print("[sky_mechanicjob][engine_hoist] attach failed: player is too far from vehicle")
+    if not canAttachEngineHoistToVehicle(vehicle) then
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: player is too far from vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.WheelInstallTooFar or "Move closer to the connected order vehicle."
@@ -458,12 +511,11 @@ function attachEngineHoistToVehicleFront(vehicle)
     SetEntityCompletelyDisableCollision(hoistObj, false, false)
     SetEntityCollision(hoistObj, true, true)
 
-    local minDim, maxDim = GetModelDimensions(GetEntityModel(vehicle))
-    local offsetY = maxDim.y + 0.95
-    local offsetZ = minDim.z
+    local offsetY, offsetZ = getHoistAttachOffset(vehicle)
 
     AttachEntityToEntity(hoistObj, vehicle, 0, 0.0, offsetY, offsetZ, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
     EngineHoistActiveState.attachedToVehicle = true
+    stopBoxCarryAnim(PlayerPedId())
     return true
 end
 
@@ -502,19 +554,3 @@ AddEventHandler("onResourceStop", function(resName)
         deletePointHoistProp(pt)
     end
 end)
-
-RegisterCommand("sky_debug_engine_hoist", function()
-    if EngineHoistActiveState.active then
-        releaseOrderHeldProp()
-        notify("Engine hoist debug removed.", "info")
-        return
-    end
-
-    local ok, err = takeNearestEngineHoistForOrderInstall()
-    if ok then
-        notify("Engine hoist debug acquired.", "success")
-        return
-    end
-
-    notify((err and err.fallback) or "No nearby engine hoist found.", "error")
-end, false)

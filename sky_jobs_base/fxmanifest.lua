@@ -9,7 +9,6 @@ version '1.28.0'
 escrow_ignore 'config/**'
 
 shared_scripts {
-	'source/diagnostics.lua',
 	'source/import.lua',
 	'source/enums/*.lua',
 }
@@ -81,7 +80,6 @@ server_scripts {
 }
 
 files {
-	'source/diagnostics.lua',
 	'source/html/index.html',
 	'source/html/assets/**',
 	'source/html/img/**',

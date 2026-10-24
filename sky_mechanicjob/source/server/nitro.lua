@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/nitro.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/nitro.lua
 --  Nitro Kit Installation, Bottle Management & State Sync

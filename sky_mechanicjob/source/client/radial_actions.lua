@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/radial_actions.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/radial_actions.lua
 --  Deobfuscated by Claude
@@ -183,8 +181,14 @@ local function buildRadialActions()
             end
         end
 
-        if nextAction == "take_engine_hoist" and not isNearVeh then
+        -- Taken where it stands, not summoned from across the workshop to the car.
+        if nextAction == "take_engine_hoist" then
             isActionAllowedNear = isNearAnyEngineHoistForOrderInstall()
+        end
+
+        -- Also with the hoist pushed to the front of the car and the mechanic behind it.
+        if nextAction == "attach_engine_hoist" then
+            isActionAllowedNear = canAttachEngineHoistToVehicle(veh)
         end
 
         if nextAction == "install_stance_wheel" then
@@ -440,9 +444,9 @@ local function buildRadialActions()
     return { cancelWheelAction }
 end
 
-registerExport("getRadialActions", buildRadialActions)
+exports("getRadialActions", buildRadialActions)
 
-registerExport("triggerRadialMenuAction", function(actionId)
+local function runRadialMenuAction(actionId)
     if actionId == "access_lift" then
         if type(openNearestLiftControlUi) ~= "function" then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.LiftNotNearby) or "No lift nearby." }
@@ -458,6 +462,7 @@ registerExport("triggerRadialMenuAction", function(actionId)
         if not OrderInstallState.active or WheelOrderInstallState.active or RepaintOrderInstallState.active then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallNotActive) or "Part install is not active." }
         end
+        restoreVehicleBeforeOrderPart()
         clearOrderInstallState()
         notify((tuningLocales and tuningLocales.OrderInstallCanceled) or "Part install canceled.", "info")
         return true
@@ -584,12 +589,8 @@ registerExport("triggerRadialMenuAction", function(actionId)
             return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.") }
         end
 
-        local pedCoords = GetEntityCoords(PlayerPedId())
-        local vehCoords = GetEntityCoords(veh)
-        if #(pedCoords - vehCoords) > 4.0 then
-            return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallTooFar) or "Move closer to the connected order vehicle." }
-        end
-
+        -- The distance is checked by attachEngineHoistToVehicleFront: next to the car or with
+        -- the hoist at its front.
         local nextAction = nextSimpleInstallActionId()
         if nextAction ~= "attach_engine_hoist" then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallWrongStep) or "Complete the current install step first." }
@@ -597,6 +598,12 @@ registerExport("triggerRadialMenuAction", function(actionId)
 
         local ok, err = attachEngineHoistToVehicleFront(veh)
         if not ok then
+            -- The hoist is gone (put back by a workshop update, or lost): offer Take Engine
+            -- Hoist again instead of an Attach step that can never succeed.
+            if type(err) == "table" and err.code == "no_active_hoist" then
+                OrderInstallState.simpleStep = "take_hoist"
+                sendSimpleInstallChecklistUpdate()
+            end
             return false, err
         end
 
@@ -633,9 +640,12 @@ registerExport("triggerRadialMenuAction", function(actionId)
         local isOilChange = (flow == "oil_change")
         local isFluidRefill = (flow == "fluid_refill")
 
+        -- The hood shut again after the hoist was attached: back to the swap, not to Take Engine
+        -- Hoist at its now empty spot.
+        local takeHoistNext = isEngineSwap and doesActiveEngineInstallUseHoist() and not EngineHoistActiveState.attachedToVehicle
         local nextStepName = "install"
         if isEngineSwap then
-            nextStepName = doesActiveEngineInstallUseHoist() and "take_hoist" or "engine_swap"
+            nextStepName = takeHoistNext and "take_hoist" or "engine_swap"
         elseif isOilChange or isFluidRefill then
             nextStepName = "pour_oil"
         end
@@ -646,8 +656,12 @@ registerExport("triggerRadialMenuAction", function(actionId)
             sendSimpleInstallChecklistUpdate()
 
             if isEngineSwap then
-                local fallbackMsg = doesActiveEngineInstallUseHoist() and "Hood is missing/damaged, continue by taking the engine hoist." or "Hood is missing/damaged, continue with the engine swap."
-                notify((tuningLocales and tuningLocales.EngineSwapHoodAlreadyOpen) or fallbackMsg, "info")
+                -- The hoist text was never shown: every locale has EngineSwapHoodAlreadyOpen.
+                if takeHoistNext then
+                    notify((tuningLocales and tuningLocales.EngineSwapHoodAlreadyOpenTakeHoist) or "The engine bay is open. Take the engine hoist from its spot.", "info")
+                else
+                    notify((tuningLocales and tuningLocales.EngineSwapHoodAlreadyOpen) or "Hood is missing/damaged, continue with the engine swap.", "info")
+                end
             elseif isOilChange then
                 notify((tuningLocales and tuningLocales.OilChangeHoodAlreadyOpen) or "Hood is missing/damaged, continue by pouring fresh oil.", "info")
             elseif isFluidRefill then
@@ -659,14 +673,21 @@ registerExport("triggerRadialMenuAction", function(actionId)
             return true
         end
 
-        -- With network control, so the open hood syncs instead of snapping shut again.
-        ensureVehicleHoodOpen(veh)
+        -- With network control, so the open hood syncs instead of snapping shut again. The swap
+        -- needs it open and checks again: "Hood opened" and moving on looped between Open Hood
+        -- and the swap when it could not be opened (someone in the car).
+        if not ensureVehicleHoodOpen(veh) and isEngineSwap then
+            return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallHoodOpenFailed) or "The hood could not be opened. Ask anyone in the car to get out, then try again." }
+        end
         OrderInstallState.simpleStep = nextStepName
         sendSimpleInstallChecklistUpdate()
 
         if isEngineSwap then
-            local successMsg = doesActiveEngineInstallUseHoist() and "Hood opened. Take the engine hoist." or "Hood opened. Start the engine swap."
-            notify((tuningLocales and tuningLocales.EngineSwapHoodOpened) or successMsg, "success")
+            if takeHoistNext then
+                notify((tuningLocales and tuningLocales.EngineSwapHoodOpenedTakeHoist) or "Hood opened. Take the engine hoist from its spot.", "success")
+            else
+                notify((tuningLocales and tuningLocales.EngineSwapHoodOpened) or "Hood opened. Start the engine swap.", "success")
+            end
         elseif isOilChange then
             notify((tuningLocales and tuningLocales.OilChangeHoodOpened) or "Hood opened. Pour fresh oil into the engine.", "success")
         elseif isFluidRefill then
@@ -917,6 +938,7 @@ registerExport("triggerRadialMenuAction", function(actionId)
         if not RepaintOrderInstallState.active then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.RepaintInstallNotActive) or "Repaint actions are only available during a repaint install." }
         end
+        restoreVehicleBeforeOrderPart()
         clearOrderInstallState()
         notify((tuningLocales and tuningLocales.RepaintInstallCanceled) or "Repaint canceled.", "info")
         return true
@@ -947,6 +969,10 @@ registerExport("triggerRadialMenuAction", function(actionId)
         if not ok then
             return false, err
         end
+
+        -- The paint as it was before the primer: a repaint cancelled after sanding left the car
+        -- grey, and one the server did not count kept the new paint (the minigame shows it).
+        rememberVehicleBeforeOrderPart(veh)
 
         if actionId == "sand_vehicle" then
             local mgOk, mgErr = runTuningMinigame("spray_paint", veh, OrderInstallState.part, "sanding", true)
@@ -983,6 +1009,7 @@ registerExport("triggerRadialMenuAction", function(actionId)
         if not WheelOrderInstallState.active then
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallNotActive) or "Wheel actions are only available during a wheel order install." }
         end
+        restoreVehicleBeforeOrderPart()
         clearOrderInstallState()
         notify((tuningLocales and tuningLocales.WheelInstallCanceled) or "Wheel change canceled.", "info")
         return true
@@ -992,7 +1019,7 @@ registerExport("triggerRadialMenuAction", function(actionId)
     if not wheelStepOk then
         if actionId == "attach_wheel" then
             local errText = type(wheelStepErr) == "table" and (wheelStepErr.fallback or wheelStepErr.key or "unknown") or tostring(wheelStepErr)
-            print(("[sky_mechanicjob][wheel_attach][check] blocked by ensureWheelOrderStep (%s)"):format(errText))
+            Sky.Debug("debug", ("[sky_mechanicjob][wheel_attach][check] blocked by ensureWheelOrderStep (%s)"):format(errText))
         end
         return false, wheelStepErr
     end
@@ -1109,7 +1136,7 @@ registerExport("triggerRadialMenuAction", function(actionId)
     if actionId == "attach_wheel" then
         local nearestVeh = select(1, getNearestDetachWheelTarget())
         if nearestVeh ~= targetVeh then
-            print(("[sky_mechanicjob][wheel_attach][check] wrong nearest vehicle (nearest=%s target=%s)"):format(
+            Sky.Debug("debug", ("[sky_mechanicjob][wheel_attach][check] wrong nearest vehicle (nearest=%s target=%s)"):format(
                 tostring(nearestVeh), tostring(targetVeh)
             ))
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use this action on the connected order vehicle." }
@@ -1125,11 +1152,12 @@ registerExport("triggerRadialMenuAction", function(actionId)
 
         if not attachOk then
             local errText = type(attachErr) == "table" and (attachErr.fallback or attachErr.key or "unknown") or tostring(attachErr)
-            print(("[sky_mechanicjob][wheel_attach][check] tryAttachNearestVehicleWheel failed (%s)"):format(errText))
+            Sky.Debug("debug", ("[sky_mechanicjob][wheel_attach][check] tryAttachNearestVehicleWheel failed (%s)"):format(errText))
             return false, attachErr
         end
 
         if not OrderInstallState.repairMode then
+            rememberVehicleBeforeOrderPart(targetVeh)
             if not applyOrderPartToVehicle(targetVeh, OrderInstallState.part) then
                 return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
             end
@@ -1142,6 +1170,25 @@ registerExport("triggerRadialMenuAction", function(actionId)
     end
 
     return false, { key = "radial.errors.generic", fallback = "Action unavailable." }
+end
+
+-- One step at a time: picked again from the radial menu while its animation played, a step ran
+-- twice (two animations, then the second finish failed). Cancelling and the lift stay available.
+local radialStepRunning = false
+
+exports("triggerRadialMenuAction", function(actionId)
+    if actionId == "access_lift" or tostring(actionId):match("^cancel_") then
+        return runRadialMenuAction(actionId)
+    end
+    if radialStepRunning then
+        return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.OrderInstallWrongStep) or "Complete the current install step first." }
+    end
+
+    radialStepRunning = true
+    local result = table.pack(pcall(runRadialMenuAction, actionId))
+    radialStepRunning = false
+    if not result[1] then error(result[2], 0) end
+    return table.unpack(result, 2, result.n)
 end)
 
 -- ─── Next Install Step Prompt ─────────────────────
@@ -1164,6 +1211,15 @@ end
 
 local installPrompt = { text = nil, key = "G", refreshAt = 0 }
 
+-- The engine hoist steps are done away from the car: taking it at its spot, and attaching it
+-- from behind it at the bumper. The prompt only showed next to the car.
+local function isAtEngineHoistStep(veh)
+    local step = nextSimpleInstallActionId()
+    if step == "take_engine_hoist" then return isNearAnyEngineHoistForOrderInstall() end
+    if step == "attach_engine_hoist" then return canAttachEngineHoistToVehicle(veh) end
+    return false
+end
+
 --- Shows the radial menu prompt for the next install step this frame; returns whether it did.
 function showOrderInstallStepPrompt()
     if not OrderInstallState.active or OrderInstallState.finalizing or TuningState.active or IsNuiFocused() then
@@ -1171,8 +1227,10 @@ function showOrderInstallStepPrompt()
     end
 
     local veh = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
-    if veh == 0 or not DoesEntityExist(veh)
-        or #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(veh)) > INSTALL_PROMPT_DISTANCE then
+    if veh == 0 or not DoesEntityExist(veh) then
+        return false
+    end
+    if #(GetEntityCoords(PlayerPedId()) - GetEntityCoords(veh)) > INSTALL_PROMPT_DISTANCE and not isAtEngineHoistStep(veh) then
         return false
     end
 
@@ -1198,7 +1256,12 @@ function showOrderInstallStepPrompt()
 end
 
 CreateThread(function()
+    local nextLiftCheckAt = 0
     while true do
+        if OrderInstallState.active and GetGameTimer() >= nextLiftCheckAt then
+            nextLiftCheckAt = GetGameTimer() + 500
+            pcall(syncInstallStepWithLift)
+        end
         Wait(showOrderInstallStepPrompt() and 0 or 250)
     end
 end)

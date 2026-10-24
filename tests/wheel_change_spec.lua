@@ -34,7 +34,7 @@ local function newClient(bones, wheelCount)
     local f = {
         bones = bones, boneNames = {}, coords = { [VEHICLE] = vec(0, 0, 0), [PED] = vec(-1.6, 0, 0) },
         exports = {}, nuiCallbacks = {}, off = {}, burst = {}, stateBag = {}, notes = {}, checklists = {},
-        calls = {}, applied = 0, applyFailures = 0, nextObject = 500,
+        calls = {}, applied = 0, applyFailures = 0, nextObject = 500, stateBagHandlers = {}, serverEvents = {}, deleted = {}, threads = {}, torque = {},
         orderPart = { id = "mod_23", label = "Rims", value = 7, requiredItem = "wheels" },
     }
     local i = 0
@@ -46,17 +46,17 @@ local function newClient(bones, wheelCount)
         return stub
     end })
     env._G = env
-    env.SkyDiagnostics = false
     env.print = function() end
-    env.CreateThread = function() end
-    env.Wait = function() end
+    -- Threads are kept, not run; a test can run one. Wait yields inside such a thread.
+    env.CreateThread = function(fn) f.threads[#f.threads + 1] = fn end
+    env.Wait = function(ms) if coroutine.isyieldable() then coroutine.yield(ms) end end
     env.Citizen = { CreateThread = env.CreateThread, Wait = env.Wait }
     env.GetGameTimer = function() return 0 end
     env.GetGameBuildNumber = function() return 3258 end
     env.vector3 = vec
     env.vec3 = vec
     env.json = { encode = function() return "[]" end, decode = function() return {} end }
-    env.Sky = { Config = { locale = "en" }, Math = { Trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end }, Cb = { Trigger = function(name, payload)
+    env.Sky = { Config = { locale = "en" }, Debug = function() end, Math = { Trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end }, Cb = { Trigger = function(name, payload)
         f.calls[#f.calls + 1] = { name = name, payload = payload }
         if name == "sky_mechanicjob:wear:prepareRepairInstall" then
             return { success = true, data = { part = payload.part, requiredItem = "wheels", removeRequiredItemAfterUse = true, flow = "wheel" } }
@@ -76,9 +76,15 @@ local function newClient(bones, wheelCount)
     -- Natives
     env.PlayerPedId = function() return PED end
     env.GetEntityCoords = function(entity) return f.coords[entity] or vec(0, 0, 0) end
-    env.DoesEntityExist = function(entity) return entity == PED or entity == VEHICLE or (entity or 0) >= 500 end
+    env.DoesEntityExist = function(entity)
+        if f.deleted[entity] then return false end
+        if entity == VEHICLE then return not f.vehicleGone end
+        return entity == PED or (entity or 0) >= 500
+    end
+    env.DeleteEntity = function(entity) f.deleted[entity] = true end
+    env.SetVehicleEngineTorqueMultiplier = function(_, multiplier) f.torque[#f.torque + 1] = multiplier end
     env.IsEntityAVehicle = function(entity) return entity == VEHICLE end
-    env.NetworkDoesNetworkIdExist = function(netId) return netId == VEHICLE_NET_ID end
+    env.NetworkDoesNetworkIdExist = function(netId) return netId == VEHICLE_NET_ID and not f.vehicleGone end
     env.NetworkGetEntityFromNetworkId = function(netId) return netId == VEHICLE_NET_ID and VEHICLE or 0 end
     env.NetworkGetNetworkIdFromEntity = function(entity) return entity == VEHICLE and VEHICLE_NET_ID or 0 end
     env.NetworkHasControlOfEntity = function() return true end
@@ -104,7 +110,19 @@ local function newClient(bones, wheelCount)
     env.GetVehiclePetrolTankHealth = function() return 1000.0 end
     env.GetVehicleDirtLevel = function() return 0.0 end
     -- Wheels: SetVehicleFixed puts every wheel back and fixes every tyre, as in game.
-    env.BreakOffVehicleWheel = function(_, idx) f.off[idx] = true end
+    -- BreakOffVehicleWheel takes the place in the vehicle's wheel list and ignores one past its
+    -- end (FiveM: wheelIndex >= numWheels). f.off is kept by tyre index like the other natives.
+    env.BreakOffVehicleWheel = function(_, idx)
+        if idx >= wheelCount then return end
+        local tyre = idx
+        if wheelCount == 2 and idx == 1 then tyre = 4
+        elseif wheelCount < 6 and idx == 2 then tyre = 4
+        elseif wheelCount < 6 and idx == 3 then tyre = 5 end
+        f.off[tyre] = true
+    end
+    env.AddStateBagChangeHandler = function(key, _, fn) f.stateBagHandlers[key] = fn end
+    env.TriggerServerEvent = function(name, ...) f.serverEvents[#f.serverEvents + 1] = { name = name, args = table.pack(...) } end
+    env.GetEntityFromStateBagName = function() return VEHICLE end
     env.SetVehicleFixed = function() f.off, f.burst = {}, {} end
     env.SetVehicleTyreFixed = function(_, idx) f.burst[idx] = nil end
     env.SetVehicleTyreBurst = function(_, idx) f.burst[idx] = true end
@@ -130,8 +148,14 @@ local function newClient(bones, wheelCount)
     env.applyOrderPartToVehicle = function()
         if f.applyFailures > 0 then f.applyFailures = f.applyFailures - 1 return false end
         f.applied = f.applied + 1
+        f.rims = "new"
         return true
     end
+    f.rims = "old"
+    env.Sky.Vehicle = { new = function() return {
+        GetVehicleProperties = function() return { modFrontWheels = f.rims, tyreBurst = { ["0"] = true } } end,
+        SetVehicleProperties = function(_, props) f.rims = props.modFrontWheels; f.restoredTyres = props.tyreBurst end,
+    } end }
     env.saveTuningForVehicle = function() end
     env.notify = function(message) f.notes[#f.notes + 1] = tostring(message) end
     env.sendUi = function(action, payload)
@@ -284,6 +308,25 @@ do
     assert(f.completions(ORDER_DONE) == 1)
 end
 
+-- 3b. Cancelled after the last wheel went on: the new rims come off again (they stayed on the car
+--     while the order stayed open). The tyres keep their current state.
+do
+    local f = newClient(CAR_BONES, 4)
+    assert(f.nui("orders:startInstall", { orderId = 5, partIndex = 1, vehicleNetId = VEHICLE_NET_ID }).success)
+    f.standAt("wheel_lf")
+    f.act("car_jack")
+    for _, bone in ipairs({ "wheel_lf", "wheel_rf", "wheel_lr", "wheel_rr" }) do
+        f.standAt(bone)
+        f.act("detach_wheel")
+        f.act("attach_wheel")
+    end
+    assert(f.rims == "new", "new rims on")
+    f.act("cancel_wheel_change")
+    assert(f.rims == "old", "the old rims are back")
+    assert(f.restoredTyres == nil, "tyre state left as it is")
+    assert(f.completions(ORDER_DONE) == 0)
+end
+
 -- 4. New tyres on a motorcycle: its front and its rear wheel.
 do
     local f = newClient(BIKE_BONES, 2)
@@ -340,4 +383,135 @@ do
     assert(f.completions(REPAIR_DONE) == 1)
 end
 
-print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail), a motorcycle rim on its own wheel, brakes still one wheel.")
+-- 7. A wheel broken off by damage or a theft comes off, the rear ones too: the break-off native
+--    counts a car's rear wheels as 2 and 3 (tyres 4 and 5) and ignored 4 and 5.
+do
+    local f = newClient(CAR_BONES, 4)
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = {
+        ["0"] = { damage = 200, popped = true, detached = true },
+        ["4"] = { damage = 200, popped = true, detached = true },
+        ["5"] = { damage = 120, popped = true },
+    } })
+    assert(f.off[0] and f.off[4], "front left and rear left wheel came off")
+    assert(f.burst[5] and not f.off[5], "the rear right tyre is only burst")
+
+    local bike = newClient(BIKE_BONES, 2)
+    bike.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = { ["4"] = { damage = 200, popped = true, detached = true } } })
+    assert(bike.off[4], "a motorcycle's rear wheel came off")
+end
+
+-- 8. New rims on a car whose rear left wheel was stolen: once the order counts, the wheel damage
+--    of the replaced wheels is cleared for everyone. It stayed "detached": the new wheel came off
+--    again for other players and the theft bricks stayed.
+do
+    local f = newClient(CAR_BONES, 4)
+    f.stateBag[STATE_BAG_KEY] = { wheels = { ["4"] = { damage = 200, detached = true, source = "theft" } } }
+    f.env.getDetachedWheelDamageIndexes = function() return { 4 } end
+    assert(f.nui("orders:startInstall", { orderId = 7, partIndex = 1, vehicleNetId = VEHICLE_NET_ID }).success)
+    f.standAt("wheel_lf")
+    f.act("car_jack")
+    for _, bone in ipairs({ "wheel_lf", "wheel_rf", "wheel_rr" }) do
+        f.standAt(bone)
+        f.act("detach_wheel")
+        f.act("attach_wheel")
+    end
+    f.standAt("wheel_lr")
+    f.act("attach_wheel") -- the stolen wheel: only the new one goes on
+    f.act("remove_car_jack")
+    assert(f.completions(ORDER_DONE) == 1)
+    local reset
+    for _, event in ipairs(f.serverEvents) do
+        if event.name == "sky_mechanicjob:wheelDamage:reset" then reset = event end
+    end
+    assert(reset and reset.args[1] == VEHICLE_NET_ID, "wheel damage reset sent")
+    local cleared = {}
+    for _, idx in ipairs(reset.args[2]) do cleared[idx] = true end
+    assert(cleared[0] and cleared[1] and cleared[4] and cleared[5], "every replaced wheel cleared")
+end
+
+-- 9. The server clears only the wheels a job replaced; the clients put a cleared wheel back on and
+--    keep the damage of the others.
+do
+    local bags = {}
+    local senv = setmetatable({}, { __index = _G })
+    local handlers = {}
+    senv.RegisterNetEvent = function(name, fn) handlers[name] = fn end
+    senv.AddEventHandler = function() end
+    senv.GetGameTimer = function() return 0 end
+    senv.Entity = function(entity)
+        bags[entity] = bags[entity] or {}
+        local state = setmetatable({ set = function(_, key, value) bags[entity][key] = value end }, { __index = function(_, key) return bags[entity][key] end })
+        return { state = state }
+    end
+    senv.Functions = {
+        IsMechanicOnDuty = function() return true end,
+        HasPermission = function() return false end,
+        GetVehicleByNetId = function() return VEHICLE end,
+    }
+    assert(loadfile("sky_mechanicjob/source/server/wheel_damage.lua", "t", senv))()
+    bags[VEHICLE] = { [STATE_BAG_KEY] = { wheels = {
+        ["0"] = { damage = 120, popped = true }, ["5"] = { damage = 200, popped = true, detached = true },
+    } } }
+    senv.source = 1
+    handlers["sky_mechanicjob:wheelDamage:reset"](VEHICLE_NET_ID, { 5 })
+    local bag = bags[VEHICLE][STATE_BAG_KEY]
+    assert(bag and bag.wheels["5"] == nil and bag.wheels["0"] and bag.wheels["0"].popped, "only the replaced wheel was cleared")
+    handlers["sky_mechanicjob:wheelDamage:reset"](VEHICLE_NET_ID)
+    assert(bags[VEHICLE][STATE_BAG_KEY] == nil, "without wheels the whole state is cleared")
+
+    local f = newClient(CAR_BONES, 4)
+    local handler = f.stateBagHandlers[STATE_BAG_KEY]
+    handler("entity:109", STATE_BAG_KEY, { wheels = {
+        ["0"] = { damage = 120, popped = true }, ["5"] = { damage = 200, popped = true, detached = true },
+    } })
+    assert(f.burst[0] and f.off[5], "damage applied")
+    handler("entity:109", STATE_BAG_KEY, { wheels = { ["0"] = { damage = 120, popped = true } } })
+    assert(not f.off[5], "the replaced wheel is back on")
+    assert(f.burst[0], "the other tyre is still burst")
+end
+
+-- 10. The bricks under a car with a stolen wheel go away with the car (stored in a garage,
+--     deleted); they stayed where it stood. A car out of range keeps them for its return.
+do
+    local f = newClient(CAR_BONES, 4)
+    local first = f.nextObject + 1
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = { ["4"] = { damage = 200, popped = true, detached = true, source = "theft" } } })
+    local bricks = {}
+    for obj = first, f.nextObject do bricks[#bricks + 1] = obj end
+    assert(#bricks > 0, "bricks under the car")
+    local function bricksLeft()
+        local n = 0
+        for _, obj in ipairs(bricks) do if not f.deleted[obj] then n = n + 1 end end
+        return n
+    end
+
+    f.env.removeOrphanedWheelBricks()
+    assert(bricksLeft() == #bricks, "bricks stay under the car")
+    f.vehicleGone = true
+    f.coords[PED] = vec(500, 0, 0)
+    f.env.removeOrphanedWheelBricks()
+    assert(bricksLeft() == #bricks, "bricks stay for a car out of range")
+    f.coords[PED] = vec(5, 0, 0)
+    f.env.removeOrphanedWheelBricks()
+    assert(bricksLeft() == 0, "bricks of a car that is gone removed")
+end
+
+-- 11. Driving with a wheel missing: the reduced torque is set every frame (it lasts one frame;
+--     set once on the state change, it never took effect). It ends once the wheel is back.
+do
+    local f = newClient(CAR_BONES, 4)
+    f.env.GetPedInVehicleSeat = function() return PED end
+    local before = #f.threads
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, { wheels = { ["4"] = { damage = 200, popped = true, detached = true } } })
+    assert(#f.threads == before + 1, "torque kept up by a thread")
+    local co = coroutine.create(f.threads[#f.threads])
+    f.torque = {}
+    for _ = 1, 3 do assert(coroutine.resume(co)) end
+    assert(#f.torque == 3 and f.torque[1] < 1.0 and f.torque[3] == f.torque[1], "reduced torque every frame")
+
+    f.stateBagHandlers[STATE_BAG_KEY]("entity:109", STATE_BAG_KEY, nil)
+    assert(coroutine.resume(co))
+    assert(coroutine.status(co) == "dead", "no longer kept up with every wheel on")
+end
+
+print("PASS: tyre and wheel jobs replace every wheel (car, motorcycle, missing wheel, burst tyre kept until its turn), rims after the last wheel (retry when they fail, taken off again when cancelled), a motorcycle rim on its own wheel, brakes still one wheel, rear wheels broken off by damage or theft, wheel damage cleared for the wheels an order replaced, the bricks of a car that is gone removed, less torque every frame while a wheel is missing.")

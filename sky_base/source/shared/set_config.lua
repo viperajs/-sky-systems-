@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/shared/set_config.lua") end
 -- =====================================================
 --  sky_base · source/shared/set_config.lua
 --  Deobfuscated & Cleaned
@@ -9,15 +8,21 @@ if GetCurrentResourceName() ~= RESOURCE_NAME then
     Sky.Debug("error", "You are not allowed to rename this resource. Please name it " .. RESOURCE_NAME)
 end
 
+-- Detection runs on the server and on every client. Its result is reported in the server
+-- console; a player's F8 console only shows it with debug enabled.
+local function report(level, message)
+    Sky.Debug(IsDuplicityVersion() and level or "debug", message)
+end
+
 local function autoDetect(configKey, options, fallbackMsg)
     for _, opt in ipairs(options) do
         if GetResourceState(opt.resource) == "started" then
             Sky.Config[configKey] = opt.value
-            Sky.Debug("info", opt.value .. " was automatically recognized for " .. configKey .. " and will be used")
+            report("info", opt.value .. " was automatically recognized for " .. configKey .. " and will be used")
             return
         end
     end
-    Sky.Debug("error", fallbackMsg .. " Please specify in " .. RESOURCE_NAME .. "/config/config.lua")
+    report("error", fallbackMsg .. " Please specify in " .. RESOURCE_NAME .. "/config/config.lua")
 end
 
 -- Framework auto-detection
@@ -61,7 +66,7 @@ if Sky.Config.garage == "auto" then
 
     if Sky.Config.garage == "ds-servercreator" then
         Sky.Config.garage = Sky.Config.framework
-        Sky.Debug("info", "DS ServerCreator detected, using framework garage functions (" .. tostring(Sky.Config.framework) .. ").")
+        report("info", "DS ServerCreator detected, using framework garage functions (" .. tostring(Sky.Config.framework) .. ").")
     end
 end
 
@@ -158,7 +163,7 @@ if Sky.Config.fuel == "auto" then
 
     if Sky.Config.fuel == "auto" then
         Sky.Config.fuel = "native"
-        Sky.Debug("info", "No fuel script detected, using native fuel functions.")
+        report("info", "No fuel script detected, using native fuel functions.")
     end
 end
 
@@ -182,10 +187,10 @@ if Sky.Config.inventory == "auto" then
 
     if Sky.Config.inventory == "auto" then
         Sky.Config.inventory = Sky.Config.framework
-        Sky.Debug("info", "No inventory script detected, using framework inventory functions (" .. tostring(Sky.Config.framework) .. ").")
+        report("info", "No inventory script detected, using framework inventory functions (" .. tostring(Sky.Config.framework) .. ").")
     elseif Sky.Config.inventory == "hex" then
         Sky.Config.inventory = Sky.Config.framework
-        Sky.Debug("info", "Hex inventory detected, using framework inventory functions (" .. tostring(Sky.Config.framework) .. ").")
+        report("info", "Hex inventory detected, using framework inventory functions (" .. tostring(Sky.Config.framework) .. ").")
     end
 end
 
@@ -205,7 +210,7 @@ end
 if Sky.Config.banking == "auto" then
     if GetResourceState("codem-bank") == "started" then
         Sky.Config.banking = "codem"
-        Sky.Debug("info", "codem was automatically recognized for banking and will be used")
+        report("info", "codem was automatically recognized for banking and will be used")
     end
 
     if Sky.Config.banking == "auto" then
@@ -246,6 +251,6 @@ if Sky.Config.banking == "auto" then
         else
             Sky.Config.banking = "esx"
         end
-        Sky.Debug("info", "codem banking detected, using framework banking functions (" .. tostring(Sky.Config.framework) .. ").")
+        report("info", "codem banking detected, using framework banking functions (" .. tostring(Sky.Config.framework) .. ").")
     end
 end

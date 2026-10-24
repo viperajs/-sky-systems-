@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/orders.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/orders.lua
 --  Deobfuscated by Claude
@@ -34,7 +33,7 @@ local BIKE_CLASSES = { [8] = true, [13] = true }
 
 local function isBikeClass(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][tuning] bike class check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] bike class check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
         return false
     end
     return BIKE_CLASSES[GetVehicleClass(vehicle)] == true
@@ -66,7 +65,7 @@ end
 
 local function isFreeTuningVehicle(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][tuning] free tuning check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] free tuning check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
         return false
     end
 
@@ -419,7 +418,7 @@ end
 function restoreVehicleToOptionBaselines()
     local veh = TuningState.vehicle
     if veh == 0 or not DoesEntityExist(veh) then
-        print("[sky_mechanicjob][tuning] restoreVehicleToOptionBaselines failed: vehicle missing")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning] restoreVehicleToOptionBaselines failed: vehicle missing")
         return false
     end
 
@@ -697,6 +696,12 @@ function deletePropEntity(entity)
 end
 
 function releaseOrderHeldProp()
+    -- During an engine swap the held prop is the workshop's engine hoist. Deleting it removed
+    -- the hoist from the workshop and left its engine prop hanging in front of the car once
+    -- the swap finished; it goes back to its spot instead (this also clears heldProp).
+    if OrderInstallState.heldProp ~= 0 and OrderInstallState.heldProp == EngineHoistActiveState.hoistProp then
+        clearEngineHoistState()
+    end
     if OrderInstallState.heldProp ~= 0 and DoesEntityExist(OrderInstallState.heldProp) then
         if not deletePropEntity(OrderInstallState.heldProp) then
             return false
@@ -761,6 +766,12 @@ function playBoxCarryAnim(ped)
     return true
 end
 
+function stopBoxCarryAnim(ped)
+    if IsEntityPlayingAnim(ped, "anim@heists@box_carry@", "idle", 3) then
+        StopAnimTask(ped, "anim@heists@box_carry@", "idle", 1.0)
+    end
+end
+
 function attachForkliftCarryProp(vehicle, itemName, itemConfig)
     if OrderInstallState.heldProp ~= 0 and DoesEntityExist(OrderInstallState.heldProp) then
         if OrderInstallState.heldCarryTransportVehicle == vehicle then
@@ -781,7 +792,7 @@ function attachForkliftCarryProp(vehicle, itemName, itemConfig)
     local propObj = CreateObjectNoOffset(modelHash, coords.x, coords.y, coords.z, true, true, false)
 
     if propObj == 0 or not DoesEntityExist(propObj) then
-        print(("[sky_mechanicjob][carry_item] failed: could not create forklift carry prop '%s'"):format(propModelName))
+        Sky.Debug("debug", ("[sky_mechanicjob][carry_item] failed: could not create forklift carry prop '%s'"):format(propModelName))
         SetModelAsNoLongerNeeded(modelHash)
         return false
     end
@@ -879,7 +890,7 @@ function holdCarryItemProp(itemName, metadata)
     -- Nothing is held when the prop fails; a part left "held" blocked every later delivery
     -- and install (parts_delivery.lua canInteractWithDelivery).
     if not requestModelLoaded(modelHash, 2500) then
-        print(("[sky_mechanicjob][carry_item] failed: carry prop '%s' did not load"):format(propModelName))
+        Sky.Debug("debug", ("[sky_mechanicjob][carry_item] failed: carry prop '%s' did not load"):format(propModelName))
         OrderInstallState.heldCarryItem = nil
         OrderInstallState.heldCarryTransportMode = "hand"
         return false
@@ -890,7 +901,7 @@ function holdCarryItemProp(itemName, metadata)
 
     local propObj = CreateObjectNoOffset(modelHash, pedCoords.x, pedCoords.y, pedCoords.z, true, true, false)
     if propObj == 0 or not DoesEntityExist(propObj) then
-        print(("[sky_mechanicjob][carry_item] failed: could not create carry prop '%s'"):format(propModelName))
+        Sky.Debug("debug", ("[sky_mechanicjob][carry_item] failed: could not create carry prop '%s'"):format(propModelName))
         SetModelAsNoLongerNeeded(modelHash)
         OrderInstallState.heldCarryItem = nil
         OrderInstallState.heldCarryTransportMode = "hand"
@@ -941,7 +952,12 @@ function clearOrderInstallState()
         )
     end
 
+    local carriedByHand = type(carried) == "table" and OrderInstallState.heldCarryTransportMode == "hand"
     releaseOrderHeldProp()
+    -- The carry pose loops until it is stopped; the box went but the arms stayed up.
+    if carriedByHand then
+        stopBoxCarryAnim(PlayerPedId())
+    end
     stopNonMinigameInstallProgress()
 
     if RepaintMinigameState.active then
@@ -1014,6 +1030,7 @@ function clearOrderInstallState()
     OrderInstallState.simpleChecklistSignature = ""
     OrderInstallState.simpleStep = "idle"
     OrderInstallState.stanceCompletedWheels = {}
+    OrderInstallState.propsBeforePart = nil
 end
 
 function notify(msg, ntype)
@@ -1237,13 +1254,16 @@ WHEEL_INSTALL_STEPS = {
     attach = "attach_wheel",
     remove = "remove_car_jack"
 }
-ARMOR_INSTALL_STEPS = { cut = "cut_armor_panel", weld = "weld_armor_panel" }
-ENGINE_SWAP_STEPS = { open_hood = "open_hood", take_hoist = "take_engine_hoist", attach_hoist = "attach_engine_hoist", engine_swap = "engine_swap" }
+-- "complete": the last step is done but finishing failed before the server counted it (away
+-- from the tuning point, welding cancelled). Install Part finishes it; the radial menu offered
+-- only Cancel Install.
+ARMOR_INSTALL_STEPS = { cut = "cut_armor_panel", weld = "weld_armor_panel", complete = "install_order_part" }
+ENGINE_SWAP_STEPS = { open_hood = "open_hood", take_hoist = "take_engine_hoist", attach_hoist = "attach_engine_hoist", engine_swap = "engine_swap", complete = "install_order_part" }
 HOOD_INSTALL_STEPS = { open_hood = "open_hood", install = "install_order_part" }
-OIL_CHANGE_STEPS = { drain_oil = "drain_old_oil", open_hood = "open_hood", pour_oil = "pour_new_oil" }
-UNDERBODY_NEON_STEPS = { install_neon = "install_underbody_neon" }
-STANCE_STEPS = { stance_wheels = "install_stance_wheel" }
-FLUID_REFILL_STEPS = { open_hood = "open_hood", pour_oil = "pour_new_oil" }
+OIL_CHANGE_STEPS = { drain_oil = "drain_old_oil", open_hood = "open_hood", pour_oil = "pour_new_oil", complete = "install_order_part" }
+UNDERBODY_NEON_STEPS = { install_neon = "install_underbody_neon", complete = "install_order_part" }
+STANCE_STEPS = { stance_wheels = "install_stance_wheel", complete = "install_order_part" }
+FLUID_REFILL_STEPS = { open_hood = "open_hood", pour_oil = "pour_new_oil", complete = "install_order_part" }
 REPAINT_STEPS = { sanding = "sand_vehicle", painting = "paint_vehicle" }
 
 function resolveSimpleInstallFlow()
@@ -1289,7 +1309,10 @@ function resolveSimpleInstallFlow()
 end
 
 function doesActiveEngineInstallUseHoist()
-    return getCarryItemTransportMode(OrderInstallState.requiredItem) == "engine_lift"
+    if getCarryItemTransportMode(OrderInstallState.requiredItem) ~= "engine_lift" then return false end
+    -- Without an Engine Hoist location for the workshop the take step could never be done and
+    -- the radial menu only offered Cancel Install. The engine is then swapped without one.
+    return type(hasUsableEngineHoistPoint) ~= "function" or hasUsableEngineHoistPoint()
 end
 
 -- ─── Every Wheel Of The Vehicle (tyres and wheels) ──
@@ -1466,6 +1489,9 @@ function runJobWheelAttach(vehicle, options)
     -- The part goes on with the last wheel; if that fails, the wheel can be attached again.
     local done, total = countReplacedWheels()
     done = done + 1
+    if done >= total and not OrderInstallState.repairMode then
+        rememberVehicleBeforeOrderPart(vehicle)
+    end
     if done >= total and not OrderInstallState.repairMode and not applyOrderPartToVehicle(vehicle, OrderInstallState.part) then
         return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
     end
@@ -1746,6 +1772,10 @@ function sendSimpleInstallChecklistUpdate()
     if not OrderInstallState.active or WheelOrderInstallState.active or RepaintOrderInstallState.active then
         return
     end
+    -- The catalytic converter has its own checklist; next to the car this one replaced it.
+    if CatalyticInstallState and CatalyticInstallState.active then
+        return
+    end
 
     local flow = resolveSimpleInstallFlow()
     local hasHood = doesVehicleHaveHood()
@@ -1907,6 +1937,21 @@ function handleOilChangeLiftMotionComplete(vehicle, isRaised, isLowered)
         else
             notify(tuningLocales and tuningLocales.OilChangeLoweredSuccessNoHood or "Vehicle lowered. Pour fresh oil to finish the service.", "success")
         end
+    end
+end
+
+-- Steps waiting for the lift heard only the lift of the player operating it: when a colleague
+-- raised or lowered the car, the installer stayed at "Lift the vehicle".
+function syncInstallStepWithLift()
+    local step = tostring(OrderInstallState.simpleStep or "")
+    if step ~= "lift_vehicle" and step ~= "lower_vehicle" then return end
+    if type(getWorkshopLiftStateForVehicle) ~= "function" then return end
+
+    local veh = getVehicleFromOrderNetId()
+    if veh == 0 then return end
+    local liftState = getWorkshopLiftStateForVehicle(veh)
+    if liftState then
+        handleOilChangeLiftMotionComplete(veh, liftState.raised == true, liftState.atFloor == true)
     end
 end
 

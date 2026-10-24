@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/config_overrides.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/config_overrides.lua
 --  /jobconfig settings applied over config.lua

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/tuning_db.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/tuning_db.lua
 --  Tuning Database Operations & Vehicle Properties Store

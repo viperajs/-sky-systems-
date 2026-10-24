@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/pricing.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/pricing.lua
 --  Server-Side Pricing Validation (Security Rewrite)

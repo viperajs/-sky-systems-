@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/access.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/access.lua
 --  Deobfuscated & Cleaned
@@ -200,7 +198,7 @@ function Sky_Jobs.Access.Refresh()
     return Sky_Jobs.Access.HasJob(), true
 end
 
-registerExport("isOnDuty", function()
+exports("isOnDuty", function()
     return Sky_Jobs.Access.IsOnDuty()
 end)
 

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/config/locales/se.lua") end
 --   ____  _____ ____ ______   ______ _____ _____ ____     ___     _____ _____  _______ ____    ______   __  _______  __    _    ____    _____ ____  ___ _  _____ _____ ___  _   _    _        _     _   _                  ____  _ _                       _                 _______ _____ _  __     _   _ ____      _ ____ _____ _____
 --  |  _ \| ____/ ___|  _ \ \ / /  _ \_   _| ____|  _ \   ( _ )   |  ___|_ _\ \/ / ____|  _ \  | __ ) \ / / |  ___\ \/ /   / \  |  _ \  |  ___|  _ \|_ _| |/ /_ _|_   _/ _ \| \ | |  / \      | |__ | |_| |_ _ __  ___ _   / / /_| (_)___  ___ ___  _ __ __| |  __ _  __ _   / / ____|_   _| |/ /__ _| | | | ___|  __| | ___|___  |___  |
 --  | | | |  _|| |   | |_) \ V /| |_) || | |  _| | | | |  / _ \/\ | |_   | | \  /|  _| | | | | |  _ \\ V /  | |_   \  /   / _ \ | |_) | | |_  | |_) || || ' / | |  | || | | |  \| | / _ \     | '_ \| __| __| '_ \/ __(_) / / / _` | / __|/ __/ _ \| '__/ _` | / _` |/ _` | / /|  _|   | | | ' // _` | |_| |___ \ / _` |___ \  / /   / /
@@ -70,6 +69,7 @@ Locales["se"] = {
         OrderInstallOpenHoodRadialDescription = "Öppna huven innan du installerar denna prestandadel.",
         OrderInstallHoodOpened = "Huvan öppnad. Installera den valda delen.",
         OrderInstallHoodAlreadyOpen = "Huvan saknas/skadad, fortsätt genom att installera den valda delen.",
+        OrderInstallHoodOpenFailed = "Motorhuven gick inte att öppna. Be alla i bilen att kliva ur och försök igen.",
         OrderInstallRadialPrompt = "Radialmeny: %s",
         BrakeInstallSuccess = "Bromskomponenter installerade.",
         SuspensionInstallSuccess = "Upphängningskomponenter installerade.",
@@ -107,6 +107,8 @@ Locales["se"] = {
         EngineSwapHoodClosed = "Öppna motorhuven från radialmenyn innan du byter motor.",
         EngineSwapHoodOpened = "Motorhuven öppnad. Starta motorbytet.",
         EngineSwapHoodAlreadyOpen = "Motorhuven är redan öppen. Starta motorbytet.",
+        EngineSwapHoodOpenedTakeHoist = "Motorhuven öppnad. Hämta motorlyften från dess plats.",
+        EngineSwapHoodAlreadyOpenTakeHoist = "Motorrummet är öppet. Hämta motorlyften från dess plats.",
         EngineSwapOpenHoodRadialLabel = "Öppna motorhuv",
         EngineSwapOpenHoodRadialDescription = "Öppna motorhuven innan du startar motorbytet.",
         EngineSwapRadialLabel = "Byt motor",
@@ -821,7 +823,7 @@ Locales["se"] = {
                 apply_failed = "Det gick inte att använda denna del på fordonet.",
                 order_completed = "Ordern slutfördes.",
                 part_installed = "Delen installerades.",
-                install_finalize_failed = "Delen applicerades men orderuppdateringen misslyckades.",
+                install_finalize_failed = "Ordern kunde inte uppdateras, så delen togs bort igen.",
                 items = {
                     wheels = "Hjul",
                     spray_can = "Sprayburk",

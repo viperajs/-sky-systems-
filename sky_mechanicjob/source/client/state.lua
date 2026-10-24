@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/state.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/state.lua
 --  Deobfuscated & Cleaned
@@ -47,7 +46,7 @@ end
 
 function HasVehicleHood(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(string.format("[sky_mechanicjob][vehicle] hood check failed: invalid vehicle (%s)", tostring(vehicle)))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][vehicle] hood check failed: invalid vehicle (%s)", tostring(vehicle)))
         return false
     end
 
@@ -420,7 +419,7 @@ stopRepaintPointing = stopRepaintPointing or function() end
 stopWheelWorkAnim = stopWheelWorkAnim or function() end
 
 clearCarJackState = clearCarJackState or function(_flag)
-    print("[sky_mechanicjob][bootstrap] clearCarJackState fallback executed")
+    Sky.Debug("debug", "[sky_mechanicjob][bootstrap] clearCarJackState fallback executed")
 end
 
 clearCatalyticState = clearCatalyticState or nil

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/config/locales/de.lua") end
 --   ____  _____ ____ ______   ______ _____ _____ ____     ___     _____ _____  _______ ____    ______   __  _______  __    _    ____    _____ ____  ___ _  _____ _____ ___  _   _    _        _     _   _                  ____  _ _                       _                 _______ _____ _  __     _   _ ____      _ ____ _____ _____
 --  |  _ \| ____/ ___|  _ \ \ / /  _ \_   _| ____|  _ \   ( _ )   |  ___|_ _\ \/ / ____|  _ \  | __ ) \ / / |  ___\ \/ /   / \  |  _ \  |  ___|  _ \|_ _| |/ /_ _|_   _/ _ \| \ | |  / \      | |__ | |_| |_ _ __  ___ _   / / /_| (_)___  ___ ___  _ __ __| |  __ _  __ _   / / ____|_   _| |/ /__ _| | | | ___|  __| | ___|___  |___  |
 --  | | | |  _|| |   | |_) \ V /| |_) || | |  _| | | | |  / _ \/\ | |_   | | \  /|  _| | | | | |  _ \\ V /  | |_   \  /   / _ \ | |_) | | |_  | |_) || || ' / | |  | || | | |  \| | / _ \     | '_ \| __| __| '_ \/ __(_) / / / _` | / __|/ __/ _ \| '__/ _` | / _` |/ _` | / /|  _|   | | | ' // _` | |_| |___ \ / _` |___ \  / /   / /
@@ -70,6 +69,7 @@ Locales["de"] = {
         OrderInstallOpenHoodRadialDescription = "Öffne die Motorhaube, bevor du dieses Performance-Teil installierst.",
         OrderInstallHoodOpened = "Motorhaube geöffnet. Installiere das ausgewählte Teil.",
         OrderInstallHoodAlreadyOpen = "Motorhaube fehlt/beschädigt, fahre mit der Installation des ausgewählten Teils fort.",
+        OrderInstallHoodOpenFailed = "Die Motorhaube ließ sich nicht öffnen. Bitte alle im Auto auszusteigen und versuche es erneut.",
         OrderInstallRadialPrompt = "Radialmenü: %s",
         BrakeInstallSuccess = "Bremskomponenten eingebaut.",
         SuspensionInstallSuccess = "Aufhängungskomponenten eingebaut.",
@@ -107,6 +107,8 @@ Locales["de"] = {
         EngineSwapHoodClosed = "Öffne die Motorhaube über das Radialmenü, bevor du den Motor wechselst.",
         EngineSwapHoodOpened = "Motorhaube geöffnet. Starte den Motorwechsel.",
         EngineSwapHoodAlreadyOpen = "Motorhaube ist bereits geöffnet. Starte den Motorwechsel.",
+        EngineSwapHoodOpenedTakeHoist = "Motorhaube geöffnet. Hol den Motorheber von seinem Platz.",
+        EngineSwapHoodAlreadyOpenTakeHoist = "Der Motorraum ist offen. Hol den Motorheber von seinem Platz.",
         EngineSwapOpenHoodRadialLabel = "Motorhaube öffnen",
         EngineSwapOpenHoodRadialDescription = "Öffne die Motorhaube, bevor du den Motor wechselst.",
         EngineSwapRadialLabel = "Motor wechseln",
@@ -821,7 +823,7 @@ Locales["de"] = {
                 apply_failed = "Dieses Teil konnte am Fahrzeug nicht angewendet werden.",
                 order_completed = "Auftrag erfolgreich abgeschlossen.",
                 part_installed = "Teil erfolgreich installiert.",
-                install_finalize_failed = "Teil wurde angewendet, aber die Auftragsaktualisierung ist fehlgeschlagen.",
+                install_finalize_failed = "Der Auftrag konnte nicht aktualisiert werden, das Teil wurde wieder ausgebaut.",
                 items = {
                     wheels = "Felgen",
                     spray_can = "Sprühdose",

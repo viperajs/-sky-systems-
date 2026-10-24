@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/twostep.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/twostep.lua
 --  Two-Step Launch Control & Flame Burst Synchronization

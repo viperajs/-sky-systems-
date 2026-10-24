@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/target.lua") end
 -- =====================================================
 --  sky_jobs_base · source/client/target.lua
 --  Target system for the job radial actions

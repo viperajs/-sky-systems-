@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/employee_gps_jammer.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_jobs_base · source/client/employee_gps_jammer.lua
 --  Deobfuscated & Cleaned
@@ -111,7 +109,7 @@ RegisterNetEvent("sky_jobs_base:employeeGpsJammer:jammed", function(data)
 end)
 
 if jammerItem and jammerItem ~= "" then
-    registerExport(jammerItem, function()
+    exports(jammerItem, function()
         TriggerEvent("sky_jobs_base:employeeGpsJammer:useItem")
         return true
     end)

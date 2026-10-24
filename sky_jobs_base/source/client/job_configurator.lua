@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/job_configurator.lua") end
 -- =====================================================
 --  sky_jobs_base · source/client/job_configurator.lua
 --  Deobfuscated & Cleaned
@@ -296,7 +295,7 @@ local function runCustomPlacementEditor(editorName, locationData)
         if ok and type(res) == "table" then
             return res
         end
-        print(("[sky_jobs_base][job_configurator] placement editor %s failed: %s"):format(editorName, tostring(res)))
+        Sky.Debug("debug", ("[sky_jobs_base][job_configurator] placement editor %s failed: %s"):format(editorName, tostring(res)))
         return { success = false, error = "placement_editor_failed" }
     end
 
@@ -822,7 +821,7 @@ end
 
 RegisterNetEvent("sky_jobs_base:jobConfigurator:sync", function(configKey, data, extra1, extra2, extra3)
     if type(configKey) ~= "string" or type(data) ~= "table" then
-        print("[sky_jobs_base][job_configurator] sync failed: invalid payload")
+        Sky.Debug("debug", "[sky_jobs_base][job_configurator] sync failed: invalid payload")
         return
     end
 
@@ -845,7 +844,7 @@ RegisterNetEvent("sky_jobs_base:jobConfigurator:open", function(configKey, optio
     if type(listRes) == "table" and listRes.success and type(listRes.data) == "table" then
         serverData = listRes.data
     else
-        print(("[sky_jobs_base][job_configurator] list failed for %s: %s"):format(currentConfigKey, tostring(type(listRes) == "table" and listRes.error or "no_response")))
+        Sky.Debug("debug", ("[sky_jobs_base][job_configurator] list failed for %s: %s"):format(currentConfigKey, tostring(type(listRes) == "table" and listRes.error or "no_response")))
     end
 
     local context = buildContext(serverData, options, true)
@@ -1084,7 +1083,7 @@ RegisterNUICallback("jobConfigurator:teleportLocation", function(data, cb)
     local z = tonumber(coords.z)
 
     if not (x and y and z) then
-        print(string.format("[sky_jobs_base][job_configurator] teleport failed: invalid coords x=%s y=%s z=%s", tostring(coords.x), tostring(coords.y), tostring(coords.z)))
+        Sky.Debug("debug", string.format("[sky_jobs_base][job_configurator] teleport failed: invalid coords x=%s y=%s z=%s", tostring(coords.x), tostring(coords.y), tostring(coords.z)))
         cb({ success = false, error = "invalid_coords" })
         return
     end

@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/wheel_change.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/client/wheel_change.lua
 --  Deobfuscated by Claude
@@ -42,13 +41,13 @@ function startWheelWorkAnim(targetEntity)
     if kneelLoaded then
         TaskPlayAnim(ped, WHEEL_WORK_KNEEL_ANIM_DICT, WHEEL_WORK_KNEEL_ANIM_CLIP, 8.0, -8.0, -1, 1, 0.0, false, false, false)
     else
-        print(("[sky_mechanicjob][wheel_minigame] failed: kneel anim dict not loaded (%s)"):format(WHEEL_WORK_KNEEL_ANIM_DICT))
+        Sky.Debug("debug", ("[sky_mechanicjob][wheel_minigame] failed: kneel anim dict not loaded (%s)"):format(WHEEL_WORK_KNEEL_ANIM_DICT))
     end
 
     if overlayLoaded then
         TaskPlayAnim(ped, WHEEL_WORK_OVERLAY_ANIM_DICT, WHEEL_WORK_OVERLAY_ANIM_CLIP, 8.0, -8.0, -1, 49, 0.0, false, false, false)
     else
-        print(("[sky_mechanicjob][wheel_minigame] failed: overlay anim dict not loaded (%s)"):format(WHEEL_WORK_OVERLAY_ANIM_DICT))
+        Sky.Debug("debug", ("[sky_mechanicjob][wheel_minigame] failed: overlay anim dict not loaded (%s)"):format(WHEEL_WORK_OVERLAY_ANIM_DICT))
     end
 
     if not kneelLoaded and not overlayLoaded then
@@ -75,6 +74,9 @@ function runWheelDetachMinigame(mode, targetEntity, extraData)
     local modeType = (mode == "attach") and "attach" or "detach"
     local isAttach = (modeType == "attach")
     local isTableExtra = (type(extraData) == "table")
+    -- Order wheel jobs pass options too; only the catalytic converter is worked on lying under
+    -- the car. Any options table made the mechanic lie under the car to attach a wheel.
+    local isCatalytic = isTableExtra and extraData.target == "catalytic_converter"
 
     local busyErrStr, cancelErrStr, failErrStr
 
@@ -88,7 +90,7 @@ function runWheelDetachMinigame(mode, targetEntity, extraData)
         failErrStr = (tuningLocales and tuningLocales.DetachWheelMinigameFailed) or "You failed to loosen all bolts."
     end
 
-    if isTableExtra then
+    if isCatalytic then
         busyErrStr = (tuningLocales and tuningLocales.CatalyticMinigameBusy) or busyErrStr
         cancelErrStr = (tuningLocales and tuningLocales.CatalyticMinigameCanceled) or cancelErrStr
         failErrStr = (tuningLocales and tuningLocales.CatalyticMinigameFailed) or failErrStr
@@ -108,7 +110,7 @@ function runWheelDetachMinigame(mode, targetEntity, extraData)
     end
 
     local token = sessData.token
-    if isTableExtra then
+    if isCatalytic then
         startBelowVehicleWorkAnim(targetEntity)
     else
         startWheelWorkAnim(targetEntity)
@@ -385,7 +387,7 @@ function applyOption(opt, rawVal)
 
     local vehClass = GetVehicleClass(veh)
     if opt.kind == "mod" and opt.modType == 16 and (vehClass == 8 or vehClass == 13) then
-        print("[sky_mechanicjob][tuning] apply blocked: armor tuning is disabled for bikes")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning] apply blocked: armor tuning is disabled for bikes")
         return false
     end
 
@@ -913,6 +915,10 @@ local function isOptionStancerChanged(opt)
     if opt.id == "wheel_size" or opt.id == "wheel_width" then
         return math.abs(val - 1.0) > 0.001
     end
+    -- The car's own track width (StanceKit.AddOptions).
+    if opt.unchangedValue ~= nil then
+        return math.abs((tonumber(opt.value) or 0) - opt.unchangedValue) >= 1
+    end
     return math.abs(val) > 0.001
 end
 
@@ -1271,24 +1277,24 @@ end)
 
 function applyOrderPartToVehicle(vehicle, partPayload)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders] apply failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: vehicle is missing")
         return false
     end
 
     if type(partPayload) ~= "table" then
-        print("[sky_mechanicjob][orders] apply failed: part payload is invalid")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: part payload is invalid")
         return false
     end
 
     local optionId = tostring(partPayload.id or "")
     if optionId == "" then
-        print("[sky_mechanicjob][orders] apply failed: part id is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: part id is missing")
         return false
     end
 
     if StanceKit.IsVehicleMotorbike(vehicle) then
         if optionId == "stancer_bundle" or optionId == "wheel_size" or optionId == "wheel_width" or optionId:match("^stancer_") then
-            print(("[sky_mechanicjob][orders] apply skipped: stance option '%s' is disabled for motorbikes"):format(optionId))
+            Sky.Debug("debug", ("[sky_mechanicjob][orders] apply skipped: stance option '%s' is disabled for motorbikes"):format(optionId))
             return false
         end
     end
@@ -1301,7 +1307,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
     -- engine showed on the mechanic's screen and vanished with the next sync; the server also
     -- hands the part to the owner (sky_mechanicjob:orders:applyInstalledPart).
     if not requestVehicleControl(vehicle, 1500) then
-        print(("[sky_mechanicjob][orders] apply warning: no network control of the vehicle for '%s'; its owner applies the part"):format(optionId))
+        Sky.Debug("debug", ("[sky_mechanicjob][orders] apply warning: no network control of the vehicle for '%s'; its owner applies the part"):format(optionId))
     end
 
     local curVeh = TuningState.vehicle
@@ -1317,7 +1323,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
     if optionId == "stancer_bundle" then
         local bundleVals = type(partPayload.value) == "table" and partPayload.value or nil
         if not bundleVals or not next(bundleVals) then
-            print("[sky_mechanicjob][orders] apply failed: stancer_bundle has no values")
+            Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: stancer_bundle has no values")
             TuningState.vehicle = curVeh
             TuningState.options = curOpts
             TuningState.optionMap = curMap
@@ -1332,7 +1338,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
         for subId, rawSubVal in pairs(bundleVals) do
             local opt = TuningState.optionMap[subId]
             if not opt or opt.kind ~= "stancer" then
-                print(("[sky_mechanicjob][orders] apply failed: stancer option '%s' not available"):format(tostring(subId)))
+                Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: stancer option '%s' not available"):format(tostring(subId)))
                 allApplied = false
                 break
             end
@@ -1342,7 +1348,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
             if valNum > opt.max then valNum = opt.max end
 
             if not applyOption(opt, valNum) then
-                print(("[sky_mechanicjob][orders] apply failed: stancer option '%s' value could not be applied"):format(tostring(subId)))
+                Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: stancer option '%s' value could not be applied"):format(tostring(subId)))
                 allApplied = false
                 break
             end
@@ -1360,13 +1366,19 @@ function applyOrderPartToVehicle(vehicle, partPayload)
 
     local opt = TuningState.optionMap[optionId]
     if not opt then
-        print(("[sky_mechanicjob][orders] apply failed: option '%s' not available for this vehicle"):format(optionId))
+        Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: option '%s' not available for this vehicle"):format(optionId))
         TuningState.vehicle = curVeh
         TuningState.options = curOpts
         TuningState.optionMap = curMap
         TuningState.sections = curSecs
         TuningState.suppressPreviews = curSupp
         return false
+    end
+
+    -- A tyre smoke colour shows only with the Tire Smoke mod on. Ordered together and the colour
+    -- installed first, it failed to go on.
+    if optionId == "tire_smoke_color" and not IsToggleModOn(vehicle, 20) then
+        ToggleVehicleMod(vehicle, 20, true)
     end
 
     if optionId == "mod_23" or optionId == "mod_24" then
@@ -1379,7 +1391,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
                 if wtVal > wheelTypeOpt.max then wtVal = wheelTypeOpt.max end
 
                 if not applyOption(wheelTypeOpt, wtVal) then
-                    print(("[sky_mechanicjob][orders] apply failed: wheel_type could not be applied (value=%s)"):format(tostring(wtVal)))
+                    Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: wheel_type could not be applied (value=%s)"):format(tostring(wtVal)))
                     TuningState.vehicle = curVeh
                     TuningState.options = curOpts
                     TuningState.optionMap = curMap
@@ -1387,8 +1399,15 @@ function applyOrderPartToVehicle(vehicle, partPayload)
                     TuningState.suppressPreviews = curSupp
                     return false
                 end
+                -- The rims of the new wheel type: the ordered rim was clamped to the rim count of
+                -- the vehicle's old wheel type, so a different rim went on (e.g. rim 30 of the
+                -- High End wheels became rim 9 on a car with Sport wheels).
+                local rimCount = GetNumVehicleMods(vehicle, opt.modType)
+                if rimCount > 0 then
+                    opt.max = rimCount - 1
+                end
             else
-                print(("[sky_mechanicjob][orders] apply warning: wheel_type option missing for %s (requested=%s)"):format(optionId, tostring(wType)))
+                Sky.Debug("debug", ("[sky_mechanicjob][orders] apply warning: wheel_type option missing for %s (requested=%s)"):format(optionId, tostring(wType)))
             end
         end
     end
@@ -1437,7 +1456,7 @@ RegisterNetEvent("sky_mechanicjob:orders:applyInstalledPart", function(netId, pa
     if vehicle == 0 or not DoesEntityExist(vehicle) then return end
 
     if not applyOrderPartToVehicle(vehicle, part) then
-        print(("[sky_mechanicjob][orders] owner apply failed for '%s'"):format(tostring(part.id)))
+        Sky.Debug("debug", ("[sky_mechanicjob][orders] owner apply failed for '%s'"):format(tostring(part.id)))
     end
 end)
 
@@ -1467,6 +1486,33 @@ function startDirectStanceInstall(vehicle, stancePart)
     notify(getNuiLocale("tablet.orders.stance_checklist.started", "Stance setup ready. Move the vehicle onto a workshop lift and follow the checklist."), "info")
 
     return true
+end
+
+-- Damage, tyres, fuel and dirt are no part of an order: they keep their current state.
+local CONDITION_PROPERTY_KEYS = { "doorsBroken", "windowsBroken", "tyreBurst", "tyresCanBurst", "bodyHealth", "engineHealth", "tankHealth", "fuelLevel", "dirtLevel" }
+
+-- The vehicle just before an order part goes on. It is put back when the server does not count
+-- the install (the item gone at the last step, the order changed by a colleague, no answer):
+-- the part stayed on the car and was saved while the order stayed open and refundable. The first
+-- one of an install is kept (a retried step, the paint after the primer).
+function rememberVehicleBeforeOrderPart(vehicle)
+    if OrderInstallState.propsBeforePart ~= nil then return end
+    local props = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+    if type(props) == "table" then
+        for _, key in ipairs(CONDITION_PROPERTY_KEYS) do props[key] = nil end
+    end
+    OrderInstallState.propsBeforePart = props
+end
+
+-- An install cancelled after its part went on (Cancel after the last wheel, a repaint that
+-- could not finish): the new rims or paint stayed on the car while the order stayed open.
+function restoreVehicleBeforeOrderPart()
+    local props = OrderInstallState.propsBeforePart
+    OrderInstallState.propsBeforePart = nil
+    local vehicle = NetworkGetEntityFromNetworkId(OrderInstallState.vehicleNetId or 0)
+    if props and vehicle ~= 0 and DoesEntityExist(vehicle) then
+        Sky.Vehicle.new(vehicle):SetVehicleProperties(props)
+    end
 end
 
 function completeActiveOrderInstall(vehicle, force)
@@ -1503,7 +1549,7 @@ function completeActiveOrderInstall(vehicle, force)
         if isSimpleBodyworkOrderPart(OrderInstallState.part, OrderInstallState.requiredItem) and not isHood then
             if isArmorOrderPart(OrderInstallState.part, OrderInstallState.requiredItem) then
                 if OrderInstallState.simpleStep ~= "weld" and OrderInstallState.simpleStep ~= "complete" then
-                    print(("[sky_mechanicjob][orders][armor] install blocked: invalid simple step '%s'"):format(tostring(OrderInstallState.simpleStep)))
+                    Sky.Debug("debug", ("[sky_mechanicjob][orders][armor] install blocked: invalid simple step '%s'"):format(tostring(OrderInstallState.simpleStep)))
                     return false, {
                         key = "radial.errors.generic",
                         fallback = (tuningLocales and tuningLocales.OrderInstallWrongStep) or "Complete the current install step first."
@@ -1529,6 +1575,7 @@ function completeActiveOrderInstall(vehicle, force)
         end
 
         if not isRepair then
+            rememberVehicleBeforeOrderPart(vehicle)
             if not applyOrderPartToVehicle(vehicle, OrderInstallState.part) then
                 local failMsg = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
                 notify(failMsg, "error")
@@ -1599,6 +1646,7 @@ function completeActiveOrderInstall(vehicle, force)
             plate = OrderInstallState.tuningRemovalPlate,
             id = OrderInstallState.part and OrderInstallState.part.id or "",
             value = OrderInstallState.tuningRemovalValue,
+            stockValue = OrderInstallState.part and OrderInstallState.part.value,
             wheelType = OrderInstallState.tuningRemovalWheelType,
             label = OrderInstallState.part and OrderInstallState.part.label or "Tuning Removal",
             valueLabel = OrderInstallState.tuningRemovalValueLabel,
@@ -1617,7 +1665,8 @@ function completeActiveOrderInstall(vehicle, force)
     end
 
     local res = Sky.Cb.Trigger(eventName, payload) or {}
-    if type(res) == "table" and res.success == true then
+    local counted = type(res) == "table" and res.success == true
+    if counted then
         if OrderInstallState.tuningRemovalMode then
             notify(getNuiLocale("tablet.tuningRemoval.removeSuccess", "Tuning removed and item returned."), "success")
         elseif OrderInstallState.repairMode then
@@ -1630,6 +1679,9 @@ function completeActiveOrderInstall(vehicle, force)
             end
         end
     else
+        if OrderInstallState.propsBeforePart then
+            Sky.Vehicle.new(vehicle):SetVehicleProperties(OrderInstallState.propsBeforePart)
+        end
         if type(res) == "table" and res.error == "missing_item" then
             local reqItem = tostring(res.requiredItem or OrderInstallState.requiredItem or DEFAULT_PART_ITEM)
             notify(("%s: %s"):format(
@@ -1637,15 +1689,28 @@ function completeActiveOrderInstall(vehicle, force)
                 getNuiLocale(("tablet.orders.items.%s"):format(reqItem), reqItem)
             ), "error")
         else
-            notify(getNuiLocale("tablet.orders.install_finalize_failed", "Part was applied but order update failed."), "error")
+            notify(getNuiLocale("tablet.orders.install_finalize_failed", "The order could not be updated, so the part was taken off again."), "error")
         end
     end
 
-    saveTuningForVehicle(vehicle)
-    if TuningState.active and TuningState.vehicle == vehicle and DoesEntityExist(vehicle) then
-        TuningState.snapshotProps = Sky.Vehicle.new(vehicle):GetVehicleProperties()
-        TuningState.antiLagSnapshot = AntiLag.GetPersistedState(vehicle)
-        TuningState.twoStepSnapshot = TwoStep.GetPersistedState(vehicle)
+    if counted then
+        -- New wheels replace damaged or stolen ones: a wheel that was missing came off again for
+        -- other players and the theft bricks stayed, as the wheel damage still had it detached.
+        if not OrderInstallState.repairMode and WheelOrderInstallState.allWheels then
+            local replaced = {}
+            for _, wheel in ipairs(WheelOrderInstallState.wheels or {}) do
+                for _, idx in ipairs(wheel.indexes or {}) do replaced[#replaced + 1] = idx end
+            end
+            if #replaced > 0 then
+                TriggerServerEvent("sky_mechanicjob:wheelDamage:reset", NetworkGetNetworkIdFromEntity(vehicle), replaced)
+            end
+        end
+        saveTuningForVehicle(vehicle)
+        if TuningState.active and TuningState.vehicle == vehicle and DoesEntityExist(vehicle) then
+            TuningState.snapshotProps = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+            TuningState.antiLagSnapshot = AntiLag.GetPersistedState(vehicle)
+            TuningState.twoStepSnapshot = TwoStep.GetPersistedState(vehicle)
+        end
     end
 
     clearOrderInstallState()
@@ -1895,7 +1960,7 @@ local function closeTuningSafely()
     local ok, err = pcall(setTuningClosed, false)
     if ok then return end
 
-    print(("[sky_mechanicjob][tuning] closing the tuning menu failed: %s"):format(tostring(err)))
+    Sky.Debug("debug", ("[sky_mechanicjob][tuning] closing the tuning menu failed: %s"):format(tostring(err)))
     if TuningState.camera then
         pcall(function() TuningState.camera:Remove() end)
         TuningState.camera = nil
@@ -1911,18 +1976,26 @@ RegisterNUICallback("close", function(data, cb)
         closeTuningSafely()
     else
         releaseNuiFocus()
+        OrderTabletState.mechanicUiShown = false
         TriggerEvent("sky_jobs_base:tablet:setOpenState", false)
         TriggerEvent("sky_jobs:nuiClosed")
     end
     cb({ success = true })
 end)
 
+-- The mechanic UI reports its route whenever it changes. A "closed" report only counts while the
+-- tablet on screen is the mechanic UI's: after the back arrow handed over to the jobs tablet,
+-- the late report closed that tablet's state (the tablet left the player's hands while its
+-- home screen stayed open).
 RegisterNUICallback("tablet:setOpenState", function(data, cb)
     local openState = data and data.open == true
     local appKey = data and (data.appKey or data.key)
     local route = data and data.route
 
-    TriggerEvent("sky_jobs_base:tablet:setOpenState", openState, { appKey = appKey, route = route })
+    if openState or OrderTabletState.mechanicUiShown then
+        OrderTabletState.mechanicUiShown = openState
+        TriggerEvent("sky_jobs_base:tablet:setOpenState", openState, { appKey = appKey, route = route })
+    end
     cb({ success = true })
 end)
 
@@ -1934,6 +2007,7 @@ RegisterNUICallback("tablet:returnHome", function(data, cb)
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
     sendUi("close")
+    OrderTabletState.mechanicUiShown = false
     TriggerEvent("sky_jobs_base:tablet:setOpenState", false)
     cb({ success = true })
 
@@ -1942,7 +2016,7 @@ RegisterNUICallback("tablet:returnHome", function(data, cb)
             exports.sky_jobs_base:OpenOnJobsBase("home", "/tablet", { noAnimation = true })
         end)
         if not ok then
-            print(("[sky_mechanicjob][tablet] opening the tablet home screen failed: %s"):format(tostring(err)))
+            Sky.Debug("debug", ("[sky_mechanicjob][tablet] opening the tablet home screen failed: %s"):format(tostring(err)))
         end
     end
 end)

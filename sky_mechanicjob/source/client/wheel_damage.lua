@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/client/wheel_damage.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_mechanicjob · source/client/wheel_damage.lua
 --  Deobfuscated & Cleaned
@@ -256,7 +254,7 @@ local function applyPhysicalWheelState(vehicle, wheelIndex, wheelData)
         local leaveTrail = isTheft or (CFG_DEBRIS.leaveDebrisTrail ~= false)
         local leavePhys = isTheft or (CFG_DEBRIS.leavePhysicalWheel == false)
 
-        BreakOffVehicleWheel(vehicle, wheelIndex, leaveTrail, leavePhys, false, CFG_DEBRIS.putOnFire == true and not isTheft)
+        breakOffVehicleWheelByTyre(vehicle, wheelIndex, leaveTrail, leavePhys, false, CFG_DEBRIS.putOnFire == true and not isTheft)
         WheelDamageRuntime.detachedApplied[key] = true
         return
     end
@@ -399,7 +397,7 @@ local function syncWheelBricksForVehicle(vehicle, wheelsData)
 
     local brickHash = GetHashKey(CFG_BRICKS.model)
     if not requestModelLoaded(brickHash, 2500) then
-        print(string.format("[sky_mechanicjob][wheel_theft] brick prop failed: model not loaded (%s)", CFG_BRICKS.model))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][wheel_theft] brick prop failed: model not loaded (%s)", CFG_BRICKS.model))
         return
     end
 
@@ -430,7 +428,7 @@ local function syncWheelBricksForVehicle(vehicle, wheelsData)
                         FreezeEntityPosition(obj, true)
                         stack[#stack + 1] = obj
                     else
-                        print(string.format("[sky_mechanicjob][wheel_theft] brick prop failed: could not create object for wheel %s stack %s", tostring(idx), tostring(i)))
+                        Sky.Debug("debug", string.format("[sky_mechanicjob][wheel_theft] brick prop failed: could not create object for wheel %s stack %s", tostring(idx), tostring(i)))
                     end
                 end
 
@@ -445,9 +443,52 @@ local function syncWheelBricksForVehicle(vehicle, wheelsData)
     updateVehicleFreezeForBricks(vehicle, true)
 end
 
+-- The vehicle a brick key ("netId:model", or "handle:model" for a local vehicle) belongs to.
+local function getBrickVehicle(key)
+    local id, model = tostring(key):match("^(%-?%d+):(%-?%d+)$")
+    id, model = tonumber(id), tonumber(model)
+    if not id then return 0 end
+    local veh = NetworkDoesNetworkIdExist(id) and NetworkGetEntityFromNetworkId(id) or 0
+    if veh == 0 and DoesEntityExist(id) then veh = id end
+    if veh ~= 0 and DoesEntityExist(veh) and GetEntityModel(veh) == model then return veh end
+    return 0
+end
+
+-- Bricks of a car that is gone (stored in a garage, deleted) stayed where it stood. Next to the
+-- bricks a car that still exists is streamed in; one out of range keeps them for its return.
+local ORPHAN_BRICK_RANGE = 60.0
+
+function removeOrphanedWheelBricks()
+    local pedCoords = GetEntityCoords(PlayerPedId())
+    for key, stacks in pairs(WheelDamageRuntime.brickProps) do
+        if getBrickVehicle(key) == 0 then
+            local anyProp, nearby = false, false
+            for _, stack in pairs(stacks) do
+                for _, propObj in ipairs(type(stack) == "table" and stack or { stack }) do
+                    if propObj ~= 0 and DoesEntityExist(propObj) then
+                        anyProp = true
+                        nearby = nearby or #(GetEntityCoords(propObj) - pedCoords) <= ORPHAN_BRICK_RANGE
+                    end
+                end
+            end
+            if nearby or not anyProp then
+                for idx in pairs(stacks) do deleteWheelBrickStack(stacks, idx) end
+                WheelDamageRuntime.brickProps[key] = nil
+            end
+        end
+    end
+end
+
+CreateThread(function()
+    while true do
+        Wait(2000)
+        if next(WheelDamageRuntime.brickProps) then removeOrphanedWheelBricks() end
+    end
+end)
+
 function ensureWheelTheftBricksForVehicle(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][wheel_theft] brick refresh failed: invalid vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][wheel_theft] brick refresh failed: invalid vehicle")
         return
     end
 
@@ -457,6 +498,28 @@ function ensureWheelTheftBricksForVehicle(vehicle)
     syncWheelBricksForVehicle(vehicle, wheelsData)
 end
 
+-- The torque multiplier lasts one frame: set once on a state change it never took effect. The
+-- driver's client keeps it up while wheels are missing.
+local torqueHold = { vehicle = 0, multiplier = 1.0 }
+
+local function holdTorqueMultiplier(vehicle, multiplier)
+    if multiplier >= 1.0 or not isPlayerDriver(vehicle) then
+        if torqueHold.vehicle == vehicle then torqueHold.vehicle = 0 end
+        return
+    end
+    torqueHold.multiplier = multiplier
+    if torqueHold.vehicle == vehicle then return end
+
+    torqueHold.vehicle = vehicle
+    CreateThread(function()
+        while torqueHold.vehicle == vehicle and DoesEntityExist(vehicle) and isPlayerDriver(vehicle) do
+            SetVehicleEngineTorqueMultiplier(vehicle, torqueHold.multiplier)
+            Wait(0)
+        end
+        if torqueHold.vehicle == vehicle then torqueHold.vehicle = 0 end
+    end)
+end
+
 local function updateHandlingForWheelDamage(vehicle, wheelsData)
     if CFG_HANDLING.enabled == false then return end
     local detachedCount = countDetachedFromState(wheelsData)
@@ -464,6 +527,7 @@ local function updateHandlingForWheelDamage(vehicle, wheelsData)
     if detachedCount <= 0 then
         SetVehicleUndriveable(vehicle, false)
         SetVehicleReduceGrip(vehicle, false)
+        holdTorqueMultiplier(vehicle, 1.0)
         SetVehicleEngineTorqueMultiplier(vehicle, 1.0)
         SetVehicleEnginePowerMultiplier(vehicle, 0.0)
         return
@@ -479,7 +543,7 @@ local function updateHandlingForWheelDamage(vehicle, wheelsData)
     local tqFactor = tqMultPerWheel * detachedCount
     local pwrFactor = pwrMultPerWheel * detachedCount
 
-    SetVehicleEngineTorqueMultiplier(vehicle, math.max(0.08, 1.0 - tqFactor))
+    holdTorqueMultiplier(vehicle, math.max(0.08, 1.0 - tqFactor))
     SetVehicleEnginePowerMultiplier(vehicle, pwrFactor)
 
     if CFG_HANDLING.fullyDisableVehicle == true then
@@ -493,6 +557,7 @@ end
 local function resetHandlingProperties(vehicle)
     SetVehicleUndriveable(vehicle, false)
     SetVehicleReduceGrip(vehicle, false)
+    holdTorqueMultiplier(vehicle, 1.0)
     SetVehicleEngineTorqueMultiplier(vehicle, 1.0)
     SetVehicleEnginePowerMultiplier(vehicle, 0.0)
 end
@@ -550,6 +615,16 @@ local function syncVehicleStateBagData(vehicle, stateBagVal)
     if next(applied) and not next(wheelsData) then
         fixAllTyresAndRemoveKeyCache(vehicle)
         removeBricksForVehicle(vehicle)
+    elseif next(wheelsData) then
+        -- Some wheels cleared (a job replaced them) while others stay damaged: a wheel broken off
+        -- only comes back with the whole vehicle fixed, then the remaining damage goes on again.
+        for key, entry in pairs(applied) do
+            if wheelsData[key] == nil and (entry.detached or entry.popped) then
+                fixAllTyresAndRemoveKeyCache(vehicle)
+                applied = {}
+                break
+            end
+        end
     end
 
     for k, v in pairs(wheelsData) do
@@ -905,7 +980,7 @@ AddEventHandler("onResourceStop", function(resName)
 end)
 
 -- skipServer: the caller's server-side repair already cleared the wheel state.
-registerExport("FixWheelDamage", function(targetVehicle, skipServer)
+exports("FixWheelDamage", function(targetVehicle, skipServer)
     local veh = tonumber(targetVehicle) or targetVehicle
     if not veh then veh = getDrivenVehicle() end
     if veh == 0 or not DoesEntityExist(veh) then return false end

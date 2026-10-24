@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/config/locales/hu.lua") end
 --   ____  _____ ____ ______   ______ _____ _____ ____     ___     _____ _____  _______ ____    ______   __  _______  __    _    ____    _____ ____  ___ _  _____ _____ ___  _   _    _        _     _   _                  ____  _ _                       _                 _______ _____ _  __     _   _ ____      _ ____ _____ _____
 --  |  _ \| ____/ ___|  _ \ \ / /  _ \_   _| ____|  _ \   ( _ )   |  ___|_ _\ \/ / ____|  _ \  | __ ) \ / / |  ___\ \/ /   / \  |  _ \  |  ___|  _ \|_ _| |/ /_ _|_   _/ _ \| \ | |  / \      | |__ | |_| |_ _ __  ___ _   / / /_| (_)___  ___ ___  _ __ __| |  __ _  __ _   / / ____|_   _| |/ /__ _| | | | ___|  __| | ___|___  |___  |
 --  | | | |  _|| |   | |_) \ V /| |_) || | |  _| | | | |  / _ \/\ | |_   | | \  /|  _| | | | | |  _ \\ V /  | |_   \  /   / _ \ | |_) | | |_  | |_) || || ' / | |  | || | | |  \| | / _ \     | '_ \| __| __| '_ \/ __(_) / / / _` | / __|/ __/ _ \| '__/ _` | / _` |/ _` | / /|  _|   | | | ' // _` | |_| |___ \ / _` |___ \  / /   / /
@@ -70,6 +69,7 @@ Locales["hu"] = {
         OrderInstallOpenHoodRadialDescription = "Nyisd fel a motorháztetőt a teljesítményalkatrész felszerelése előtt.",
         OrderInstallHoodOpened = "Motorháztető nyitva. Szereld fel a kiválasztott alkatrészt.",
         OrderInstallHoodAlreadyOpen = "A motorháztető hiányzik/sérült, folytassa a kiválasztott alkatrész beszerelésével.",
+        OrderInstallHoodOpenFailed = "A motorháztetőt nem sikerült kinyitni. Kérje meg az utasokat, hogy szálljanak ki, majd próbálja újra.",
         OrderInstallRadialPrompt = "Radiális menü: %s",
         BrakeInstallSuccess = "Fékelemek beépítve.",
         SuspensionInstallSuccess = "Felfüggesztési alkatrészek telepítve.",
@@ -107,6 +107,8 @@ Locales["hu"] = {
         EngineSwapHoodClosed = "A motor cseréje előtt nyissa ki a motorháztetőt a radiális menüből.",
         EngineSwapHoodOpened = "Kinyílt a motorháztető. Indítsa el a motorcserét.",
         EngineSwapHoodAlreadyOpen = "A motorháztető már nyitva van. Indítsa el a motorcserét.",
+        EngineSwapHoodOpenedTakeHoist = "Kinyílt a motorháztető. Vegye fel a motoremelőt a helyéről.",
+        EngineSwapHoodAlreadyOpenTakeHoist = "A motortér nyitva van. Vegye fel a motoremelőt a helyéről.",
         EngineSwapOpenHoodRadialLabel = "Nyissa ki a motorháztetőt",
         EngineSwapOpenHoodRadialDescription = "A motorcsere megkezdése előtt nyissa ki a motorháztetőt.",
         EngineSwapRadialLabel = "Motorcsere",
@@ -821,7 +823,7 @@ Locales["hu"] = {
                 apply_failed = "Ezt a részt nem sikerült felvinni a járműre.",
                 order_completed = "A rendelés sikeresen befejeződött.",
                 part_installed = "Alkatrész sikeresen telepítve.",
-                install_finalize_failed = "Alkatrészt alkalmaztak, de a rendelés frissítése nem sikerült.",
+                install_finalize_failed = "A rendelést nem sikerült frissíteni, ezért az alkatrészt leszerelték.",
                 items = {
                     wheels = "Kerekek",
                     spray_can = "Spray Can",

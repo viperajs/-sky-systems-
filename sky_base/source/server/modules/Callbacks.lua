@@ -1,5 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_base/source/server/modules/Callbacks.lua") end
-local registerExport = (SkyDiagnostics and SkyDiagnostics.Export) or exports
 -- =====================================================
 --  sky_base · source/server/modules/Callbacks.lua
 --  Server-Side Callback Dispatcher & Handler
@@ -18,17 +16,16 @@ local currentClientRequestId = 0
 ---@param name string
 ---@param callbackFunction function
 function Sky.Cb.Register(name, callbackFunction)
-    if SkyDiagnostics then callbackFunction = SkyDiagnostics.Wrap("callback", name, callbackFunction) end
     assert(name ~= nil, 'Parameter "name" must be a string!')
     assert(callbackFunction ~= nil, 'Parameter "callbackFunction" must be a function!')
     serverCallbacks[name] = callbackFunction
 end
 
-registerExport("RegisterServerCallback", function(name, callbackFunction)
+exports("RegisterServerCallback", function(name, callbackFunction)
     Sky.Cb.Register(name, callbackFunction)
 end)
 
-registerExport("TriggerClientCallback", function(source, name, ...)
+exports("TriggerClientCallback", function(source, name, ...)
     return Sky.Cb.TriggerClient(source, name, ...)
 end)
 

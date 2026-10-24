@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/migrate.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/migrate.lua
 --  Data Migration Tool from Legacy Systems

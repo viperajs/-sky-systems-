@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/client/cctv.lua") end
 -- =====================================================
 --  sky_jobs_base · source/client/cctv.lua
 --  Deobfuscated & Cleaned
@@ -88,7 +87,7 @@ local function startWaypointThread()
             if now >= waypointState.expiresAt then break end
 
             if not (waypointState.coords and waypointState.coords.x) then
-                print("[sky_jobs_base] waypoint highlight failed: missing coords")
+                Sky.Debug("debug", "[sky_jobs_base] waypoint highlight failed: missing coords")
                 break
             end
 
@@ -114,7 +113,7 @@ end
 
 local function setWaypointHighlight(coords, targetType)
     if not (coords and coords.x) then
-        print("[sky_jobs_base] waypoint highlight failed: invalid coords payload")
+        Sky.Debug("debug", "[sky_jobs_base] waypoint highlight failed: invalid coords payload")
         return
     end
 
@@ -564,7 +563,7 @@ RegisterNUICallback("cctv:setWaypoint", function(data, cb)
         return
     end
 
-    print("[sky_jobs_base] cctv:setWaypoint failed: missing x/y coords")
+    Sky.Debug("debug", "[sky_jobs_base] cctv:setWaypoint failed: missing x/y coords")
     Sky.Show.Notification(cctvLocales.title or "CCTV", wpLocales.missing or "No location available.", "error")
     cb({ success = false, error = "missing_coords" })
 end)

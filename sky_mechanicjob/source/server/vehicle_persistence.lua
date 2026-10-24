@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/vehicle_persistence.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/vehicle_persistence.lua
 --  Tuning, Stance, RGB & Handling Persistence Callbacks

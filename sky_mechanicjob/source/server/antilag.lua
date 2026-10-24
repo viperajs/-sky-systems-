@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_mechanicjob/source/server/antilag.lua") end
 -- =====================================================
 --  sky_mechanicjob · source/server/antilag.lua
 --  Anti-Lag Backfire Network Synchronization

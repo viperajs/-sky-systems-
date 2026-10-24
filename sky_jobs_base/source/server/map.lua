@@ -1,4 +1,3 @@
-if SkyDiagnostics then SkyDiagnostics.FileStarted("sky_jobs_base/source/server/map.lua") end
 -- =====================================================
 --  sky_jobs_base · source/server/map.lua
 --  Map Exclusion Zones & Blip Callbacks
