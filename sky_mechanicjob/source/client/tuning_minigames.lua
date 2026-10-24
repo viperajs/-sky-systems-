@@ -23,12 +23,12 @@ end
 function TuningMinigames.Register(id, runner)
     local key = tostring(id or "")
     if key == "" then
-        print("[sky_mechanicjob][tuning_minigames] register failed: empty minigame id")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning_minigames] register failed: empty minigame id")
         return
     end
 
     if type(runner) ~= "function" then
-        print(string.format("[sky_mechanicjob][tuning_minigames] register failed: runner is not a function (%s)", key))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][tuning_minigames] register failed: runner is not a function (%s)", key))
         return
     end
 
@@ -40,7 +40,7 @@ function TuningMinigames.Run(id, ...)
     local runner = TuningMinigames.runners[key]
 
     if type(runner) ~= "function" then
-        print(string.format("[sky_mechanicjob][tuning_minigames] run failed: unregistered minigame (%s)", key))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][tuning_minigames] run failed: unregistered minigame (%s)", key))
         return false, buildNotRegisteredError(key)
     end
 
@@ -50,7 +50,7 @@ end
 function runTuningMinigame(id, ...)
     local key = tostring(id or "")
     if key == "" then
-        print("[sky_mechanicjob][tuning_minigames] run failed: empty minigame id")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning_minigames] run failed: empty minigame id")
         return false, buildNotRegisteredError("unknown")
     end
     return TuningMinigames.Run(key, ...)
@@ -117,12 +117,12 @@ function TuningMinigames.StartSession(sessionId, opts)
     local state = opts.state
 
     if key == "" then
-        print("[sky_mechanicjob][tuning_minigames] start failed: empty session id")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning_minigames] start failed: empty session id")
         return false, TuningMinigames.BuildError("Minigame session id is missing.")
     end
 
     if type(state) ~= "table" then
-        print(string.format("[sky_mechanicjob][tuning_minigames] start failed: state missing for session %s", key))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][tuning_minigames] start failed: state missing for session %s", key))
         return false, TuningMinigames.BuildError("Minigame state is missing.")
     end
 
@@ -208,7 +208,7 @@ local function buildMinigameResultHandler(sessionKey, logPrefix)
         local ok, errReason, expectedToken = TuningMinigames.ResolveSession(sessionKey, token, result)
 
         if not ok and errReason == "token_mismatch" then
-            print(string.format("[sky_mechanicjob][%s] invalid minigame token (%s), expected (%s)", logPrefix, tostring(token), tostring(expectedToken)))
+            Sky.Debug("debug", string.format("[sky_mechanicjob][%s] invalid minigame token (%s), expected (%s)", logPrefix, tostring(token), tostring(expectedToken)))
             cb({ success = false, error = "token_mismatch" })
             return
         end

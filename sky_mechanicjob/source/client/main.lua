@@ -6,7 +6,7 @@
 
 -- Build check warning
 if GetGameBuildNumber() < 3258 then
-    print("[sky_mechanicjob] game build is lower than 3258; electric vehicle detection uses Config.ElectricVehicleFallback.models")
+    Sky.Debug("debug", "[sky_mechanicjob] game build is lower than 3258; electric vehicle detection uses Config.ElectricVehicleFallback.models")
 end
 
 -- Locale Setup
@@ -796,12 +796,12 @@ end
 
 function requestModelLoaded(modelHash, timeoutMs)
     if type(modelHash) ~= "number" then
-        print(("[sky_mechanicjob][car_jack] failed: invalid model hash type (%s)"):format(type(modelHash)))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: invalid model hash type (%s)"):format(type(modelHash)))
         return false
     end
 
     if not IsModelInCdimage(modelHash) then
-        print(("[sky_mechanicjob][car_jack] failed: model missing in cdimage for hash %s"):format(modelHash))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: model missing in cdimage for hash %s"):format(modelHash))
         return false
     end
 
@@ -817,13 +817,13 @@ function requestModelLoaded(modelHash, timeoutMs)
         return true
     end
 
-    print(("[sky_mechanicjob][car_jack] failed: model not loaded for hash %s"):format(modelHash))
+    Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: model not loaded for hash %s"):format(modelHash))
     return false
 end
 
 function requestAnimDictLoaded(animDict, timeoutMs)
     if type(animDict) ~= "string" or animDict == "" then
-        print(("[sky_mechanicjob][car_jack] failed: invalid anim dict (%s)"):format(tostring(animDict)))
+        Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: invalid anim dict (%s)"):format(tostring(animDict)))
         return false
     end
 
@@ -839,7 +839,7 @@ function requestAnimDictLoaded(animDict, timeoutMs)
         return true
     end
 
-    print(("[sky_mechanicjob][car_jack] failed: anim dict not loaded (%s)"):format(animDict))
+    Sky.Debug("debug", ("[sky_mechanicjob][car_jack] failed: anim dict not loaded (%s)"):format(animDict))
     return false
 end
 
@@ -989,7 +989,7 @@ function requestPtfxAssetLoaded(assetName)
         return true
     end
 
-    print(("[sky_mechanicjob][repaint_minigame] failed: ptfx asset not loaded (%s)"):format(tostring(assetName)))
+    Sky.Debug("debug", ("[sky_mechanicjob][repaint_minigame] failed: ptfx asset not loaded (%s)"):format(tostring(assetName)))
     return false
 end
 
@@ -1000,7 +1000,7 @@ function startRepaintPointing()
 
     local ped = PlayerPedId()
     if not requestAnimDictLoaded("anim@mp_point", 2500) then
-        print("[sky_mechanicjob][repaint_minigame] failed: point anim dict not loaded (anim@mp_point)")
+        Sky.Debug("debug", "[sky_mechanicjob][repaint_minigame] failed: point anim dict not loaded (anim@mp_point)")
         return false
     end
 

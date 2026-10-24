@@ -295,7 +295,7 @@ function AntiLag.ApplyOption(vehicle, option, rawValue)
 
     local plate = getVehiclePlate(vehicle)
     if plate == "" then
-        print("[sky_mechanicjob][antilag] apply failed: vehicle plate missing")
+        Sky.Debug("debug", "[sky_mechanicjob][antilag] apply failed: vehicle plate missing")
         return false
     end
 
@@ -308,7 +308,7 @@ function AntiLag.ApplyOption(vehicle, option, rawValue)
 
         record = setRecordByPlate(plate, createDefaultRecord(valNum == 1))
         if not record then
-            print(string.format("[sky_mechanicjob][antilag] apply failed: unable to create record for plate %s", tostring(plate)))
+            Sky.Debug("debug", string.format("[sky_mechanicjob][antilag] apply failed: unable to create record for plate %s", tostring(plate)))
             return false
         end
     end

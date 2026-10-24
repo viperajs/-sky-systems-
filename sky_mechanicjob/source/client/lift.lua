@@ -524,7 +524,7 @@ local function lowerAndDetachVehicleBeforeDestroy(liftPoint)
     end
 
     if not requestVehicleControl(vehicle, 500) then
-        print(("[sky_mechanicjob][lift] failed: could not lower vehicle before destroying point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: could not lower vehicle before destroying point '%s'"):format(liftPoint.key))
         return
     end
 
@@ -684,17 +684,17 @@ end
 
 local function attachVehicleToLift(liftPoint, vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][lift] failed: attach target vehicle missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: attach target vehicle missing for point '%s'"):format(liftPoint.key))
         return false
     end
 
     if liftPoint.platformEntity == 0 or not DoesEntityExist(liftPoint.platformEntity) then
-        print(("[sky_mechanicjob][lift] failed: moving platform missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: moving platform missing for point '%s'"):format(liftPoint.key))
         return false
     end
 
     if not requestVehicleControl(vehicle, 1200) then
-        print(("[sky_mechanicjob][lift] failed: could not get network control for vehicle at point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: could not get network control for vehicle at point '%s'"):format(liftPoint.key))
         return false
     end
 
@@ -759,7 +759,7 @@ local function handleVehicleEnter(vehicle)
         end
 
         if liftPoint.attachedVehicle == vehicle or isPlatformAttachedToVehicle then
-            print(("[sky_mechanicjob][lift] cleanup: reset lift point '%s' still attached on vehicle enter"):format(liftPoint.key))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] cleanup: reset lift point '%s' still attached on vehicle enter"):format(liftPoint.key))
             destroyLiftPoint(liftPoint)
             spawnLiftPoint(liftPoint)
         end
@@ -780,7 +780,7 @@ local function handleVehicleEnter(vehicle)
                     end
                 end
 
-                print(("[sky_mechanicjob][lift] cleanup: reset nearby orphaned platform still attached on vehicle enter model '%s'"):format(platformModel))
+                Sky.Debug("debug", ("[sky_mechanicjob][lift] cleanup: reset nearby orphaned platform still attached on vehicle enter model '%s'"):format(platformModel))
                 requestVehicleControl(nearbyPlatform, 500)
                 DetachEntity(nearbyPlatform, true, true)
 
@@ -815,12 +815,12 @@ end
 
 local function applySyncedAttachment(liftPoint, vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][lift] failed: synced attach vehicle missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: synced attach vehicle missing for point '%s'"):format(liftPoint.key))
         return
     end
 
     if liftPoint.platformEntity == 0 or not DoesEntityExist(liftPoint.platformEntity) then
-        print(("[sky_mechanicjob][lift] failed: synced attach platform missing for point '%s'"):format(liftPoint.key))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: synced attach platform missing for point '%s'"):format(liftPoint.key))
         return
     end
 
@@ -873,7 +873,7 @@ local function createLiftObject(modelName, centerCoords, heading, targetZ, disab
         tonumber(heading) or 0.0, boolToString(disableCollision ~= false), boolToString(IsModelValid(modelHash)))
 
     if not IsModelValid(modelHash) then
-        print(("[sky_mechanicjob][lift] failed: invalid model '%s'"):format(tostring(modelName)))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: invalid model '%s'"):format(tostring(modelName)))
         return 0
     end
 
@@ -881,7 +881,7 @@ local function createLiftObject(modelName, centerCoords, heading, targetZ, disab
     local entity = CreateObject(modelHash, centerCoords.x, centerCoords.y, targetZ, false, false, false)
 
     if entity == 0 or not DoesEntityExist(entity) then
-        print(("[sky_mechanicjob][lift] failed: could not create object for model '%s'"):format(tostring(modelName)))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: could not create object for model '%s'"):format(tostring(modelName)))
         return 0
     end
 
@@ -1377,7 +1377,7 @@ local function processLiftMotionTick()
             local hasFrame = liftPoint.frameEntity ~= 0 and DoesEntityExist(liftPoint.frameEntity)
 
             if not hasPlatform or not hasFrame then
-                print(("[sky_mechanicjob][lift] failed: missing lift object for point '%s'"):format(liftPoint.key))
+                Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: missing lift object for point '%s'"):format(liftPoint.key))
                 destroyLiftPoint(liftPoint)
                 spawnLiftPoint(liftPoint)
             else
@@ -1393,10 +1393,10 @@ local function processLiftMotionTick()
                     end
 
                     if liftPoint.attachedVehicle == 0 or not DoesEntityExist(liftPoint.attachedVehicle) then
-                        print(("[sky_mechanicjob][lift] failed: moving lift requires a vehicle for point '%s'"):format(liftPoint.key))
+                        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: moving lift requires a vehicle for point '%s'"):format(liftPoint.key))
                         liftPoint.motion = 0
                     elseif not requestVehicleControl(liftPoint.attachedVehicle, 200) then
-                        print(("[sky_mechanicjob][lift] failed: lost network control for vehicle at point '%s'"):format(liftPoint.key))
+                        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: lost network control for vehicle at point '%s'"):format(liftPoint.key))
                         liftPoint.motion = 0
                     else
                         local targetZ = liftPoint.positionZ + (unitsPerTick * liftPoint.motion)
@@ -1423,7 +1423,7 @@ local function processLiftMotionTick()
                 liftPoint.wasMoving = liftPoint.motion ~= 0
 
                 if liftPoint.attachedVehicle ~= 0 and not DoesEntityExist(liftPoint.attachedVehicle) then
-                    print(("[sky_mechanicjob][lift] failed: attached vehicle missing for point '%s'"):format(liftPoint.key))
+                    Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: attached vehicle missing for point '%s'"):format(liftPoint.key))
                     if liftPoint.platformEntity ~= 0 and DoesEntityExist(liftPoint.platformEntity) then
                         if IsEntityAttached(liftPoint.platformEntity) then
                             DetachEntity(liftPoint.platformEntity, true, true)
@@ -1610,7 +1610,7 @@ local function setLiftDirection(direction)
 
     if dirNum ~= 0 then
         if liftPoint.attachedVehicle == 0 or not DoesEntityExist(liftPoint.attachedVehicle) then
-            print(("[sky_mechanicjob][lift] failed: no vehicle available to move lift point '%s'"):format(liftPoint.key))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: no vehicle available to move lift point '%s'"):format(liftPoint.key))
             liftPoint.motion = 0
             return false, {
                 key = "radial.errors.generic",
@@ -1749,7 +1749,7 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
         tostring(data and data.action), tostring(data and data.key), tostring(data and data.vehicleNetId))
 
     if type(data) ~= "table" or type(data.key) ~= "string" then
-        print("[sky_mechanicjob][lift] failed: invalid synced attachment payload")
+        Sky.Debug("debug", "[sky_mechanicjob][lift] failed: invalid synced attachment payload")
         return
     end
 
@@ -1767,7 +1767,7 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
     if data.action == "attach" then
         local vehNetId = tonumber(data.vehicleNetId) or 0
         if vehNetId <= 0 then
-            print(("[sky_mechanicjob][lift] failed: invalid synced vehicle net id for point '%s'"):format(liftPoint.key))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: invalid synced vehicle net id for point '%s'"):format(liftPoint.key))
             return
         end
         local vehicle = NetToVeh(vehNetId)
@@ -1775,7 +1775,7 @@ RegisterNetEvent("sky_mechanicjob:lift:attachment", function(data)
     elseif data.action == "detach" then
         applySyncedDetach(liftPoint)
     else
-        print(("[sky_mechanicjob][lift] failed: invalid synced attachment action '%s'"):format(tostring(data.action)))
+        Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: invalid synced attachment action '%s'"):format(tostring(data.action)))
     end
 end)
 
@@ -1828,7 +1828,7 @@ local function requestLiftSync()
             end
         end)
         if not ok then
-            print(("[sky_mechanicjob][lift] failed: lift sync error: %s"):format(tostring(err)))
+            Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: lift sync error: %s"):format(tostring(err)))
         end
     until not syncQueued
     syncRunning = false

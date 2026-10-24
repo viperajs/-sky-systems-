@@ -120,7 +120,7 @@ local function parkVehicleInGarage(garageId, garageType)
     local props = vehObj:GetVehicleProperties()
 
     if type(props) ~= "table" then
-        print(string.format("[sky_jobs_base] Failed to capture vehicle properties while parking vehicle netId=%s garageId=%s", tostring(netId), tostring(garageId)))
+        Sky.Debug("debug", string.format("[sky_jobs_base] Failed to capture vehicle properties while parking vehicle netId=%s garageId=%s", tostring(netId), tostring(garageId)))
         showGarageNotification(locales.GarageParkFailedNotify or "Unable to park vehicle.")
         return
     end

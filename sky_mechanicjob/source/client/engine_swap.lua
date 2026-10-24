@@ -99,7 +99,7 @@ end
 local function spawnPointHoistProp(pointEntry)
     local modelHash = GetHashKey(HOIST_PROP_MODEL)
     if not IsModelValid(modelHash) then
-        print(string.format("[sky_mechanicjob][engine_hoist] failed: invalid model '%s'", HOIST_PROP_MODEL))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][engine_hoist] failed: invalid model '%s'", HOIST_PROP_MODEL))
         return false
     end
 
@@ -115,7 +115,7 @@ local function spawnPointHoistProp(pointEntry)
     local obj = CreateObject(modelHash, coords.x, coords.y, coords.z, false, false, false)
 
     if obj == 0 or not DoesEntityExist(obj) then
-        print("[sky_mechanicjob][engine_hoist] failed: could not create hoist object")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] failed: could not create hoist object")
         return false
     end
 
@@ -182,7 +182,7 @@ local function cleanupOrphanedAttachedHoists(vehicle)
 
     local activeHoist = EngineHoistActiveState.hoistProp
     if activeHoist ~= 0 and DoesEntityExist(activeHoist) and IsEntityAttachedToEntity(activeHoist, vehicle) then
-        print("[sky_mechanicjob][engine_hoist] cleanup: removed active hoist still attached on vehicle enter")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] cleanup: removed active hoist still attached on vehicle enter")
         clearEngineHoistState()
     end
 
@@ -191,7 +191,7 @@ local function cleanupOrphanedAttachedHoists(vehicle)
     local nearbyHoist = GetClosestObjectOfType(coords.x, coords.y, coords.z, 8.0, hoistHash, false, false, false)
 
     if nearbyHoist ~= 0 and DoesEntityExist(nearbyHoist) and IsEntityAttachedToEntity(nearbyHoist, vehicle) then
-        print("[sky_mechanicjob][engine_hoist] cleanup: removed nearby orphaned hoist still attached on vehicle enter")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] cleanup: removed nearby orphaned hoist still attached on vehicle enter")
         local hoistPos = GetEntityCoords(nearbyHoist)
         local engineHash = GetHashKey(ENGINE_PROP_MODEL)
         local attachedEngine = GetClosestObjectOfType(hoistPos.x, hoistPos.y, hoistPos.z, 4.0, engineHash, false, false, false)
@@ -316,7 +316,7 @@ local function startHoistFollowLoop()
 
             local hoist = EngineHoistActiveState.hoistProp
             if hoist == 0 or not DoesEntityExist(hoist) then
-                print("[sky_mechanicjob][engine_hoist] follow loop aborted: hoist prop missing")
+                Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] follow loop aborted: hoist prop missing")
                 clearEngineHoistState()
                 break
             end
@@ -362,7 +362,7 @@ end
 function takeNearestEngineHoistForOrderInstall()
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][engine_hoist] take failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapTakeHoistFailed or "Leave the vehicle before taking an engine hoist."
@@ -373,7 +373,7 @@ function takeNearestEngineHoistForOrderInstall()
 
     local point, dist = findNearestHoistPoint(MAX_SEARCH_DIST)
     if point == nil then
-        print("[sky_mechanicjob][engine_hoist] take failed: no workshopcreator hoist location nearby")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: no workshopcreator hoist location nearby")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapNoHoistNearby or "No engine hoist nearby. Place an Engine Hoist location for this workshop in /jobconfig and move closer."
@@ -386,7 +386,7 @@ function takeNearestEngineHoistForOrderInstall()
 
     local hoistObj = point.hoistProp
     if hoistObj == 0 or not DoesEntityExist(hoistObj) then
-        print("[sky_mechanicjob][engine_hoist] take failed: unable to create hoist prop at workshop location")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] take failed: unable to create hoist prop at workshop location")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapNoActiveHoist or "Unable to prepare engine hoist."
@@ -413,7 +413,7 @@ function takeNearestEngineHoistForOrderInstall()
     startHoistFollowLoop()
 
     if type(dist) == "number" then
-        print(string.format("[sky_mechanicjob][engine_hoist] workshop hoist acquired at %.2f meters", dist))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][engine_hoist] workshop hoist acquired at %.2f meters", dist))
     end
 
     return true
@@ -426,7 +426,7 @@ end
 
 function attachEngineHoistToVehicleFront(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][engine_hoist] attach failed: vehicle missing")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: vehicle missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -435,7 +435,7 @@ function attachEngineHoistToVehicleFront(vehicle)
 
     local hoistObj = EngineHoistActiveState.hoistProp
     if hoistObj == 0 or not DoesEntityExist(hoistObj) then
-        print("[sky_mechanicjob][engine_hoist] attach failed: hoist not active")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: hoist not active")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.EngineSwapNoActiveHoist or "Take an engine hoist first."
@@ -445,7 +445,7 @@ function attachEngineHoistToVehicleFront(vehicle)
     local pedCoords = GetEntityCoords(PlayerPedId())
     local vehCoords = GetEntityCoords(vehicle)
     if #(pedCoords - vehCoords) > 4.0 then
-        print("[sky_mechanicjob][engine_hoist] attach failed: player is too far from vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][engine_hoist] attach failed: player is too far from vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.WheelInstallTooFar or "Move closer to the connected order vehicle."
@@ -501,19 +501,3 @@ AddEventHandler("onResourceStop", function(resName)
         deletePointHoistProp(pt)
     end
 end)
-
-RegisterCommand("sky_debug_engine_hoist", function()
-    if EngineHoistActiveState.active then
-        releaseOrderHeldProp()
-        notify("Engine hoist debug removed.", "info")
-        return
-    end
-
-    local ok, err = takeNearestEngineHoistForOrderInstall()
-    if ok then
-        notify("Engine hoist debug acquired.", "success")
-        return
-    end
-
-    notify((err and err.fallback) or "No nearby engine hoist found.", "error")
-end, false)

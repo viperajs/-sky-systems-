@@ -58,7 +58,7 @@ local function attachCareProp(modelName, attachConfig)
     local modelHash = GetHashKey(modelName)
 
     if not requestModelLoaded(modelHash, 2500) then
-        print(string.format("[sky_mechanicjob][vehicle_care] failed: model could not be loaded (%s)", modelName))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][vehicle_care] failed: model could not be loaded (%s)", modelName))
         return false
     end
 
@@ -85,7 +85,7 @@ local function startCareAnimation(mode)
         stopRepaintPointing()
 
         if not requestAnimDictLoaded(ANIM_WASH_DICT, 2500) then
-            print(string.format("[sky_mechanicjob][vehicle_care] failed: wash anim dict not loaded (%s)", ANIM_WASH_DICT))
+            Sky.Debug("debug", string.format("[sky_mechanicjob][vehicle_care] failed: wash anim dict not loaded (%s)", ANIM_WASH_DICT))
             return false
         end
 
@@ -167,7 +167,7 @@ local function runCareMinigame(mode, vehicle)
     end
 
     if not requestVehicleControl(vehicle, 700) then
-        print("[sky_mechanicjob][vehicle_care] failed: no entity control for target vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][vehicle_care] failed: no entity control for target vehicle")
         return false, tuningLocales.VehicleCareControlFailed or "Unable to work on this vehicle right now."
     end
 
@@ -309,7 +309,7 @@ end
 local function applyWaxToVehicle(vehicle, addedKm)
     local plate = normalizePlate(GetVehicleNumberPlateText(vehicle))
     if plate == "" then
-        print("[sky_mechanicjob][vehicle_care] failed: wax target plate is empty")
+        Sky.Debug("debug", "[sky_mechanicjob][vehicle_care] failed: wax target plate is empty")
         return
     end
 
@@ -354,7 +354,7 @@ end
 
 local function runRepairCareAction(vehicle)
     if not requestVehicleControl(vehicle, 700) then
-        print("[sky_mechanicjob][vehicle_care] repair failed: no entity control for target vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][vehicle_care] repair failed: no entity control for target vehicle")
         return false, tuningLocales.VehicleCareControlFailed or "Unable to work on this vehicle right now."
     end
 
@@ -425,7 +425,7 @@ local function applyFullVehicleFix(vehicle)
         -- The server already cleared the wheel state when it accepted the repair.
         local ok = exports[GetCurrentResourceName()]:FixWheelDamage(vehicle, true)
         if not ok then
-            print("[sky_mechanicjob][vehicle_care] repair failed: realistic wheel damage reset failed")
+            Sky.Debug("debug", "[sky_mechanicjob][vehicle_care] repair failed: realistic wheel damage reset failed")
         end
     end
 end
@@ -493,7 +493,7 @@ exports("AdminRepairVehicle", function(targetVehicle)
     if vehicle == 0 then return false, "no_vehicle" end
 
     if not requestVehicleControl(vehicle, 700) then
-        print("[sky_mechanicjob][vehicle_care] admin repair failed: no entity control for target vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][vehicle_care] admin repair failed: no entity control for target vehicle")
         return false, "control_failed"
     end
 
@@ -568,7 +568,7 @@ RegisterNetEvent("sky_mechanicjob:vehicleCare:start", function(actionType, itemN
         return
     end
     if action ~= "wash" and action ~= "wax" and action ~= "repair" then
-        print(string.format("[sky_mechanicjob][vehicle_care] failed: invalid action %s", action))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][vehicle_care] failed: invalid action %s", action))
         return
     end
 
@@ -600,7 +600,7 @@ RegisterNetEvent("sky_mechanicjob:vehicleCare:start", function(actionType, itemN
 
         local netId = NetworkGetNetworkIdFromEntity(vehicle)
         if netId <= 0 then
-            print("[sky_mechanicjob][vehicle_care] repair failed: vehicle has no network id")
+            Sky.Debug("debug", "[sky_mechanicjob][vehicle_care] repair failed: vehicle has no network id")
             Sky.Show.Notification(
                 tuningLocales.Title or "Tuning",
                 tuningLocales.VehicleCareFailed or "Vehicle care failed.",

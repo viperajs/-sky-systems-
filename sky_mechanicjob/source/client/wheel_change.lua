@@ -41,13 +41,13 @@ function startWheelWorkAnim(targetEntity)
     if kneelLoaded then
         TaskPlayAnim(ped, WHEEL_WORK_KNEEL_ANIM_DICT, WHEEL_WORK_KNEEL_ANIM_CLIP, 8.0, -8.0, -1, 1, 0.0, false, false, false)
     else
-        print(("[sky_mechanicjob][wheel_minigame] failed: kneel anim dict not loaded (%s)"):format(WHEEL_WORK_KNEEL_ANIM_DICT))
+        Sky.Debug("debug", ("[sky_mechanicjob][wheel_minigame] failed: kneel anim dict not loaded (%s)"):format(WHEEL_WORK_KNEEL_ANIM_DICT))
     end
 
     if overlayLoaded then
         TaskPlayAnim(ped, WHEEL_WORK_OVERLAY_ANIM_DICT, WHEEL_WORK_OVERLAY_ANIM_CLIP, 8.0, -8.0, -1, 49, 0.0, false, false, false)
     else
-        print(("[sky_mechanicjob][wheel_minigame] failed: overlay anim dict not loaded (%s)"):format(WHEEL_WORK_OVERLAY_ANIM_DICT))
+        Sky.Debug("debug", ("[sky_mechanicjob][wheel_minigame] failed: overlay anim dict not loaded (%s)"):format(WHEEL_WORK_OVERLAY_ANIM_DICT))
     end
 
     if not kneelLoaded and not overlayLoaded then
@@ -384,7 +384,7 @@ function applyOption(opt, rawVal)
 
     local vehClass = GetVehicleClass(veh)
     if opt.kind == "mod" and opt.modType == 16 and (vehClass == 8 or vehClass == 13) then
-        print("[sky_mechanicjob][tuning] apply blocked: armor tuning is disabled for bikes")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning] apply blocked: armor tuning is disabled for bikes")
         return false
     end
 
@@ -1270,24 +1270,24 @@ end)
 
 function applyOrderPartToVehicle(vehicle, partPayload)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][orders] apply failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: vehicle is missing")
         return false
     end
 
     if type(partPayload) ~= "table" then
-        print("[sky_mechanicjob][orders] apply failed: part payload is invalid")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: part payload is invalid")
         return false
     end
 
     local optionId = tostring(partPayload.id or "")
     if optionId == "" then
-        print("[sky_mechanicjob][orders] apply failed: part id is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: part id is missing")
         return false
     end
 
     if StanceKit.IsVehicleMotorbike(vehicle) then
         if optionId == "stancer_bundle" or optionId == "wheel_size" or optionId == "wheel_width" or optionId:match("^stancer_") then
-            print(("[sky_mechanicjob][orders] apply skipped: stance option '%s' is disabled for motorbikes"):format(optionId))
+            Sky.Debug("debug", ("[sky_mechanicjob][orders] apply skipped: stance option '%s' is disabled for motorbikes"):format(optionId))
             return false
         end
     end
@@ -1300,7 +1300,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
     -- engine showed on the mechanic's screen and vanished with the next sync; the server also
     -- hands the part to the owner (sky_mechanicjob:orders:applyInstalledPart).
     if not requestVehicleControl(vehicle, 1500) then
-        print(("[sky_mechanicjob][orders] apply warning: no network control of the vehicle for '%s'; its owner applies the part"):format(optionId))
+        Sky.Debug("debug", ("[sky_mechanicjob][orders] apply warning: no network control of the vehicle for '%s'; its owner applies the part"):format(optionId))
     end
 
     local curVeh = TuningState.vehicle
@@ -1316,7 +1316,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
     if optionId == "stancer_bundle" then
         local bundleVals = type(partPayload.value) == "table" and partPayload.value or nil
         if not bundleVals or not next(bundleVals) then
-            print("[sky_mechanicjob][orders] apply failed: stancer_bundle has no values")
+            Sky.Debug("debug", "[sky_mechanicjob][orders] apply failed: stancer_bundle has no values")
             TuningState.vehicle = curVeh
             TuningState.options = curOpts
             TuningState.optionMap = curMap
@@ -1331,7 +1331,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
         for subId, rawSubVal in pairs(bundleVals) do
             local opt = TuningState.optionMap[subId]
             if not opt or opt.kind ~= "stancer" then
-                print(("[sky_mechanicjob][orders] apply failed: stancer option '%s' not available"):format(tostring(subId)))
+                Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: stancer option '%s' not available"):format(tostring(subId)))
                 allApplied = false
                 break
             end
@@ -1341,7 +1341,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
             if valNum > opt.max then valNum = opt.max end
 
             if not applyOption(opt, valNum) then
-                print(("[sky_mechanicjob][orders] apply failed: stancer option '%s' value could not be applied"):format(tostring(subId)))
+                Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: stancer option '%s' value could not be applied"):format(tostring(subId)))
                 allApplied = false
                 break
             end
@@ -1359,7 +1359,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
 
     local opt = TuningState.optionMap[optionId]
     if not opt then
-        print(("[sky_mechanicjob][orders] apply failed: option '%s' not available for this vehicle"):format(optionId))
+        Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: option '%s' not available for this vehicle"):format(optionId))
         TuningState.vehicle = curVeh
         TuningState.options = curOpts
         TuningState.optionMap = curMap
@@ -1378,7 +1378,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
                 if wtVal > wheelTypeOpt.max then wtVal = wheelTypeOpt.max end
 
                 if not applyOption(wheelTypeOpt, wtVal) then
-                    print(("[sky_mechanicjob][orders] apply failed: wheel_type could not be applied (value=%s)"):format(tostring(wtVal)))
+                    Sky.Debug("debug", ("[sky_mechanicjob][orders] apply failed: wheel_type could not be applied (value=%s)"):format(tostring(wtVal)))
                     TuningState.vehicle = curVeh
                     TuningState.options = curOpts
                     TuningState.optionMap = curMap
@@ -1387,7 +1387,7 @@ function applyOrderPartToVehicle(vehicle, partPayload)
                     return false
                 end
             else
-                print(("[sky_mechanicjob][orders] apply warning: wheel_type option missing for %s (requested=%s)"):format(optionId, tostring(wType)))
+                Sky.Debug("debug", ("[sky_mechanicjob][orders] apply warning: wheel_type option missing for %s (requested=%s)"):format(optionId, tostring(wType)))
             end
         end
     end
@@ -1436,7 +1436,7 @@ RegisterNetEvent("sky_mechanicjob:orders:applyInstalledPart", function(netId, pa
     if vehicle == 0 or not DoesEntityExist(vehicle) then return end
 
     if not applyOrderPartToVehicle(vehicle, part) then
-        print(("[sky_mechanicjob][orders] owner apply failed for '%s'"):format(tostring(part.id)))
+        Sky.Debug("debug", ("[sky_mechanicjob][orders] owner apply failed for '%s'"):format(tostring(part.id)))
     end
 end)
 
@@ -1502,7 +1502,7 @@ function completeActiveOrderInstall(vehicle, force)
         if isSimpleBodyworkOrderPart(OrderInstallState.part, OrderInstallState.requiredItem) and not isHood then
             if isArmorOrderPart(OrderInstallState.part, OrderInstallState.requiredItem) then
                 if OrderInstallState.simpleStep ~= "weld" and OrderInstallState.simpleStep ~= "complete" then
-                    print(("[sky_mechanicjob][orders][armor] install blocked: invalid simple step '%s'"):format(tostring(OrderInstallState.simpleStep)))
+                    Sky.Debug("debug", ("[sky_mechanicjob][orders][armor] install blocked: invalid simple step '%s'"):format(tostring(OrderInstallState.simpleStep)))
                     return false, {
                         key = "radial.errors.generic",
                         fallback = (tuningLocales and tuningLocales.OrderInstallWrongStep) or "Complete the current install step first."
@@ -1894,7 +1894,7 @@ local function closeTuningSafely()
     local ok, err = pcall(setTuningClosed, false)
     if ok then return end
 
-    print(("[sky_mechanicjob][tuning] closing the tuning menu failed: %s"):format(tostring(err)))
+    Sky.Debug("debug", ("[sky_mechanicjob][tuning] closing the tuning menu failed: %s"):format(tostring(err)))
     if TuningState.camera then
         pcall(function() TuningState.camera:Remove() end)
         TuningState.camera = nil
@@ -1941,7 +1941,7 @@ RegisterNUICallback("tablet:returnHome", function(data, cb)
             exports.sky_jobs_base:OpenOnJobsBase("home", "/tablet", { noAnimation = true })
         end)
         if not ok then
-            print(("[sky_mechanicjob][tablet] opening the tablet home screen failed: %s"):format(tostring(err)))
+            Sky.Debug("debug", ("[sky_mechanicjob][tablet] opening the tablet home screen failed: %s"):format(tostring(err)))
         end
     end
 end)

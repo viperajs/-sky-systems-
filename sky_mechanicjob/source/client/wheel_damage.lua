@@ -397,7 +397,7 @@ local function syncWheelBricksForVehicle(vehicle, wheelsData)
 
     local brickHash = GetHashKey(CFG_BRICKS.model)
     if not requestModelLoaded(brickHash, 2500) then
-        print(string.format("[sky_mechanicjob][wheel_theft] brick prop failed: model not loaded (%s)", CFG_BRICKS.model))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][wheel_theft] brick prop failed: model not loaded (%s)", CFG_BRICKS.model))
         return
     end
 
@@ -428,7 +428,7 @@ local function syncWheelBricksForVehicle(vehicle, wheelsData)
                         FreezeEntityPosition(obj, true)
                         stack[#stack + 1] = obj
                     else
-                        print(string.format("[sky_mechanicjob][wheel_theft] brick prop failed: could not create object for wheel %s stack %s", tostring(idx), tostring(i)))
+                        Sky.Debug("debug", string.format("[sky_mechanicjob][wheel_theft] brick prop failed: could not create object for wheel %s stack %s", tostring(idx), tostring(i)))
                     end
                 end
 
@@ -445,7 +445,7 @@ end
 
 function ensureWheelTheftBricksForVehicle(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][wheel_theft] brick refresh failed: invalid vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][wheel_theft] brick refresh failed: invalid vehicle")
         return
     end
 

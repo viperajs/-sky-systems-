@@ -33,7 +33,7 @@ local BIKE_CLASSES = { [8] = true, [13] = true }
 
 local function isBikeClass(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][tuning] bike class check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] bike class check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
         return false
     end
     return BIKE_CLASSES[GetVehicleClass(vehicle)] == true
@@ -65,7 +65,7 @@ end
 
 local function isFreeTuningVehicle(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print(("[sky_mechanicjob][tuning] free tuning check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
+        Sky.Debug("debug", ("[sky_mechanicjob][tuning] free tuning check failed: invalid vehicle (%s)"):format(tostring(vehicle)))
         return false
     end
 
@@ -418,7 +418,7 @@ end
 function restoreVehicleToOptionBaselines()
     local veh = TuningState.vehicle
     if veh == 0 or not DoesEntityExist(veh) then
-        print("[sky_mechanicjob][tuning] restoreVehicleToOptionBaselines failed: vehicle missing")
+        Sky.Debug("debug", "[sky_mechanicjob][tuning] restoreVehicleToOptionBaselines failed: vehicle missing")
         return false
     end
 
@@ -780,7 +780,7 @@ function attachForkliftCarryProp(vehicle, itemName, itemConfig)
     local propObj = CreateObjectNoOffset(modelHash, coords.x, coords.y, coords.z, true, true, false)
 
     if propObj == 0 or not DoesEntityExist(propObj) then
-        print(("[sky_mechanicjob][carry_item] failed: could not create forklift carry prop '%s'"):format(propModelName))
+        Sky.Debug("debug", ("[sky_mechanicjob][carry_item] failed: could not create forklift carry prop '%s'"):format(propModelName))
         SetModelAsNoLongerNeeded(modelHash)
         return false
     end
@@ -878,7 +878,7 @@ function holdCarryItemProp(itemName, metadata)
     -- Nothing is held when the prop fails; a part left "held" blocked every later delivery
     -- and install (parts_delivery.lua canInteractWithDelivery).
     if not requestModelLoaded(modelHash, 2500) then
-        print(("[sky_mechanicjob][carry_item] failed: carry prop '%s' did not load"):format(propModelName))
+        Sky.Debug("debug", ("[sky_mechanicjob][carry_item] failed: carry prop '%s' did not load"):format(propModelName))
         OrderInstallState.heldCarryItem = nil
         OrderInstallState.heldCarryTransportMode = "hand"
         return false
@@ -889,7 +889,7 @@ function holdCarryItemProp(itemName, metadata)
 
     local propObj = CreateObjectNoOffset(modelHash, pedCoords.x, pedCoords.y, pedCoords.z, true, true, false)
     if propObj == 0 or not DoesEntityExist(propObj) then
-        print(("[sky_mechanicjob][carry_item] failed: could not create carry prop '%s'"):format(propModelName))
+        Sky.Debug("debug", ("[sky_mechanicjob][carry_item] failed: could not create carry prop '%s'"):format(propModelName))
         SetModelAsNoLongerNeeded(modelHash)
         OrderInstallState.heldCarryItem = nil
         OrderInstallState.heldCarryTransportMode = "hand"

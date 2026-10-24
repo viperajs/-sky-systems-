@@ -165,7 +165,7 @@ local function runDynoSweep(vehicle, animMs)
             local ok = pcall(SetVehicleWheelRotationSpeed, vehicle, w, speed)
             if not ok then
                 if wheelRotationSupported == nil then
-                    print("[sky_mechanicjob][dyno] SetVehicleWheelRotationSpeed unavailable, using forward-speed fallback")
+                    Sky.Debug("debug", "[sky_mechanicjob][dyno] SetVehicleWheelRotationSpeed unavailable, using forward-speed fallback")
                 end
                 wheelRotationSupported = false
                 return false
@@ -186,13 +186,13 @@ local function runDynoSweep(vehicle, animMs)
         local ok = pcall(SetVehicleWheelRotationSpeed, vehicle, 0, 0.0)
         wheelRotationSupported = (ok == true)
         if not wheelRotationSupported then
-            print("[sky_mechanicjob][dyno] direct wheel rotation not supported, using roller fallback")
+            Sky.Debug("debug", "[sky_mechanicjob][dyno] direct wheel rotation not supported, using roller fallback")
         end
         return wheelRotationSupported
     end
 
     if not tryRequestControl(vehicle, 1500) then
-        print("[sky_mechanicjob][dyno] vehicle control failed: unable to control entity")
+        Sky.Debug("debug", "[sky_mechanicjob][dyno] vehicle control failed: unable to control entity")
         return
     end
 
@@ -209,7 +209,7 @@ local function runDynoSweep(vehicle, animMs)
     local canControlVehicle = canControlRpm
     local useDirectWheelSpin = canControlVehicle and probeWheelSupport()
 
-    print(string.format("[sky_mechanicjob][dyno] spin_mode=%s driver=%s canControl=%s",
+    Sky.Debug("debug", string.format("[sky_mechanicjob][dyno] spin_mode=%s driver=%s canControl=%s",
         useDirectWheelSpin and "direct_native" or "fallback",
         tostring(driver),
         tostring(canControlVehicle)))
@@ -344,7 +344,7 @@ RegisterNUICallback("dyno:run", function(data, cb)
             }
         }
     end, function(err)
-        print(string.format("[sky_mechanicjob][dyno] test failed: %s", tostring(err)))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][dyno] test failed: %s", tostring(err)))
         return { success = false, error = "run_failed" }
     end)
 
@@ -358,7 +358,7 @@ RegisterNUICallback("dyno:run", function(data, cb)
         xpcall(function()
             runDynoSweep(vehicle, animMs)
         end, function(err)
-            print(string.format("[sky_mechanicjob][dyno] sweep failed: %s", tostring(err)))
+            Sky.Debug("debug", string.format("[sky_mechanicjob][dyno] sweep failed: %s", tostring(err)))
         end)
         DynoState.running = false
     end)

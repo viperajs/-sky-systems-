@@ -389,6 +389,7 @@ local function newWorld(opts)
     cenv.SetNewWaypoint = function(x, y) W.waypoint = { x = x, y = y } end
     cenv.Sky = {
         Config = { locale = "en" },
+        Debug = function() end,
         Load = { Model = function() end },
         Show = {
             Notification = function(_, message, kind) C.notifications[#C.notifications + 1] = { msg = message, kind = kind } end,

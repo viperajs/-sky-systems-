@@ -65,7 +65,8 @@ function Sky.Debug(level, formatStr, ...)
     end
 
     local formattedMsg
-    if formatStr:find("%%[^s]") then
+    -- A finished message (no format arguments) is printed as it is, even with a "%" in it.
+    if argCount == 0 or formatStr:find("%%[^s]") then
         formattedMsg = formatStr
     else
         formattedMsg = formatStr:format(unpackFn(args, 1, argCount))

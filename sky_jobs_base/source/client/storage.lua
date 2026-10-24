@@ -229,7 +229,7 @@ local function spawnWorldProp(prop)
     spawnedPropHandles[prop.id] = nil
     local hash = joaat(prop.model)
     if not IsModelInCdimage(hash) then
-        print(string.format("[sky_jobs_base][trunk_props] unable to stream prop '%s': model is not in cdimage", prop.model))
+        Sky.Debug("debug", string.format("[sky_jobs_base][trunk_props] unable to stream prop '%s': model is not in cdimage", prop.model))
         return
     end
 
@@ -438,7 +438,7 @@ local function confirmPropPlacement()
     })
 
     if type(res) ~= "table" or res.success ~= true then
-        print(string.format("[sky_jobs_base][trunk_props] placement failed: server rejected prop '%s' (%s)", modelName, tostring(type(res) == "table" and res.error or "no response")))
+        Sky.Debug("debug", string.format("[sky_jobs_base][trunk_props] placement failed: server rejected prop '%s' (%s)", modelName, tostring(type(res) == "table" and res.error or "no response")))
         stopPropPlacement()
         return
     end
@@ -905,14 +905,14 @@ end)
 
 RegisterNetEvent("sky_jobs_base:propItems:useItem", function(data)
     if type(data) ~= "table" then
-        print("[sky_jobs_base][prop_items] item placement failed: invalid prop item payload")
+        Sky.Debug("debug", "[sky_jobs_base][prop_items] item placement failed: invalid prop item payload")
         return
     end
 
     local model = type(data.model) == "string" and data.model or nil
     local item = type(data.item) == "string" and data.item or nil
     if not (model and model ~= "" and item and item ~= "") then
-        print("[sky_jobs_base][prop_items] item placement failed: invalid prop item payload")
+        Sky.Debug("debug", "[sky_jobs_base][prop_items] item placement failed: invalid prop item payload")
         return
     end
 
@@ -927,7 +927,7 @@ RegisterNetEvent("sky_jobs_base:propItems:useItem", function(data)
     })
 
     if not ok then
-        print(string.format("[sky_jobs_base][prop_items] item placement failed: unable to start placement for '%s'", model))
+        Sky.Debug("debug", string.format("[sky_jobs_base][prop_items] item placement failed: unable to start placement for '%s'", model))
     end
 end)
 

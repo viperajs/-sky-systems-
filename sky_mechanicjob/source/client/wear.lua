@@ -501,7 +501,7 @@ local function saveWearToServer(payload, sessionId)
     local res = Sky.Cb.Trigger("sky_mechanicjob:wear:save", payload)
     if type(res) ~= "table" or res.success ~= true then
         local errReason = (type(res) == "table" and res.error) or "unknown_error"
-        print(("[sky_mechanicjob][wear] Save failed for plate %s: %s"):format(tostring(payload.plate), tostring(errReason)))
+        Sky.Debug("debug", ("[sky_mechanicjob][wear] Save failed for plate %s: %s"):format(tostring(payload.plate), tostring(errReason)))
         return
     end
 
@@ -839,13 +839,13 @@ end
 RegisterNetEvent("sky_mechanicjob:wear:partRepaired")
 AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
     if type(payload) ~= "table" or type(payload.wear) ~= "table" then
-        print("[sky_mechanicjob][wear:partRepaired] payload check failed: payload is not a table or wear is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][wear:partRepaired] payload check failed: payload is not a table or wear is missing")
         return
     end
 
     local plateStr = sanitizePlate(payload.plate)
     if plateStr == "" then
-        print("[sky_mechanicjob][wear:partRepaired] payload check failed: payload plate is empty")
+        Sky.Debug("debug", "[sky_mechanicjob][wear:partRepaired] payload check failed: payload plate is empty")
         return
     end
 
@@ -864,7 +864,7 @@ AddEventHandler("sky_mechanicjob:wear:partRepaired", function(payload)
     end
 
     if targetVeh == 0 or not DoesEntityExist(targetVeh) then
-        print(("[sky_mechanicjob][wear:partRepaired] vehicle check failed: no vehicle entity found for plate %s"):format(tostring(plateStr)))
+        Sky.Debug("debug", ("[sky_mechanicjob][wear:partRepaired] vehicle check failed: no vehicle entity found for plate %s"):format(tostring(plateStr)))
         return
     end
 
@@ -925,23 +925,23 @@ exports("GetVehicleMileage", function(vehicleOrPlate)
         if WearState.active then
             return math.floor(tonumber(WearState.mileage) or 0)
         end
-        print("[sky_mechanicjob][GetVehicleMileage] argument check failed: no vehicle or plate provided and no active vehicle is tracked")
+        Sky.Debug("debug", "[sky_mechanicjob][GetVehicleMileage] argument check failed: no vehicle or plate provided and no active vehicle is tracked")
         return nil
     elseif type(vehicleOrPlate) == "number" then
         if vehicleOrPlate == 0 or not DoesEntityExist(vehicleOrPlate) then
-            print(("[sky_mechanicjob][GetVehicleMileage] vehicle check failed: invalid vehicle entity %s"):format(tostring(vehicleOrPlate)))
+            Sky.Debug("debug", ("[sky_mechanicjob][GetVehicleMileage] vehicle check failed: invalid vehicle entity %s"):format(tostring(vehicleOrPlate)))
             return nil
         end
         resolvedPlate = sanitizePlate(GetVehicleNumberPlateText(vehicleOrPlate))
     elseif type(vehicleOrPlate) == "string" then
         resolvedPlate = sanitizePlate(vehicleOrPlate)
     else
-        print(("[sky_mechanicjob][GetVehicleMileage] argument check failed: expected vehicle entity or plate, got %s"):format(type(vehicleOrPlate)))
+        Sky.Debug("debug", ("[sky_mechanicjob][GetVehicleMileage] argument check failed: expected vehicle entity or plate, got %s"):format(type(vehicleOrPlate)))
         return nil
     end
 
     if resolvedPlate == "" then
-        print("[sky_mechanicjob][GetVehicleMileage] plate check failed: resolved plate is empty")
+        Sky.Debug("debug", "[sky_mechanicjob][GetVehicleMileage] plate check failed: resolved plate is empty")
         return nil
     end
 
@@ -954,7 +954,7 @@ exports("GetVehicleMileage", function(vehicleOrPlate)
         return math.floor(tonumber(res.mileage) or 0)
     end
 
-    print(("[sky_mechanicjob][GetVehicleMileage] server lookup failed for plate %s"):format(tostring(resolvedPlate)))
+    Sky.Debug("debug", ("[sky_mechanicjob][GetVehicleMileage] server lookup failed for plate %s"):format(tostring(resolvedPlate)))
     return nil
 end)
 

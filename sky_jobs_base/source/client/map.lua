@@ -524,7 +524,7 @@ RegisterNUICallback("map:setWaypoint", function(data, cb)
         return
     end
 
-    print("[sky_jobs_base] map:setWaypoint failed: missing x/y coords")
+    Sky.Debug("debug", "[sky_jobs_base] map:setWaypoint failed: missing x/y coords")
     cb({ success = false, error = "missing_coords" })
 end)
 

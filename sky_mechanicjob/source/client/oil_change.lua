@@ -42,7 +42,7 @@ local FLUID_ITEM_MAP = {
 
 function isPedBelowVehicleForOilDrain(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][oil_change] below check failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] below check failed: vehicle is missing")
         return false
     end
 
@@ -55,12 +55,12 @@ function isPedBelowVehicleForOilDrain(vehicle)
     local vehCoords = GetEntityCoords(vehicle)
 
     if dist2d > 2.2 then
-        print(string.format("[sky_mechanicjob][oil_change] below check failed: too far under vehicle (distance=%.2f max=2.20)", dist2d))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][oil_change] below check failed: too far under vehicle (distance=%.2f max=2.20)", dist2d))
         return false
     end
 
     if pedCoords.z > vehCoords.z - 0.25 then
-        print(string.format("[sky_mechanicjob][oil_change] below check failed: ped is not below vehicle (pedZ=%.2f vehicleZ=%.2f)", pedCoords.z, vehCoords.z))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][oil_change] below check failed: ped is not below vehicle (pedZ=%.2f vehicleZ=%.2f)", pedCoords.z, vehCoords.z))
         return false
     end
 
@@ -71,7 +71,7 @@ end
 
 local function validateOilDrainPreconditions(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][oil_change] drain failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] drain failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -80,7 +80,7 @@ local function validateOilDrainPreconditions(vehicle)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][oil_change] drain failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] drain failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.OilChangeLeaveVehicle or "Leave the vehicle before draining the oil."
@@ -110,7 +110,7 @@ local function setupDrainAnimAndBarrel(vehicle)
 
     local barrelObj = CreateObjectNoOffset(barrelHash, spawnPos.x, spawnPos.y, spawnPos.z, true, true, false)
     if barrelObj == 0 or not DoesEntityExist(barrelObj) then
-        print("[sky_mechanicjob][oil_change] minigame setup failed: unable to spawn oil barrel prop")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] minigame setup failed: unable to spawn oil barrel prop")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.")
@@ -224,7 +224,7 @@ end
 
 function runUnderbodyNeonInstallAnim(vehicle, partId)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][neon_install] install failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][neon_install] install failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -235,7 +235,7 @@ function runUnderbodyNeonInstallAnim(vehicle, partId)
     local ped = PlayerPedId()
 
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][neon_install] install failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][neon_install] install failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = copy.leaveVehicle
@@ -277,7 +277,7 @@ end
 
 local function validateOilPourPreconditions(vehicle)
     if vehicle == 0 or not DoesEntityExist(vehicle) then
-        print("[sky_mechanicjob][oil_change] pour failed: vehicle is missing")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] pour failed: vehicle is missing")
         return false, {
             key = "radial.errors.generic",
             fallback = getNuiLocale("tablet.orders.vehicle_lost", "Connected vehicle is no longer available.")
@@ -286,7 +286,7 @@ local function validateOilPourPreconditions(vehicle)
 
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
-        print("[sky_mechanicjob][oil_change] pour failed: player is inside a vehicle")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] pour failed: player is inside a vehicle")
         return false, {
             key = "radial.errors.generic",
             fallback = tuningLocales.OilChangeLeaveVehicle or "Leave the vehicle before draining the oil."
@@ -295,7 +295,7 @@ local function validateOilPourPreconditions(vehicle)
 
     -- The hood may have been synced shut again since the Open Hood step (ensureVehicleHoodOpen).
     if not ensureVehicleHoodOpen(vehicle) then
-        print("[sky_mechanicjob][oil_change] pour failed: hood is closed")
+        Sky.Debug("debug", "[sky_mechanicjob][oil_change] pour failed: hood is closed")
         return false, {
             key = "radial.errors.generic",
             code = "hood_closed",

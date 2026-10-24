@@ -104,7 +104,7 @@ local function setupDialogCam(interactionData)
     end
 
     if npcEntity == 0 or not DoesEntityExist(npcEntity) then
-        print("[sky_mechanicjob][stolen_parts_dealer] camera failed: no dealer NPC entity found near interaction point")
+        Sky.Debug("debug", "[sky_mechanicjob][stolen_parts_dealer] camera failed: no dealer NPC entity found near interaction point")
         return
     end
 
@@ -150,7 +150,7 @@ local function openDealerUI(interactionData)
     local items = buildDealerItemsList()
 
     if #items == 0 then
-        print("[sky_mechanicjob][stolen_parts_dealer] open failed: no dealer items configured")
+        Sky.Debug("debug", "[sky_mechanicjob][stolen_parts_dealer] open failed: no dealer items configured")
         Sky.Show.Notification(
             dealerLocales.Title or "Parts dealer",
             dealerLocales.Failed or "Unable to sell parts right now.",

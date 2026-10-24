@@ -55,7 +55,7 @@ local function newClient(bones, wheelCount)
     env.vector3 = vec
     env.vec3 = vec
     env.json = { encode = function() return "[]" end, decode = function() return {} end }
-    env.Sky = { Config = { locale = "en" }, Math = { Trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end }, Cb = { Trigger = function(name, payload)
+    env.Sky = { Config = { locale = "en" }, Debug = function() end, Math = { Trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end }, Cb = { Trigger = function(name, payload)
         f.calls[#f.calls + 1] = { name = name, payload = payload }
         if name == "sky_mechanicjob:wear:prepareRepairInstall" then
             return { success = true, data = { part = payload.part, requiredItem = "wheels", removeRequiredItemAfterUse = true, flow = "wheel" } }

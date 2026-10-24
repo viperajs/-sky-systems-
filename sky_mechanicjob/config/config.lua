@@ -11,6 +11,10 @@ Config.PrimaryColor = "#EDC001"
 -- Use the shared /jobconfig UI for Config.Jobs. Set to false to use only the Lua job definitions below.
 Config.UseJobConfigurator = true
 
+-- Print developer debug messages (failed checks, prop/animation problems) in the F8 console.
+-- Also enables the /debugstancerdefault command. Keep false on a live server.
+Config.debug = false
+
 Config.ToggleFeatures = {
     instantTuning = false,
     partsDelivery = true,

@@ -28,6 +28,7 @@ local function newClient(skyBase)
     env.Citizen = { CreateThread = env.CreateThread, Wait = env.Wait }
     env.Sky = {
         Config = {},
+        Debug = function() end,
         Functions = { IsPlayerDead = function() return false end },
         Cb = { Trigger = function(name)
             if name == "sky_jobs_base:getRegisteredJobs" then return { "mechanic" } end

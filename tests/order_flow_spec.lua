@@ -528,6 +528,7 @@ local function newWorld(opts)
     cenv.TriggerServerEvent = function(name, ...) C.serverEvents[#C.serverEvents + 1] = { name = name, args = copy(table.pack(...)) } end
     cenv.Sky = {
         Config = { locale = "en" },
+        Debug = function() end,
         Math = { Trim = function(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end },
         Load = { Model = function() end, AnimDict = function() end },
         Show = {

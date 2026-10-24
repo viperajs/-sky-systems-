@@ -404,7 +404,7 @@ local function resetAudioForVehicle(vehicle)
 
     local audioName = GetDisplayNameFromVehicleModel(GetEntityModel(vehicle))
     if type(audioName) ~= "string" or audioName == "" or audioName == "CARNOTFOUND" then
-        print(string.format("[sky_mechanicjob][catalytic] audio reset failed: invalid model audio name %s", tostring(audioName)))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][catalytic] audio reset failed: invalid model audio name %s", tostring(audioName)))
         return
     end
 
@@ -535,7 +535,7 @@ local function spawnSmokeFxOnBone(vehicle, boneIdx, rpmScale)
     )
 
     if not handle or handle == 0 then
-        print(string.format("[sky_mechanicjob][catalytic] smoke effect failed: vehicle=%s bone=%s", tostring(vehicle), tostring(boneIdx)))
+        Sky.Debug("debug", string.format("[sky_mechanicjob][catalytic] smoke effect failed: vehicle=%s bone=%s", tostring(vehicle), tostring(boneIdx)))
         return
     end
 

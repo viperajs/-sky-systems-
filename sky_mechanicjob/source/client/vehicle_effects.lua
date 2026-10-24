@@ -194,7 +194,7 @@ local function spawnBackfireEffect(source, effectName, vehicle, offset, scale, d
     )
 
     if not handle or handle == 0 then
-        print(string.format(
+        Sky.Debug("debug", string.format(
             "[sky_mechanicjob][%s] backfire particle effect start failed: effect=%s vehicle=%s offset=(%.2f,%.2f,%.2f)",
             tostring(source), tostring(effectName), tostring(vehicle),
             offset.x, offset.y, offset.z

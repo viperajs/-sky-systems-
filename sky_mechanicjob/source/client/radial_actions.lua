@@ -990,7 +990,7 @@ exports("triggerRadialMenuAction", function(actionId)
     if not wheelStepOk then
         if actionId == "attach_wheel" then
             local errText = type(wheelStepErr) == "table" and (wheelStepErr.fallback or wheelStepErr.key or "unknown") or tostring(wheelStepErr)
-            print(("[sky_mechanicjob][wheel_attach][check] blocked by ensureWheelOrderStep (%s)"):format(errText))
+            Sky.Debug("debug", ("[sky_mechanicjob][wheel_attach][check] blocked by ensureWheelOrderStep (%s)"):format(errText))
         end
         return false, wheelStepErr
     end
@@ -1107,7 +1107,7 @@ exports("triggerRadialMenuAction", function(actionId)
     if actionId == "attach_wheel" then
         local nearestVeh = select(1, getNearestDetachWheelTarget())
         if nearestVeh ~= targetVeh then
-            print(("[sky_mechanicjob][wheel_attach][check] wrong nearest vehicle (nearest=%s target=%s)"):format(
+            Sky.Debug("debug", ("[sky_mechanicjob][wheel_attach][check] wrong nearest vehicle (nearest=%s target=%s)"):format(
                 tostring(nearestVeh), tostring(targetVeh)
             ))
             return false, { key = "radial.errors.generic", fallback = (tuningLocales and tuningLocales.WheelInstallWrongVehicle) or "Use this action on the connected order vehicle." }
@@ -1123,7 +1123,7 @@ exports("triggerRadialMenuAction", function(actionId)
 
         if not attachOk then
             local errText = type(attachErr) == "table" and (attachErr.fallback or attachErr.key or "unknown") or tostring(attachErr)
-            print(("[sky_mechanicjob][wheel_attach][check] tryAttachNearestVehicleWheel failed (%s)"):format(errText))
+            Sky.Debug("debug", ("[sky_mechanicjob][wheel_attach][check] tryAttachNearestVehicleWheel failed (%s)"):format(errText))
             return false, attachErr
         end
 
