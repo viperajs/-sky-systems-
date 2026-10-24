@@ -705,6 +705,12 @@ local function attachVehicleToLift(liftPoint, vehicle)
     local vehRotation = GetEntityRotation(vehicle, 2)
     local platformRotation = GetEntityRotation(liftPoint.platformEntity, 2)
 
+    -- positionZ only moves for the player operating the lift. The platform rides on the car
+    -- on every client, so its height is the lift's real height: a second mechanic taking over
+    -- a raised car still had it at the floor, so Down dropped the car and Up lifted it twice
+    -- as high (and the first mechanic later lowered it through the floor).
+    liftPoint.positionZ = math.max(liftPoint.floorZ, math.min(liftPoint.topZ, platformCoords.z))
+
     FreezeEntityPosition(liftPoint.platformEntity, false)
     FreezeEntityPosition(vehicle, true)
 
@@ -860,6 +866,14 @@ local function applySyncedDetach(liftPoint)
     liftPoint.attachedVehicle = 0
     liftPoint.syncedAttachment = false
     liftPoint.positionZ = liftPoint.floorZ
+end
+
+-- A raised car deleted on the lift (impound, garage, /dv) left the platform hanging at that
+-- height; the next car then sank through the floor on Down. The platform goes back to the
+-- floor and the lift stops.
+local function releaseLiftOfMissingVehicle(liftPoint)
+    applySyncedDetach(liftPoint)
+    liftPoint.motion = 0
 end
 
 -- ============================================================
@@ -1424,16 +1438,13 @@ local function processLiftMotionTick()
 
                 if liftPoint.attachedVehicle ~= 0 and not DoesEntityExist(liftPoint.attachedVehicle) then
                     Sky.Debug("debug", ("[sky_mechanicjob][lift] failed: attached vehicle missing for point '%s'"):format(liftPoint.key))
-                    if liftPoint.platformEntity ~= 0 and DoesEntityExist(liftPoint.platformEntity) then
-                        if IsEntityAttached(liftPoint.platformEntity) then
-                            DetachEntity(liftPoint.platformEntity, true, true)
-                            FreezeEntityPosition(liftPoint.platformEntity, true)
-                        end
-                    end
-                    liftPoint.attachedVehicle = 0
+                    releaseLiftOfMissingVehicle(liftPoint)
                 end
 
-                if liftPoint.attachedVehicle ~= 0 and not liftPoint.syncedAttachment then
+                -- At the floor and stopped. While going up the first ticks are within 2 cm of
+                -- the floor too: the car was released and attached again each tick, and other
+                -- players could be left with "released" while the car went up.
+                if liftPoint.attachedVehicle ~= 0 and not liftPoint.syncedAttachment and liftPoint.motion == 0 then
                     if liftPoint.positionZ <= (liftPoint.floorZ + 0.02) then
                         detachVehicleFromLift(liftPoint)
                     end
@@ -1887,6 +1898,19 @@ CreateThread(function()
         Wait(interval)
         if isLiftFeatureEnabled() then
             requestLiftSync()
+        end
+    end
+end)
+
+-- The motion loop only runs for the player operating a lift; everyone else's platform stayed
+-- in the air when the raised car was deleted.
+CreateThread(function()
+    while true do
+        Wait(2000)
+        for _, liftPoint in ipairs(State.pointList) do
+            if liftPoint.attachedVehicle ~= 0 and not DoesEntityExist(liftPoint.attachedVehicle) then
+                releaseLiftOfMissingVehicle(liftPoint)
+            end
         end
     end
 end)

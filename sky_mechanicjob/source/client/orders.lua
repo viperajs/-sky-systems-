@@ -1926,6 +1926,21 @@ function handleOilChangeLiftMotionComplete(vehicle, isRaised, isLowered)
     end
 end
 
+-- Steps waiting for the lift heard only the lift of the player operating it: when a colleague
+-- raised or lowered the car, the installer stayed at "Lift the vehicle".
+function syncInstallStepWithLift()
+    local step = tostring(OrderInstallState.simpleStep or "")
+    if step ~= "lift_vehicle" and step ~= "lower_vehicle" then return end
+    if type(getWorkshopLiftStateForVehicle) ~= "function" then return end
+
+    local veh = getVehicleFromOrderNetId()
+    if veh == 0 then return end
+    local liftState = getWorkshopLiftStateForVehicle(veh)
+    if liftState then
+        handleOilChangeLiftMotionComplete(veh, liftState.raised == true, liftState.atFloor == true)
+    end
+end
+
 function canToggleTuningFocus()
     local now = GetGameTimer()
     local readyAt = tonumber(TuningState and TuningState.focusToggleReadyAt) or 0

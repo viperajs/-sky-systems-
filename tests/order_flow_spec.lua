@@ -1123,4 +1123,24 @@ do
     assert(W.pedAnim == nil, "the sanding motion went on after the minigame: " .. tostring(W.pedAnim))
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped.")
+-- 15. A colleague raises the car on the lift: the install waiting at "Lift the vehicle" only
+--     heard the lift of the player operating it and stayed there.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    local state = C.env.OrderInstallState
+    state.active, state.vehicleNetId, state.vehicle = true, NET, VEH
+    state.part = { id = "neon_0", label = "Underglow", value = 1 }
+    W.run(function() C.env.startSimpleInstallState() end)
+    assert(C.env.resolveSimpleInstallFlow() == "underbody_neon" and state.simpleStep == "lift_vehicle", tostring(state.simpleStep))
+
+    C.env.getWorkshopLiftStateForVehicle = function() return W.liftState end
+    W.liftState = { raised = false, atFloor = true }
+    W.run(function() C.env.syncInstallStepWithLift() end)
+    assert(state.simpleStep == "lift_vehicle", "still waiting while the car is down")
+    W.liftState = { raised = true, atFloor = false }
+    W.run(function() C.env.syncInstallStepWithLift() end)
+    assert(state.simpleStep == "install_neon", "raised by a colleague: " .. tostring(state.simpleStep))
+end
+
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates.")

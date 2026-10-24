@@ -1203,7 +1203,12 @@ function showOrderInstallStepPrompt()
 end
 
 CreateThread(function()
+    local nextLiftCheckAt = 0
     while true do
+        if OrderInstallState.active and GetGameTimer() >= nextLiftCheckAt then
+            nextLiftCheckAt = GetGameTimer() + 500
+            pcall(syncInstallStepWithLift)
+        end
         Wait(showOrderInstallStepPrompt() and 0 or 250)
     end
 end)
