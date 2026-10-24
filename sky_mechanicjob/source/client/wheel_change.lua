@@ -1493,8 +1493,10 @@ local CONDITION_PROPERTY_KEYS = { "doorsBroken", "windowsBroken", "tyreBurst", "
 
 -- The vehicle just before an order part goes on. It is put back when the server does not count
 -- the install (the item gone at the last step, the order changed by a colleague, no answer):
--- the part stayed on the car and was saved while the order stayed open and refundable.
+-- the part stayed on the car and was saved while the order stayed open and refundable. The first
+-- one of an install is kept (a retried step, the paint after the primer).
 function rememberVehicleBeforeOrderPart(vehicle)
+    if OrderInstallState.propsBeforePart ~= nil then return end
     local props = Sky.Vehicle.new(vehicle):GetVehicleProperties()
     if type(props) == "table" then
         for _, key in ipairs(CONDITION_PROPERTY_KEYS) do props[key] = nil end

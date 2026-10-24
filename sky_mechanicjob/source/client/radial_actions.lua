@@ -955,6 +955,10 @@ local function runRadialMenuAction(actionId)
             return false, err
         end
 
+        -- The paint as it was before the primer: a repaint cancelled after sanding left the car
+        -- grey, and one the server did not count kept the new paint (the minigame shows it).
+        rememberVehicleBeforeOrderPart(veh)
+
         if actionId == "sand_vehicle" then
             local mgOk, mgErr = runTuningMinigame("spray_paint", veh, OrderInstallState.part, "sanding", true)
             if not mgOk then
@@ -971,7 +975,6 @@ local function runRadialMenuAction(actionId)
             return false, mgErr
         end
 
-        rememberVehicleBeforeOrderPart(veh)
         if not applyOrderPartToVehicle(veh, OrderInstallState.part) then
             return false, { key = "radial.errors.generic", fallback = getNuiLocale("tablet.orders.apply_failed", "Failed to apply this part on the vehicle.") }
         end

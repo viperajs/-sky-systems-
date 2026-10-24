@@ -583,11 +583,12 @@ local function newWorld(opts)
         Vehicle = {
             new = function(vehicle)
                 return {
-                    GetVehicleProperties = function() return { plate = W.veh.plate, model = W.veh.model, mods = copy(W.veh.mods), toggleMods = copy(W.veh.toggles) } end,
+                    GetVehicleProperties = function() return { plate = W.veh.plate, model = W.veh.model, mods = copy(W.veh.mods), toggleMods = copy(W.veh.toggles), paint = W.veh.paint } end,
                     SetVehicleProperties = function(_, props)
                         W.restoredProps = (W.restoredProps or 0) + 1
                         if props.mods then W.veh.mods = copy(props.mods) end
                         if props.toggleMods then W.veh.toggles = copy(props.toggleMods) end
+                        if props.paint then W.veh.paint = props.paint end
                     end,
                 }
             end,
@@ -1112,6 +1113,50 @@ do
     assert(states[#states] == false, "closed from the mechanic app")
 end
 
+-- 6i. A repaint puts the paint as it was back when it is cancelled after sanding (the car stayed
+--     primer grey) and when the server does not count it (the car kept the new paint: the
+--     painting minigame shows it before the part is applied).
+do
+    local function repaintOrder()
+        local W = newWorld({ job = "mechanic" })
+        W.openSelfService()
+        W.nui("tuning:apply", { id = "color_primary", value = 5 })
+        assert(W.nui("tuning:purchase", { method = "cash" }).success == true)
+        W.nui("close")
+        local env = W.client.env
+        W.veh.paint = "red"
+        env.runTuningMinigame = function(name, _, _, stage)
+            if name == "spray_paint" then W.veh.paint = stage == "sanding" and "primer" or "new (shown by the minigame)" end
+            return true
+        end
+        local apply = env.applyOrderPartToVehicle
+        env.applyOrderPartToVehicle = function(vehicle, part)
+            local ok = apply(vehicle, part)
+            if ok and part.id == "color_primary" then W.veh.paint = "new" end
+            return ok
+        end
+        W.player.items.spray_can = 1
+        assert(W.nui("tablet:setConnectedVehicle", { vehicleNetId = NET }).success == true)
+        local started = W.nui("orders:startInstall", { orderId = 1, partIndex = 1, vehicleNetId = NET })
+        assert(started.success == true, "repaint started: " .. tostring(started.error))
+        return W
+    end
+
+    local W = repaintOrder()
+    local ok, err = W.act("sand_vehicle")
+    assert(ok, "sanding: " .. tostring(err and err.fallback))
+    assert(W.veh.paint == "primer")
+    assert(W.act("cancel_repaint"))
+    assert(W.veh.paint == "red", "cancelled after sanding: " .. W.veh.paint)
+
+    W = repaintOrder()
+    assert(W.act("sand_vehicle"))
+    W.player.items.spray_can = 0
+    W.act("paint_vehicle")
+    assert(W.db.orders[1].status ~= "completed", "not counted without the spray can")
+    assert(W.veh.paint == "red", "not counted: " .. W.veh.paint)
+end
+
 -- 7. Another car connected (parked next to the customer's): the part went on the connected
 --    car while the order counted it as installed. It goes on the order's car now.
 do
@@ -1374,4 +1419,4 @@ do
     assert(W.veh.toggles[18] == true and W.db.orders[1].status == "completed" and (W.saves or 0) == saves + 1)
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car, the jobs tablet kept open after a mechanic app's back arrow.")
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped, lift steps following a lift a colleague operates, rims of another wheel type, a part taken off again when the server does not count the install, a removal handed to the vehicle's owner, finishing again after a failed finish, one step at a time, the catalytic converter checklist kept, a tyre smoke colour installed before the tyre smoke, a stance reset respawn only with control of the car, no stance to remove on a stock car, the jobs tablet kept open after a mechanic app's back arrow, the old paint back after a cancelled or uncounted repaint.")
