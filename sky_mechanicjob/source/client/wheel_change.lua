@@ -74,6 +74,9 @@ function runWheelDetachMinigame(mode, targetEntity, extraData)
     local modeType = (mode == "attach") and "attach" or "detach"
     local isAttach = (modeType == "attach")
     local isTableExtra = (type(extraData) == "table")
+    -- Order wheel jobs pass options too; only the catalytic converter is worked on lying under
+    -- the car. Any options table made the mechanic lie under the car to attach a wheel.
+    local isCatalytic = isTableExtra and extraData.target == "catalytic_converter"
 
     local busyErrStr, cancelErrStr, failErrStr
 
@@ -87,7 +90,7 @@ function runWheelDetachMinigame(mode, targetEntity, extraData)
         failErrStr = (tuningLocales and tuningLocales.DetachWheelMinigameFailed) or "You failed to loosen all bolts."
     end
 
-    if isTableExtra then
+    if isCatalytic then
         busyErrStr = (tuningLocales and tuningLocales.CatalyticMinigameBusy) or busyErrStr
         cancelErrStr = (tuningLocales and tuningLocales.CatalyticMinigameCanceled) or cancelErrStr
         failErrStr = (tuningLocales and tuningLocales.CatalyticMinigameFailed) or failErrStr
@@ -107,7 +110,7 @@ function runWheelDetachMinigame(mode, targetEntity, extraData)
     end
 
     local token = sessData.token
-    if isTableExtra then
+    if isCatalytic then
         startBelowVehicleWorkAnim(targetEntity)
     else
         startWheelWorkAnim(targetEntity)

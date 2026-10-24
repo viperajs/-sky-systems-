@@ -1006,7 +1006,9 @@ function startRepaintPointing()
 
     SetPedCurrentWeaponVisible(ped, false, true, true, true)
     SetPedConfigFlag(ped, 36, true)
-    Citizen.InvokeNative(0x2D72267B29F4B20A, ped, "task_mp_pointing", 0.5, 0, "anim@mp_point", 24)
+    -- The pointing move network. Its natives were called by four hashes that do not exist,
+    -- so the pose never played while painting or waxing.
+    TaskMoveNetworkByName(ped, "task_mp_pointing", 0.5, false, "anim@mp_point", 24)
     RemoveAnimDict("anim@mp_point")
 
     RepaintPointingActive = true
@@ -1017,7 +1019,7 @@ function stopRepaintPointing()
     if not RepaintPointingActive then return end
 
     local ped = PlayerPedId()
-    Citizen.InvokeNative(0xD01015B7316E1746, ped, "Stop")
+    RequestTaskMoveNetworkStateTransition(ped, "Stop")
 
     if not IsPedInjured(ped) then
         ClearPedSecondaryTask(ped)
@@ -1056,10 +1058,11 @@ function updateRepaintPointing()
     local rayHandle = Cast_3dRayPointToPoint(rayStart.x, rayStart.y, rayStart.z - 0.2, rayStart.x, rayStart.y, rayStart.z + 0.2, 0.4, 95, ped, 7)
     local _, hit = GetRaycastResult(rayHandle)
 
-    Citizen.InvokeNative(0xD5B3512262B9B06A, ped, "Pitch", pitch)
-    Citizen.InvokeNative(0xD5B3512262B9B06A, ped, "Heading", (relHeading * -1.0) + 1.0)
-    Citizen.InvokeNative(0xB0A6D637CD8F6942, ped, "isBlocked", hit)
-    Citizen.InvokeNative(0xB0A6D637CD8F6942, ped, "isFirstPerson", Citizen.InvokeNative(0xEE778F8C7E1142E2, Citizen.InvokeNative(0x19CAFA3C87F7C2FF)) == 4)
+    -- The move network takes the pitch as 0..1, like the heading.
+    SetTaskMoveNetworkSignalFloat(ped, "Pitch", relPitch)
+    SetTaskMoveNetworkSignalFloat(ped, "Heading", (relHeading * -1.0) + 1.0)
+    SetTaskMoveNetworkSignalBool(ped, "isBlocked", hit == true or hit == 1)
+    SetTaskMoveNetworkSignalBool(ped, "isFirstPerson", GetCamViewModeForContext(GetCamActiveViewModeContext()) == 4)
 end
 
 function clearCarJackState(resetVehicle)

@@ -358,6 +358,12 @@ local function newWorld(opts)
     cenv.IsModelValid = function() return true end
     cenv.IsModelInCdimage = function() return not W.brokenProps end
     cenv.HasModelLoaded = function() return true end
+    -- The player's animation (the carry pose).
+    cenv.HasAnimDictLoaded = function() return true end
+    cenv.TaskPlayAnim = function(ped, dict, clip) if ped == 101 then W.pedAnim = dict .. "/" .. clip end end
+    cenv.StopAnimTask = function(ped, dict, clip) if ped == 101 and W.pedAnim == dict .. "/" .. clip then W.pedAnim = nil end end
+    cenv.IsEntityPlayingAnim = function(ped, dict, clip) return ped == 101 and W.pedAnim == dict .. "/" .. clip end
+    cenv.ClearPedTasks = function(ped) if ped == 101 then W.pedAnim = nil end end
     local function createObject(model, x, y, z)
         local id = W.nextEntity
         W.nextEntity = W.nextEntity + 1
@@ -808,8 +814,10 @@ do
     W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
     W.pressE()
     assert(W.db.rows[1].status == "claiming" and #W.boxes() == 0)
+    assert(W.pedAnim == "anim@heists@box_carry@/idle", "carrying the box: " .. tostring(W.pedAnim))
 
     W.run(function() W.client.env.clearOrderInstallState() end)
+    assert(W.pedAnim == nil, "the carry pose ended with the box")
     W.advance(2000)
     assert(W.db.rows[1].status == "ready", "delivery back at the bay")
     assert(W.lastNotification() == "The delivery you were carrying was put back at the delivery bay.", tostring(W.lastNotification()))
@@ -820,4 +828,4 @@ do
     assert(W.db.rows[1].status == "claiming", "picked up again")
 end
 
-print("PASS: parts orders from the tablet, delivery timer, box placement near the player, unpacking, moved bays, catalogue changes, carry items (unpacked at the bay without a storage, directions and waypoint to the storage, the bay prompt while carrying, a visible engine, a cleaned-away prop, a delivery put back when other work starts), no-bay/order error messages, client duty without the duty system.")
+print("PASS: parts orders from the tablet, delivery timer, box placement near the player, unpacking, moved bays, catalogue changes, carry items (unpacked at the bay without a storage, directions and waypoint to the storage, the bay prompt while carrying, a visible engine, a cleaned-away prop, a delivery put back when other work starts, ending the carry pose), no-bay/order error messages, client duty without the duty system.")

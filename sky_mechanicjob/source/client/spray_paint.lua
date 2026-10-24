@@ -208,6 +208,15 @@ end
 
 -- ── Tool Equipping ────────────────────────────────────
 
+-- The sanding motion loops on the upper body until it is stopped. Only the pointing pose
+-- was stopped, so the mechanic kept sanding with empty hands after the sanding step and
+-- kept the motion under the spray pose while painting.
+local function stopSandingAnim(ped)
+    if IsEntityPlayingAnim(ped, REPAINT_SANDING_ANIM_DICT, REPAINT_SANDING_ANIM_CLIP, 3) then
+        StopAnimTask(ped, REPAINT_SANDING_ANIM_DICT, REPAINT_SANDING_ANIM_CLIP, 1.0)
+    end
+end
+
 function equipRepaintTool(stage)
     local ped = PlayerPedId()
     releaseOrderHeldProp()
@@ -249,6 +258,7 @@ function equipRepaintTool(stage)
     OrderInstallState.heldProp = propObj
 
     if stage == "painting" then
+        stopSandingAnim(ped)
         startRepaintPointing()
         return
     end
@@ -507,6 +517,7 @@ function runRepaintInstallMinigame(vehicle, partData, mode, skipSanding)
     stopSprayPtfx()
     stopSandingPtfx()
     stopRepaintPointing()
+    stopSandingAnim(PlayerPedId())
     releaseOrderHeldProp()
 
     local wasSuccess = RepaintMinigameState.resolved and RepaintMinigameState.success

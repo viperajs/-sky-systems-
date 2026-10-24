@@ -95,7 +95,7 @@ function Sky.Info.GetWeaponStats(weapon)
     local hash = type(weapon) == "number" and weapon or joaat(weapon)
 
     local blob = "\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-    Citizen.InvokeNative(0x247F0F3A96C2B4E0, hash, blob, Citizen.ReturnResultAnyway())
+    Citizen.InvokeNative(0xD92C739EE34C9EBA, hash, blob, Citizen.ReturnResultAnyway()) -- GET_WEAPON_HUD_STATS
 
     local hudDamage = getIntFromBlob(blob, 8, 0)
     local hudSpeed = getIntFromBlob(blob, 8, 8)

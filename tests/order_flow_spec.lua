@@ -510,6 +510,9 @@ local function newWorld(opts)
     cenv.IsModelValid = function() return true end
     cenv.HasModelLoaded = function() return true end
     cenv.HasAnimDictLoaded = function() return true end
+    cenv.HasNamedPtfxAssetLoaded = function() return true end
+    cenv.StartParticleFxLoopedOnEntity = function() return 0 end
+    cenv.StartParticleFxLoopedOnEntityBone = function() return 0 end
     -- The mechanic's animation and heading, and the props the engine hoist moves.
     cenv.TaskPlayAnim = function(ped, dict, clip) if ped == PED then W.pedAnim = dict .. "/" .. clip end end
     cenv.StopAnimTask = function(ped, dict, clip) if ped == PED and W.pedAnim == dict .. "/" .. clip then W.pedAnim = nil end end
@@ -531,6 +534,17 @@ local function newWorld(opts)
     cenv.AttachEntityToEntity = function(child, parent) if W.objects[child] then W.objects[child].attachedTo = parent end end
     cenv.DetachEntity = function(entity) if W.objects[entity] then W.objects[entity].attachedTo = nil end end
     cenv.IsEntityAttachedToEntity = function(a, b) return W.objects[a] ~= nil and W.objects[a].attachedTo == b end
+    cenv.TaskStartScenarioInPlace = function(ped, scenario) if ped == PED then W.pedScenario = scenario end end
+    cenv.TaskMoveNetworkByName = function(ped, network) if ped == PED then W.moveNetwork, W.signals = network, {} end end
+    cenv.SetTaskMoveNetworkSignalFloat = function(_, name, value) W.signals[name] = value end
+    cenv.SetTaskMoveNetworkSignalBool = function(_, name, value) W.signals[name] = value end
+    cenv.RequestTaskMoveNetworkStateTransition = function(_, state) W.moveNetworkState = state end
+    cenv.GetGameplayCamRelativePitch = function() return W.camPitch or 0.0 end
+    cenv.GetGameplayCamRelativeHeading = function() return 0.0 end
+    cenv.Cos = function(deg) return math.cos(math.rad(deg)) end
+    cenv.Sin = function(deg) return math.sin(math.rad(deg)) end
+    cenv.GetRaycastResult = function() return 1, false end
+    cenv.IsControlJustPressed = function(_, control) return W.pressEscape == true and control == 202 end
     cenv.CreateObjectNoOffset = function(_, x, y, z)
         W.nextObject = W.nextObject + 1
         W.objects[W.nextObject] = { pos = vec(x, y, z) }
@@ -550,7 +564,7 @@ local function newWorld(opts)
         Config = { locale = "en" },
         Debug = function() end,
         Math = { Trim = function(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end },
-        Load = { Model = function() end, AnimDict = function() end },
+        Load = { Model = function() end, AnimDict = function() end, NamedPtfxAsset = function() end },
         Show = {
             Notification = function(_, message, kind) C.notifications[#C.notifications + 1] = { msg = message, kind = kind } end,
             HelpNotification = function(text, key) C.help = { text = text, key = key } end,
@@ -644,8 +658,9 @@ local function newWorld(opts)
     C.load("sky_mechanicjob/source/client/orders.lua")
     C.load("sky_mechanicjob/source/client/change_parts.lua")
     C.load("sky_mechanicjob/source/client/wheel_change.lua")
+    C.load("sky_mechanicjob/source/client/spray_paint.lua")
 
-    -- Files not under test (import.lua, spray_paint.lua).
+    -- Files not under test (import.lua).
     cenv.saveTuningForVehicle = function() W.saves = (W.saves or 0) + 1 end
     cenv.isRepaintOrderPart = function(part) return tostring(part and part.id or ""):find("^color_") ~= nil end
 
@@ -1059,4 +1074,53 @@ do
     assert(W.actions().take_engine_hoist and W.act("take_engine_hoist"), "the hoist is taken at its new spot")
 end
 
-print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) and the mechanic facing the engine bay.")
+-- 13. Work poses. A wheel put on for an order is done kneeling at the wheel; any options table
+--     used to switch to the catalytic converter's pose, lying under the car.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    local function playWheelMinigame(options)
+        W.onAwait = function()
+            W.poseDuringMinigame = W.pedScenario or W.pedAnim
+            local start = W.lastMessage("wheelDetach:minigame:start")
+            W.nui("wheelDetach:result", { token = start.payload.token, success = true })
+        end
+        W.pedScenario, W.pedAnim = nil, nil
+        return W.run(function() return C.env.runWheelDetachMinigame("attach", VEH, options) end)
+    end
+    assert(playWheelMinigame({ attachUsesDirtyWheel = false }))
+    assert(W.poseDuringMinigame ~= "WORLD_HUMAN_VEHICLE_MECHANIC", "a wheel was put on lying under the car")
+    assert(playWheelMinigame({ target = "catalytic_converter", boltCount = 4, requiredRotation = 300 }))
+    assert(W.poseDuringMinigame == "WORLD_HUMAN_VEHICLE_MECHANIC", "the catalytic converter is worked on under the car")
+end
+
+-- 14. Painting and waxing: the pointing pose plays (its natives were called by hashes that do
+--     not exist) and gets its pitch as 0..1; the sanding motion stops when painting starts and
+--     when the minigame ends.
+do
+    local W = newWorld({ job = "mechanic" })
+    local C = W.client
+    W.run(function() C.env.equipRepaintTool("sanding") end)
+    local SANDING = C.env.REPAINT_SANDING_ANIM_DICT .. "/" .. C.env.REPAINT_SANDING_ANIM_CLIP
+    assert(W.pedAnim == SANDING, "sanding: " .. tostring(W.pedAnim))
+    W.run(function() C.env.equipRepaintTool("painting") end)
+    assert(W.pedAnim == nil, "the sanding motion went on while painting")
+    assert(W.moveNetwork == "task_mp_pointing", "pointing pose started")
+    W.camPitch = 42.0
+    C.env.updateRepaintPointing()
+    assert(W.signals.Pitch == 1.0 and W.signals.isFirstPerson ~= nil, "pitch sent as 0..1: " .. tostring(W.signals.Pitch))
+    W.camPitch = -70.0
+    C.env.updateRepaintPointing()
+    assert(W.signals.Pitch == 0.0)
+    C.env.stopRepaintPointing()
+    assert(W.moveNetworkState == "Stop", "pointing pose stopped")
+    W.run(function() C.env.releaseOrderHeldProp() end)
+
+    -- Sanding cancelled with ESC: the motion stops with the minigame.
+    W.pressEscape = true
+    local ok = W.run(function() return C.env.runRepaintInstallMinigame(VEH, { id = "color_primary", value = 5 }, "sanding", true) end)
+    assert(ok == false and W.lastMessage("repaint:minigame:start"), "sanding minigame ran and was cancelled")
+    assert(W.pedAnim == nil, "the sanding motion went on after the minigame: " .. tostring(W.pedAnim))
+end
+
+print("PASS: tuning orders from the self-service menu, the Orders tablet, connecting the vehicle, engine swap (hood, minigame) and turbo installs, order completion, a hood synced shut, the Open Hood step offered again, parts handed to the vehicle's owner, control requests, Install without a connected vehicle, the order's car used over a connected other car, the order's car out of reach, the radial menu prompt at the vehicle, the engine hoist (taken where it stands, pushed, attached, put back after the swap or a cancel, taken again when lost) the mechanic facing the engine bay, the wheel and catalytic converter poses, the painting pose and the sanding motion stopped.")

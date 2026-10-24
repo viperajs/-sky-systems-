@@ -766,6 +766,12 @@ function playBoxCarryAnim(ped)
     return true
 end
 
+function stopBoxCarryAnim(ped)
+    if IsEntityPlayingAnim(ped, "anim@heists@box_carry@", "idle", 3) then
+        StopAnimTask(ped, "anim@heists@box_carry@", "idle", 1.0)
+    end
+end
+
 function attachForkliftCarryProp(vehicle, itemName, itemConfig)
     if OrderInstallState.heldProp ~= 0 and DoesEntityExist(OrderInstallState.heldProp) then
         if OrderInstallState.heldCarryTransportVehicle == vehicle then
@@ -946,7 +952,12 @@ function clearOrderInstallState()
         )
     end
 
+    local carriedByHand = type(carried) == "table" and OrderInstallState.heldCarryTransportMode == "hand"
     releaseOrderHeldProp()
+    -- The carry pose loops until it is stopped; the box went but the arms stayed up.
+    if carriedByHand then
+        stopBoxCarryAnim(PlayerPedId())
+    end
     stopNonMinigameInstallProgress()
 
     if RepaintMinigameState.active then
