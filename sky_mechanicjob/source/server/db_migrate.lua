@@ -6,7 +6,8 @@
 -- 3: parts deliveries tables from older versions get every column parts_delivery.lua uses.
 -- 4: missing columns are added on MySQL too (the statements were MariaDB only).
 -- 5: vehicle history tables without a date column get one (the history tablet failed on them).
-local SCHEMA_VERSION = "5"
+-- 6: required columns of older tables that this resource never writes accept NULL.
+local SCHEMA_VERSION = "6"
 local SCHEMA_VERSION_KVP = "sky_mechanicjob_schema_version"
 
 local function executeSchemaMigrations()
@@ -173,18 +174,23 @@ local function executeSchemaMigrations()
         { "sky_mechanic_vehicle_registry", "notes", "TEXT DEFAULT NULL" },
     }
 
+    -- The table's columns by lower-case name, or false when they cannot be read.
     local columnsByTable = {}
-    local function hasColumn(tableName, columnName)
+    local function getColumns(tableName)
         local columns = columnsByTable[tableName]
         if columns == nil then
             local ok, rows = pcall(function()
-                return MySQL.query.await("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", { tableName })
+                return MySQL.query.await([[
+                    SELECT COLUMN_NAME AS column_name, COLUMN_TYPE AS column_type, IS_NULLABLE AS is_nullable,
+                        COLUMN_DEFAULT AS column_default, COLUMN_KEY AS column_key, EXTRA AS extra,
+                        CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name
+                    FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+                ]], { tableName })
             end)
             if ok and type(rows) == "table" then
                 columns = {}
                 for _, row in ipairs(rows) do
-                    local name = row.COLUMN_NAME or row.column_name
-                    if name then columns[string.lower(tostring(name))] = true end
+                    if row.column_name then columns[string.lower(tostring(row.column_name))] = row end
                 end
             else
                 -- Not known: the table is left alone and checked again on the next start.
@@ -194,13 +200,38 @@ local function executeSchemaMigrations()
             end
             columnsByTable[tableName] = columns
         end
-        return columns == false or columns[string.lower(columnName)] == true
+        return columns
+    end
+
+    local function hasColumn(tableName, columnName)
+        local columns = getColumns(tableName)
+        return columns == false or columns[string.lower(columnName)] ~= nil
     end
 
     for _, column in ipairs(addedColumns) do
         local tableName, columnName, definition = column[1], column[2], column[3]
         if not hasColumn(tableName, columnName) then
             run(("ALTER TABLE `%s` ADD COLUMN `%s` %s"):format(tableName, columnName, definition))
+        end
+    end
+
+    -- A table from an older version can have a required column without a default that this
+    -- resource never writes; every insert then failed ("Field 'properties' doesn't have a
+    -- default value"). Such a column accepts NULL and keeps its data. Primary keys and columns
+    -- with extras (auto increment, generated, on update) are left alone.
+    for _, query in ipairs(tables) do
+        local tableName = query:match("CREATE TABLE IF NOT EXISTS `([^`]+)`")
+        local known = {}
+        for columnName in query:gmatch("\n%s*`([^`]+)`") do known[string.lower(columnName)] = true end
+        for name, row in pairs(tableName and getColumns(tableName) or {}) do
+            if not known[name] and row.is_nullable == "NO" and row.column_default == nil
+                and row.column_key ~= "PRI" and (row.extra or "") == "" and row.column_type then
+                local definition = tostring(row.column_type)
+                if row.character_set_name and row.collation_name then
+                    definition = ("%s CHARACTER SET %s COLLATE %s"):format(definition, row.character_set_name, row.collation_name)
+                end
+                run(("ALTER TABLE `%s` MODIFY COLUMN `%s` %s NULL"):format(tableName, row.column_name, definition))
+            end
         end
     end
 

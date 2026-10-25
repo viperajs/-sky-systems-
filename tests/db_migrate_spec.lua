@@ -27,17 +27,32 @@ local function run(schema, kvp)
                     if column then table.insert(schema[created], column) end
                 end
             end
+            -- A column is its name (nullable text) or { name, type, nullable, default, key, extra, charset, collation }.
             if query:find("information_schema") then
                 local rows = {}
-                for _, column in ipairs(schema[params[1]] or {}) do rows[#rows + 1] = { COLUMN_NAME = column } end
+                for _, column in ipairs(schema[params[1]] or {}) do
+                    if type(column) == "string" then column = { name = column } end
+                    rows[#rows + 1] = {
+                        column_name = column.name, column_type = column.type or "longtext",
+                        is_nullable = column.nullable == false and "NO" or "YES", column_default = column.default,
+                        column_key = column.key or "", extra = column.extra or "",
+                        character_set_name = column.charset, collation_name = column.collation
+                    }
+                end
                 return rows
             end
             local tableName, column = query:match("^ALTER TABLE `([^`]+)` ADD COLUMN `([^`]+)`")
             if tableName then
                 for _, existing in ipairs(schema[tableName] or {}) do
-                    if existing == column then error("Duplicate column name '" .. column .. "'") end
+                    if (type(existing) == "table" and existing.name or existing) == column then error("Duplicate column name '" .. column .. "'") end
                 end
                 table.insert(schema[tableName], column)
+            end
+            local modifiedTable, modifiedColumn = query:match("^ALTER TABLE `([^`]+)` MODIFY COLUMN `([^`]+)` .- NULL$")
+            if modifiedTable then
+                for _, existing in ipairs(schema[modifiedTable] or {}) do
+                    if type(existing) == "table" and existing.name == modifiedColumn then existing.nullable = true end
+                end
             end
             return {}
         end },
@@ -75,4 +90,28 @@ for _, column in ipairs(schema.sky_mechanic_vehicle_history) do history[column] 
 assert(history.date, "the date column was added after schema version 4")
 for _, log in ipairs(db.logs) do assert(log.level ~= "error", "no errors: " .. log.msg) end
 
-print("PASS: the schema migration adds missing columns on MySQL (no MariaDB-only statements) and leaves complete tables alone; a history table gets its date column.")
+-- A tuning table from an older version with a required column this resource never writes, on a
+-- server that already stored schema version 5. Next to it columns that stay as they are: an
+-- auto-increment key, a required column with a default and a nullable one.
+local properties = { name = "properties", nullable = false, type = "longtext", charset = "utf8mb4", collation = "utf8mb4_general_ci" }
+schema = {
+    sky_mechanic_vehicle_tuning = {
+        { name = "id", nullable = false, type = "int(11)", key = "PRI", extra = "auto_increment" },
+        "plate", "tuning", "stance", "rgb", "nitro", "custom_handling", properties,
+        { name = "owner", nullable = false, type = "varchar(64)", default = "" },
+        { name = "notes", type = "text" },
+    }
+}
+db = run(schema, { sky_mechanicjob_schema_version = "5" })
+assert(count(db, "MODIFY COLUMN") == 1, "only the required column without a default is changed")
+assert(count(db, "^ALTER TABLE `sky_mechanic_vehicle_tuning` MODIFY COLUMN `properties` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL$") == 1,
+    "the properties column accepts NULL and keeps its type and collation")
+assert(properties.nullable == true, "the properties column is nullable")
+for _, log in ipairs(db.logs) do assert(log.level ~= "error", "no errors: " .. log.msg) end
+assert(db.kvp.sky_mechanicjob_schema_version == "6", "schema version 6 stored")
+
+-- The next start finds nothing left to change.
+db = run(schema, {})
+assert(count(db, "MODIFY COLUMN") == 0, "a nullable column is not changed again")
+
+print("PASS: the schema migration adds missing columns on MySQL (no MariaDB-only statements) and leaves complete tables alone; a history table gets its date column; a required column of an older table that the resource never writes accepts NULL.")
