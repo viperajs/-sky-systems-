@@ -72,7 +72,7 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getHistory", function(source, data)
         SELECT id, plate, action, description, mechanic_identifier, mechanic_name, price, date
         FROM sky_mechanic_vehicle_history
         WHERE plate = @plate
-        ORDER BY date DESC
+        ORDER BY date DESC, id DESC
         LIMIT 100
     ]], { ["@plate"] = plate }) or {}
 

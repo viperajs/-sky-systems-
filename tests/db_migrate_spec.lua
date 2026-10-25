@@ -2,8 +2,8 @@
 -- Runs sky_mechanicjob's schema migration against a fake MySQL 8 database: tables from an older
 -- schema get their missing columns without the MariaDB-only "ADD COLUMN IF NOT EXISTS".
 
-local function run(schema)
-    local db = { queries = {}, kvp = {}, logs = {} }
+local function run(schema, kvp)
+    local db = { queries = {}, kvp = kvp or {}, logs = {} }
     local env = setmetatable({}, { __index = _G })
     env.Config = {}
     env.Functions = { Log = function(level, msg, ...) db.logs[#db.logs + 1] = { level = level, msg = msg:format(...) } end }
@@ -66,4 +66,13 @@ assert(count(db, "ALTER TABLE `sky_mechanic_vehicle_tuning`") == 0, "a complete 
 for _, log in ipairs(db.logs) do assert(log.level ~= "error", "no errors: " .. log.msg) end
 assert(db.kvp.sky_mechanicjob_schema_version ~= nil, "schema version stored")
 
-print("PASS: the schema migration adds missing columns on MySQL (no MariaDB-only statements) and leaves complete tables alone.")
+-- A history table without the date column the history tablet sorts by, on a server that
+-- already stored schema version 4.
+schema = { sky_mechanic_vehicle_history = { "id", "plate", "action", "description", "mechanic_identifier", "mechanic_name", "price" } }
+db = run(schema, { sky_mechanicjob_schema_version = "4" })
+local history = {}
+for _, column in ipairs(schema.sky_mechanic_vehicle_history) do history[column] = true end
+assert(history.date, "the date column was added after schema version 4")
+for _, log in ipairs(db.logs) do assert(log.level ~= "error", "no errors: " .. log.msg) end
+
+print("PASS: the schema migration adds missing columns on MySQL (no MariaDB-only statements) and leaves complete tables alone; a history table gets its date column.")
