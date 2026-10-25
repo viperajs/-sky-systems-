@@ -5,7 +5,8 @@
 
 -- 3: parts deliveries tables from older versions get every column parts_delivery.lua uses.
 -- 4: missing columns are added on MySQL too (the statements were MariaDB only).
-local SCHEMA_VERSION = "4"
+-- 5: vehicle history tables without a date column get one (the history tablet failed on them).
+local SCHEMA_VERSION = "5"
 local SCHEMA_VERSION_KVP = "sky_mechanicjob_schema_version"
 
 local function executeSchemaMigrations()
@@ -166,6 +167,7 @@ local function executeSchemaMigrations()
         { "sky_mechanic_vehicle_history", "mechanic_identifier", "VARCHAR(64) DEFAULT NULL" },
         { "sky_mechanic_vehicle_history", "mechanic_name", "VARCHAR(100) DEFAULT NULL" },
         { "sky_mechanic_vehicle_history", "price", "INT DEFAULT 0" },
+        { "sky_mechanic_vehicle_history", "date", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" },
         { "sky_mechanic_vehicle_registry", "image_url", "TEXT DEFAULT NULL" },
         { "sky_mechanic_vehicle_registry", "tags", "LONGTEXT DEFAULT NULL" },
         { "sky_mechanic_vehicle_registry", "notes", "TEXT DEFAULT NULL" },
