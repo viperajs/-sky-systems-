@@ -30,7 +30,8 @@ Config.CommandPermissions = {
     multijobadmin = { "god", "superadmin", "admin" },
     -- /dutytest [playerId] [on|off] - Debug command to force a duty state on a player
     dutytest = { "god", "superadmin", "admin" },
-    -- /addcctvcam - Save the current camera position as a CCTV camera
+    -- /addcctvcam [cctv|speedcam] [@job|@all] [name] - Save your current view (where you stand and look)
+    -- as a CCTV camera. Without @..., your own job sees it (every job when you have no job).
     addcctvcam = { "god", "superadmin", "admin" },
     -- Create and delete exclusion zones on the tablet map (not a command)
     exclusionzones = { "god", "superadmin", "admin" },
@@ -171,6 +172,15 @@ Config.Cctv = {
     -- or group keys for whole job groups (e.g. "police"). Leave nil to keep the
     -- default police/ambulance CCTV app access.
     -- allowedJobs = { "fib" },
+    -- Fixed cameras without the database (/addcctvcam stores them there). job = nil: every job.
+    -- heading is the direction the camera looks (the F8 `heading` of a ped facing that way).
+    cameras = {
+        -- { name = "Pillbox Entrance", type = "cctv", job = "ambulance", coords = vector3(298.6, -584.5, 46.0), heading = 70.0, pitch = -20.0 },
+    },
+    -- Dashcams of the job's vehicles that are out of the job garage or driven by an on-duty colleague
+    -- (the same vehicles as the map's Vehicle Board).
+    dashcams = true,
+    -- Bodycams list on-duty colleagues; with requireBodycamItem only those carrying bodycamItem.
     requireBodycamItem = true,
     bodycamItem = "bodycam",
     -- Enabling it records the last Config.Cctv.recordBufferMinutes minutes and can noticeably increase client CPU usage.

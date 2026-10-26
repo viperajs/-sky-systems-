@@ -571,35 +571,68 @@ local function canViewBodycam(viewerJob, target)
     return true, targetJob
 end
 
+-- Jobs whose bodycams and dashcams a viewer job sees: Config.Cctv.bodycamViewJobs, otherwise its own.
+local function cameraJobs(viewerJob)
+    local cctvCfg = Config and Config.Cctv or {}
+    local viewJobs = type(cctvCfg.bodycamViewJobs) == "table" and cctvCfg.bodycamViewJobs[viewerJob] or nil
+    if type(viewJobs) == "string" then return { [viewJobs] = true } end
+    if type(viewJobs) ~= "table" then return { [viewerJob] = true } end
+    local jobs = {}
+    for _, name in pairs(viewJobs) do
+        if type(name) == "string" then jobs[name] = true end
+    end
+    return jobs
+end
+
+-- A fixed camera as the app expects it: a string id (search, ?cameraId= links), a label (card
+-- title) and a numeric target (cctv.lua). cctv.lua looks along heading + 180.
+local function fixedCamera(id, target, cam)
+    local name = tostring(cam.name or "Camera"):sub(1, 100)
+    return {
+        id = id,
+        target = target,
+        type = cam.type == "speedcam" and "speedcam" or "cctv",
+        name = name,
+        label = name,
+        location = cam.location or name,
+        coords = { x = tonumber(cam.x) or 0.0, y = tonumber(cam.y) or 0.0, z = tonumber(cam.z) or 0.0 },
+        heading = tonumber(cam.heading) or 0.0,
+        pitch = tonumber(cam.pitch) or 0.0,
+        durability = tonumber(cam.durability) or 100,
+        status = "online"
+    }
+end
+
 Sky.Cb.Register("sky_jobs_base:cctv:getCameras", function(source)
     local src = tonumber(source)
     local jobKey, err = getEmployment(src, true)
     if not jobKey then return { success = false, error = err } end
-    if not (MySQL and MySQL.query and MySQL.query.await) then
-        return { success = true, data = { cameras = {} } }
+    local cctvCfg = Config and Config.Cctv or {}
+    local cameras = {}
+
+    -- Config.Cctv.cameras; a negative target never matches a database camera.
+    for i, cam in ipairs(type(cctvCfg.cameras) == "table" and cctvCfg.cameras or {}) do
+        local c = type(cam) == "table" and cam.coords
+        if c and (cam.job == nil or cam.job == "" or tostring(cam.job):lower() == jobKey:lower()) then
+            cameras[#cameras + 1] = fixedCamera(("CFG-%d"):format(i), -i, {
+                type = cam.type, name = cam.name, location = cam.location, x = c.x, y = c.y, z = c.z,
+                heading = ((tonumber(cam.heading) or 0.0) + 180.0) % 360.0, pitch = cam.pitch
+            })
+        end
     end
 
-    local rows = MySQL.query.await([[
-        SELECT id, type, name, job_key, x, y, z, heading, pitch, durability
-        FROM sky_jobs_cctv_cameras
-        WHERE job_key IS NULL OR job_key = '' OR job_key = @job_key
-        ORDER BY name ASC
-    ]], { ["@job_key"] = jobKey }) or {}
-
-    local cameras = {}
-    for _, row in ipairs(rows) do
-        cameras[#cameras + 1] = {
-            id = row.id,
-            target = row.id,
-            type = row.type,
-            name = row.name,
-            location = row.name,
-            coords = { x = row.x, y = row.y, z = row.z },
-            heading = row.heading,
-            pitch = row.pitch,
-            durability = row.durability,
-            status = "online"
-        }
+    -- Cameras placed with /addcctvcam.
+    if MySQL and MySQL.query and MySQL.query.await then
+        local ok, rows = pcall(MySQL.query.await, [[
+            SELECT id, type, name, job_key, x, y, z, heading, pitch, durability
+            FROM sky_jobs_cctv_cameras
+            WHERE job_key IS NULL OR job_key = '' OR job_key = @job_key
+            ORDER BY name ASC
+        ]], { ["@job_key"] = jobKey })
+        if not ok then print(("[sky_jobs_base] Loading the CCTV cameras failed: %s"):format(tostring(rows))) end
+        for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
+            cameras[#cameras + 1] = fixedCamera(tostring(row.id), row.id, row)
+        end
     end
 
     for _, s in ipairs(GetPlayers()) do
@@ -622,53 +655,95 @@ Sky.Cb.Register("sky_jobs_base:cctv:getCameras", function(source)
         end
     end
 
+    -- Dashcams: the same job vehicles as the map's Vehicle Board (its "Open CCTV" asks for DC-<plate>).
+    if cctvCfg.dashcams ~= false and Sky_Jobs.Garage and Sky_Jobs.Garage.ListFleet then
+        for _, entry in ipairs(Sky_Jobs.Garage.ListFleet(cameraJobs(jobKey))) do
+            local driver = entry.driver and (Sky_Jobs.GetPlayerFullName and Sky_Jobs.GetPlayerFullName(entry.driver) or GetPlayerName(entry.driver))
+            cameras[#cameras + 1] = {
+                id = "DC-" .. entry.plate,
+                target = entry.plate,
+                type = "dashcam",
+                name = entry.label,
+                label = entry.label == entry.plate and entry.plate or ("%s (%s)"):format(entry.label, entry.plate),
+                location = driver or entry.plate,
+                coords = entry.coords,
+                durability = entry.health,
+                status = "online"
+            }
+        end
+    end
+
     return { success = true, data = { cameras = cameras } }
 end)
 
--- Registers a fixed surveillance/speed camera at the calling player's current
--- position. `sky_policejob:cctvcam:adjustView` (a separate resource, not part
--- of this repo) still owns live swivel/view-adjust for `cctv`-type cameras;
--- if that resource isn't installed the swivel controls simply no-op.
+-- /addcctvcam [cctv|speedcam] [@job|@all] [name...] saves the caller's current camera view
+-- (position and direction, first person aims best) as a fixed camera. Without @..., the
+-- caller's job sees it (every job when the caller has none). The client answers with its pose.
+-- `sky_policejob:cctvcam:adjustView` (a separate resource, not part of this repo) still owns
+-- live swivel/view-adjust for `cctv`-type cameras; without it the swivel controls stay local.
+local pendingCameraAdds = {}
+
 RegisterCommand("addcctvcam", function(source, args)
     local src = tonumber(source)
     if not src or src == 0 then
-        print("[sky_jobs_base] addcctvcam must be run in-game, standing at the camera location.")
+        print("[sky_jobs_base] addcctvcam must be run in-game, looking where the camera should look.")
         return
     end
     if not Sky_Jobs.HasPermission(src, "addcctvcam") then
         TriggerClientEvent("sky_base:notification", src, "CCTV", "You do not have permission to use this command.", "error", 5000)
         return
     end
+    pendingCameraAdds[src] = { args = args, expires = os.time() + 10 }
+    TriggerClientEvent("sky_jobs_base:cctv:capturePose", src)
+end, false)
+
+RegisterNetEvent("sky_jobs_base:cctv:addCamera", function(pose)
+    local src = source
+    local pending = pendingCameraAdds[src]
+    pendingCameraAdds[src] = nil
+    if not pending or pending.expires < os.time() or not Sky_Jobs.HasPermission(src, "addcctvcam") then return end
+    if type(pose) ~= "table" or type(pose.coords) ~= "table" then return end
     if not (MySQL and MySQL.insert and MySQL.insert.await) then return end
 
-    local camType = args[1]
-    if camType ~= "cctv" and camType ~= "speedcam" then
-        camType = "cctv"
-    end
+    local x, y, z = tonumber(pose.coords.x), tonumber(pose.coords.y), tonumber(pose.coords.z)
+    local ped = GetPlayerPed(src)
+    if not (x and y and z) or not ped or ped == 0 or #(GetEntityCoords(ped) - vector3(x, y, z)) > 50.0 then return end
 
-    local name = table.concat(args, " ", 2):sub(1, 100)
+    local args = type(pending.args) == "table" and pending.args or {}
+    local camType = args[1] == "speedcam" and "speedcam" or "cctv"
+    local first = (args[1] == "cctv" or args[1] == "speedcam") and 2 or 1
+    -- An unemployed admin adds a camera every job sees.
+    local jobKey = (Sky_Jobs.GetEmployment and Sky_Jobs.GetEmployment(src)) or nil
+    local scope = type(args[first]) == "string" and args[first]:match("^@(.*)$")
+    if scope then
+        jobKey = (scope ~= "" and scope:lower() ~= "all") and scope or nil
+        first = first + 1
+    end
+    local name = table.concat(args, " ", first):sub(1, 100)
     if name == "" then name = camType .. " camera" end
 
-    local ped = GetPlayerPed(src)
-    local coords = GetEntityCoords(ped)
-    local heading = GetEntityHeading(ped)
-
-    local id = MySQL.insert.await([[
+    local ok, id = pcall(MySQL.insert.await, [[
         INSERT INTO sky_jobs_cctv_cameras (type, name, job_key, x, y, z, heading, pitch, durability)
-        VALUES (@type, @name, @job_key, @x, @y, @z, @heading, 0, 100)
+        VALUES (@type, @name, @job_key, @x, @y, @z, @heading, @pitch, 100)
     ]], {
         ["@type"] = camType,
         ["@name"] = name,
-        -- An unemployed admin adds a camera every job sees.
-        ["@job_key"] = (Sky_Jobs.GetEmployment and Sky_Jobs.GetEmployment(src)) or nil,
-        ["@x"] = coords.x,
-        ["@y"] = coords.y,
-        ["@z"] = coords.z,
-        ["@heading"] = heading
+        ["@job_key"] = jobKey,
+        ["@x"] = x,
+        ["@y"] = y,
+        ["@z"] = z,
+        ["@heading"] = (tonumber(pose.heading) or 0.0) % 360.0,
+        ["@pitch"] = math.max(-89.0, math.min(89.0, tonumber(pose.pitch) or 0.0))
     })
+    id = ok and id or nil
+    TriggerClientEvent("sky_base:notification", src, "CCTV",
+        id and ("Camera '%s' added for %s."):format(name, jobKey or "every job") or "Adding the camera failed.",
+        id and "success" or "error", 5000)
+end)
 
-    TriggerClientEvent("sky_base:notification", src, "CCTV", id and ("Camera '%s' added."):format(name) or "Adding the camera failed.", id and "success" or "error", 5000)
-end, false)
+AddEventHandler("playerDropped", function()
+    pendingCameraAdds[source] = nil
+end)
 
 Sky.Cb.Register("sky_jobs_base:bodycam:getRecordings", function(source)
     local jobKey, err = getEmployment(tonumber(source), true)

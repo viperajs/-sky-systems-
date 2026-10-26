@@ -995,6 +995,13 @@ local function ensureJobsBaseTables()
                 `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX `idx_job` (`job`, `id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ]],
+        [[
+            CREATE TABLE IF NOT EXISTS `sky_jobs_chat_profiles` (
+                `identifier` VARCHAR(64) NOT NULL PRIMARY KEY,
+                `image_url` VARCHAR(1024) DEFAULT NULL,
+                `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]]
     }
 
@@ -1007,6 +1014,15 @@ local function ensureJobsBaseTables()
     ensureColumn("sky_jobs_chat_messages", "is_read", "TINYINT(1) NOT NULL DEFAULT 0")
     ensureColumn("sky_jobs_calendar_events", "color", "VARCHAR(16) DEFAULT NULL")
     ensureColumn("sky_jobs_chat_messages", "image_url", "VARCHAR(1024) DEFAULT NULL")
+    -- A gallery table from another version without these columns made every gallery
+    -- (and the profile photo picker) fail with load_failed.
+    ensureColumn("sky_jobs_gallery_photos", "image_id", "VARCHAR(128) DEFAULT NULL")
+    ensureColumn("sky_jobs_gallery_photos", "folder", "VARCHAR(20) NOT NULL DEFAULT 'camera'")
+    ensureColumn("sky_jobs_gallery_photos", "media_type", "VARCHAR(10) NOT NULL DEFAULT 'image'")
+    ensureColumn("sky_jobs_gallery_photos", "metadata", "TEXT DEFAULT NULL")
+    ensureColumn("sky_jobs_gallery_photos", "taken_by", "VARCHAR(100) DEFAULT NULL")
+    ensureColumn("sky_jobs_gallery_photos", "taken_by_identifier", "VARCHAR(64) DEFAULT NULL")
+    ensureColumn("sky_jobs_gallery_photos", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     local chatIdLength = columnLength("sky_jobs_chat_messages", "chat_id")
     if chatIdLength and chatIdLength < 160 then
         runSchemaStatement("ALTER TABLE `sky_jobs_chat_messages` MODIFY `chat_id` VARCHAR(160) NOT NULL")
@@ -1247,7 +1263,10 @@ function Sky_Jobs.Gallery.List(job, limit, offset)
         SELECT id, url, image_id, folder, media_type, metadata, taken_by, UNIX_TIMESTAMP(created_at) AS created_ts
         FROM sky_jobs_gallery_photos WHERE job = ? ORDER BY id DESC LIMIT ? OFFSET ?
     ]], { job, limit, offset })
-    if not ok then return nil, "load_failed" end
+    if not ok then
+        print(("[sky_jobs_base] Loading the %s gallery failed: %s"):format(job, tostring(rows)))
+        return nil, "load_failed"
+    end
     local photos = {}
     for _, row in ipairs(type(rows) == "table" and rows or {}) do photos[#photos + 1] = galleryPhoto(row) end
     return photos
@@ -1388,6 +1407,23 @@ local function memberRow(member, job, info, me)
     }
 end
 
+-- Sets row.image_url to each member's chat profile photo (sky_jobs_chat_profiles).
+local function addProfilePhotos(rows)
+    local placeholders, params = {}, {}
+    for _, row in ipairs(rows) do
+        placeholders[#placeholders + 1] = "?"
+        params[#params + 1] = row.identifier
+    end
+    if #params == 0 then return rows end
+    local ok, photos = pcall(MySQL.query.await, ("SELECT identifier, image_url FROM sky_jobs_chat_profiles WHERE identifier IN (%s)"):format(table.concat(placeholders, ",")), params)
+    local byIdentifier = {}
+    for _, photo in ipairs(ok and type(photos) == "table" and photos or {}) do
+        byIdentifier[photo.identifier] = photo.image_url
+    end
+    for _, row in ipairs(rows) do row.image_url = byIdentifier[row.identifier] end
+    return rows
+end
+
 local function memberRows(src)
     local job = Sky_Jobs.GetEmployment(src)
     if not job then return { success = false, error = "no_job" } end
@@ -1400,7 +1436,7 @@ local function memberRows(src)
         if a.grade ~= b.grade then return a.grade > b.grade end
         return tostring(a.name) < tostring(b.name)
     end)
-    return { success = true, data = rows }
+    return { success = true, data = addProfilePhotos(rows) }
 end
 
 -- -----------------------------------------------------
@@ -1509,6 +1545,84 @@ local function chatRecipients(ctx, chat)
     return onlineSourcesFor(chat.participants)
 end
 
+-- True when `sender` already wrote in this private chat: a colleague from another job (or
+-- a secondary job, or who left the job) who messaged the caller can always be answered.
+local function hasWrittenIn(chatId, sender)
+    local ok, row = pcall(MySQL.single.await, "SELECT 1 AS present FROM sky_jobs_chat_messages WHERE chat_id = ? AND sender_identifier = ? LIMIT 1", { chatId, sender })
+    return ok and row ~= nil
+end
+
+-- Everyone the caller has a private chat with, newest first: { identifier, name? }, where
+-- name is what the partner last signed their messages with.
+local function chatPartners(me)
+    local ok, rows = pcall(MySQL.query.await, [[
+        SELECT sender_identifier, recipient_identifier, sender_name FROM sky_jobs_chat_messages
+        WHERE recipient_identifier IS NOT NULL AND (sender_identifier = ? OR recipient_identifier = ?)
+        ORDER BY id DESC LIMIT 500
+    ]], { me, me })
+    local partners, byIdentifier = {}, {}
+    for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
+        local other = row.sender_identifier == me and row.recipient_identifier or row.sender_identifier
+        if type(other) == "string" and other ~= "" and other ~= me then
+            local partner = byIdentifier[other]
+            if not partner and #partners < 50 then
+                partner = { identifier = other }
+                byIdentifier[other] = partner
+                partners[#partners + 1] = partner
+            end
+            if partner and not partner.name and row.sender_identifier == other then
+                partner.name = row.sender_name
+            end
+        end
+    end
+    return partners
+end
+
+-- Directory row for a chat partner outside the caller's job roster.
+local function partnerRow(partner)
+    local src = onlineSourcesFor({ partner.identifier })[1]
+    local job, name
+    if src then
+        job, name = Sky_Jobs.GetEmployment(src), GetPlayerFullName(src)
+    else
+        local okJob, offlineJob = pcall(function() return Sky.FW.GetJob(partner.identifier) end)
+        job = okJob and type(offlineJob) == "string" and not isUnemployedJob(offlineJob) and offlineJob or nil
+    end
+    local info = job and getJobInfo(job)
+    local grade = src and job and Sky_Jobs.PlayerCache.GetJobGrade(src) or nil
+    return {
+        id = partner.identifier,
+        identifier = partner.identifier,
+        online_source = src,
+        source = src,
+        name = name or partner.name or partner.identifier,
+        grade = grade,
+        grade_label = grade and gradeLabel(info, grade) or nil,
+        job = job,
+        job_label = info and info.label or job,
+        onduty = src ~= nil and job ~= nil and Sky_Jobs.PlayerCache.IsOnDuty(src),
+        isOnline = src ~= nil,
+        is_self = false
+    }
+end
+
+-- The chat directory: the caller's job plus everyone they have a private chat with, so the
+-- chat list shows their names and their messages can be answered.
+local function chatDirectory(src)
+    local result = memberRows(src)
+    local me = Sky_Jobs.GetPlayerIdentifier(src)
+    if not result.success or not me then return result end
+    local listed, extra = {}, {}
+    for _, row in ipairs(result.data) do listed[row.identifier] = true end
+    for _, partner in ipairs(chatPartners(me)) do
+        if not listed[partner.identifier] then
+            extra[#extra + 1] = partnerRow(partner)
+        end
+    end
+    for _, row in ipairs(addProfilePhotos(extra)) do result.data[#result.data + 1] = row end
+    return result
+end
+
 Sky.Cb.Register("sky_jobs_base:chat:getMessages", function(source, payload)
     local ctx = chatContext(source)
     if not ctx then return { success = false, error = "no_job" } end
@@ -1569,7 +1683,7 @@ Sky.Cb.Register("sky_jobs_base:chat:sendMessage", function(source, data)
 
     local chat, err = resolveChat(ctx, data)
     if not chat then return { success = false, error = err } end
-    if chat.scope == "private" and not getJobRoster(ctx.job)[chat.target] then
+    if chat.scope == "private" and not getJobRoster(ctx.job)[chat.target] and not hasWrittenIn(chat.chatId, chat.target) then
         return { success = false, error = "not_a_member" }
     end
     lastChatSend[ctx.src] = now
@@ -1808,7 +1922,21 @@ Sky.Cb.Register("sky_jobs_base:chat:leaveGroup", function(source, data)
 end)
 
 Sky.Cb.Register("sky_jobs_base:chat:setProfilePhoto", function(source, data)
-    return { success = false, error = "upload_not_configured" }
+    local ctx = chatContext(source)
+    if not ctx then return { success = false, error = "no_job" } end
+    local url = type(data) == "table" and (data.image_url or data.imageUrl) or nil
+    if url == nil or url == "" then
+        local ok = pcall(MySQL.update.await, "DELETE FROM sky_jobs_chat_profiles WHERE identifier = ?", { ctx.me })
+        if not ok then return { success = false, error = "save_failed" } end
+        return { success = true, data = {} }
+    end
+    if not Sky_Jobs.Uploads.IsAllowedUrl(url) then return { success = false, error = "invalid_url" } end
+    local ok = pcall(MySQL.query.await, [[
+        INSERT INTO sky_jobs_chat_profiles (identifier, image_url) VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE image_url = VALUES(image_url)
+    ]], { ctx.me, url })
+    if not ok then return { success = false, error = "save_failed" } end
+    return { success = true, data = { image_url = url } }
 end)
 
 -- -----------------------------------------------------
@@ -1935,8 +2063,9 @@ Sky.Cb.Register("sky_jobs_base:getJobMembers", function(source)
     return memberRows(tonumber(source))
 end)
 
+-- The chat's member directory (the management app uses getJobMembers).
 Sky.Cb.Register("sky_jobs_base:getAllJobMembers", function(source)
-    return memberRows(tonumber(source))
+    return chatDirectory(tonumber(source))
 end)
 
 -- qbx_core: change the grade of the job itself (works offline and for secondary jobs).
@@ -3568,7 +3697,26 @@ Sky.Cb.Register("sky_jobs_base:map:getOfficers", function(source)
         end
     end
 
-    return { success = true, data = { officers = officers, speedcams = {}, vehicles = {}, trackers = {} } }
+    -- Vehicle Board: the visible jobs' vehicles that are out or driven by an on-duty colleague.
+    -- "Open CCTV" on a vehicle opens its dashcam (DC-<plate>, cctv:getCameras).
+    local vehicles = {}
+    for _, entry in ipairs(Sky_Jobs.Garage and Sky_Jobs.Garage.ListFleet and Sky_Jobs.Garage.ListFleet(visible) or {}) do
+        vehicles[#vehicles + 1] = {
+            id = entry.plate,
+            plate = entry.plate,
+            label = entry.label,
+            job = entry.job,
+            netId = NetworkGetNetworkIdFromEntity(entry.vehicle),
+            coords = entry.coords,
+            durability = entry.health,
+            status = entry.driver and "active" or "offline",
+            driver = entry.driver and GetPlayerFullName(entry.driver) or nil,
+            -- Shows the panel's "Set waypoint" button.
+            isPoliceVehicle = true
+        }
+    end
+
+    return { success = true, data = { officers = officers, speedcams = {}, vehicles = vehicles, trackers = {} } }
 end)
 
 -- The server gets a presigned URL, the client's NUI captures and uploads the frame

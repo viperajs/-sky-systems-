@@ -122,6 +122,51 @@ local function worldPlates()
     return plates
 end
 
+-- Job vehicles in the world, for the tablet map's Vehicle Board and the CCTV app's dashcams:
+-- garage vehicles of `jobs` ({ [job] = true }) that are out, and any vehicle an on-duty
+-- employee of those jobs drives. Each entry: vehicle, plate, label, job, driver (server id
+-- or nil), coords, health (0-100, engine).
+function Garage.ListFleet(jobs)
+    local drivers = {}
+    for _, srcStr in ipairs(GetPlayers()) do
+        local src = tonumber(srcStr)
+        local ped = src and GetPlayerPed(src)
+        if ped and ped ~= 0 then drivers[ped] = src end
+    end
+
+    local garageRows = {}
+    local ok, rows = pcall(MySQL.query.await, "SELECT job, plate, model, name FROM sky_jobs_garage_vehicles WHERE state = 'out'")
+    for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
+        if jobs[row.job] then garageRows[row.plate] = row end
+    end
+
+    local fleet, seen = {}, {}
+    for _, vehicle in ipairs(GetAllVehicles()) do
+        local plate = Garage.NormalizePlate(GetVehicleNumberPlateText(vehicle))
+        if plate and not seen[plate] then
+            local row = garageRows[plate]
+            local driver = drivers[GetPedInVehicleSeat(vehicle, -1)]
+            local driverJob = driver and Sky_Jobs.RequireEmployee(driver, true)
+            if row or (driverJob and jobs[driverJob]) then
+                seen[plate] = true
+                local c = GetEntityCoords(vehicle)
+                local label = row and ((row.name ~= nil and row.name ~= "") and row.name or row.model) or plate
+                fleet[#fleet + 1] = {
+                    vehicle = vehicle,
+                    plate = plate,
+                    label = tostring(label),
+                    job = row and row.job or driverJob,
+                    driver = driver,
+                    coords = { x = c.x, y = c.y, z = c.z },
+                    health = math.floor(math.max(0.0, math.min(1000.0, GetVehicleEngineHealth(vehicle) or 1000.0)) / 10 + 0.5)
+                }
+            end
+        end
+    end
+    table.sort(fleet, function(a, b) return a.label < b.label end)
+    return fleet
+end
+
 -- A vehicle marked "out" whose entity is gone (destroyed, cleaned up, server restart) can be
 -- taken out again.
 local function isOut(row, world)
