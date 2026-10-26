@@ -59,6 +59,11 @@ end)
 
 -- ── Server Callback: Get Vehicle History ─────────────
 
+local function formatPrice(price)
+    local ok, text = pcall(function() return Sky.Currency.Format(price) end)
+    return ok and type(text) == "string" and text ~= "" and text or tostring(price)
+end
+
 Sky.Cb.Register("sky_mechanicjob:vehicles:getHistory", function(source, data)
     if not Functions.IsMechanicOnDuty(source) then
         return { success = false, error = "not_authorized", data = { history = {} } }
@@ -78,6 +83,10 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getHistory", function(source, data)
 
     local historyList = {}
     for _, row in ipairs(rows) do
+        -- The tablet's Service History reads actionLabel, actionType, createdAt and
+        -- performedByName; without them every entry read "Action · Unknown date · By: Unknown".
+        local description = type(row.description) == "string" and row.description ~= "" and row.description or nil
+        local price = math.floor(tonumber(row.price) or 0)
         historyList[#historyList + 1] = {
             id = row.id,
             plate = row.plate,
@@ -86,7 +95,12 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getHistory", function(source, data)
             mechanic_identifier = row.mechanic_identifier,
             mechanic_name = row.mechanic_name,
             price = row.price,
-            date = row.date
+            date = row.date,
+            actionType = row.action,
+            actionKey = row.action,
+            actionLabel = description and price > 0 and ("%s · %s"):format(description, formatPrice(price)) or description,
+            createdAt = row.date,
+            performedByName = row.mechanic_name
         }
     end
 

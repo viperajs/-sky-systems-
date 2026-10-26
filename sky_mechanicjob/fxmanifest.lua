@@ -27,6 +27,7 @@ client_scripts {
 	'source/client/vehicle_care.lua',
 	'source/client/tuning.lua',
 	'source/client/custom_tuning.lua',
+	'source/client/tuning_camera.lua',
 	'source/client/stance_kit.lua',
 	'source/client/radial_actions.lua',
 	'source/client/engine_swap.lua',

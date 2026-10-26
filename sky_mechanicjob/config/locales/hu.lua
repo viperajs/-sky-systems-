@@ -292,7 +292,7 @@ Locales["hu"] = {
         app = {
             title = "Önkiszolgáló hangolás",
             admin_title = "Admin Tuning",
-            subtitle = "Nyomja meg a SPACE gombot a kamera szabad mozgásának váltásához hangolás közben."
+            subtitle = "Nyomja meg a SPACE gombot a kamera szabad mozgásának váltásához hangolás közben, a H gombot a kamera jármű körüli forgatásához (Shift+H az ellenkező irányba)."
         },
         currency = {
             symbol = "$"
@@ -639,7 +639,8 @@ Locales["hu"] = {
                     unknownDate = "Ismeretlen dátum",
                     status = {
                         open = "Nyissa meg",
-                        completed = "Befejezve"
+                        completed = "Befejezve",
+                        refunded = "Visszatérítve"
                     }
                 },
                 history = {

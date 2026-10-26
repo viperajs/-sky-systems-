@@ -19,6 +19,12 @@ local STANCE_LIMITS = {
     suspensionHeight = 2.0
 }
 
+local MIN_TRACK_WIDTH = 0.2
+local TRACK_KEYS = {
+    trackFront = true, trackRear = true,
+    trackFrontLeft = true, trackFrontRight = true, trackRearLeft = true, trackRearRight = true
+}
+
 local function sanitizePlate(plate)
     if type(plate) ~= "string" then return "" end
     local trimmed = Sky and Sky.Math and Sky.Math.Trim and Sky.Math.Trim(plate)
@@ -38,6 +44,10 @@ local function sanitizeStance(stance)
     local cleaned = {}
     for key, limit in pairs(STANCE_LIMITS) do
         cleaned[key] = clampNumber(stance[key], -limit, limit)
+        -- A track width under 0.2 puts the wheels inside the body (the rims seemed to vanish).
+        if TRACK_KEYS[key] and cleaned[key] and math.abs(cleaned[key]) < MIN_TRACK_WIDTH then
+            cleaned[key] = nil
+        end
     end
     cleaned.wheelSize = clampNumber(stance.wheelSize, 0.05, 5.0)
     cleaned.wheelWidth = clampNumber(stance.wheelWidth, 0.05, 5.0)

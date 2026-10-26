@@ -292,7 +292,7 @@ Locales["se"] = {
         app = {
             title = "Självbetjänad trimning",
             admin_title = "Admin-trimning",
-            subtitle = "Tryck SPACE för att växla fri kamerarörelse under trimning."
+            subtitle = "Tryck SPACE för att växla fri kamerarörelse under trimning och H för att vrida kameran runt fordonet (Shift+H åt andra hållet)."
         },
         currency = {
             symbol = "SEK"
@@ -639,7 +639,8 @@ Locales["se"] = {
                     unknownDate = "Okänt datum",
                     status = {
                         open = "Öppen",
-                        completed = "Slutförd"
+                        completed = "Slutförd",
+                        refunded = "Återbetald"
                     }
                 },
                 history = {

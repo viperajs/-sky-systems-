@@ -1043,7 +1043,9 @@ RegisterNUICallback("tuning:purchase", function(data, cb)
         end
     end
 
-    if pendingTotal <= 0 and (not isFreeTuning or not hasParts) then
+    -- Only an empty basket stays here. A basket that costs nothing (hidden public prices, free
+    -- options) never reached the server: no order was made and nothing was saved.
+    if not hasParts then
         captureOptionBaselines()
         TuningState.snapshotProps = Sky.Vehicle.new(TuningState.vehicle):GetVehicleProperties()
         TuningState.antiLagSnapshot = AntiLag.GetPersistedState(TuningState.vehicle)

@@ -482,10 +482,17 @@ function VehiclePersistence.SaveLights(vehicle)
     return true
 end
 
+local function effectMode(record)
+    return math.floor(math.max(0, math.min(3, tonumber(record.mode) or 0)))
+end
+
+-- The RGB controller's record. Its colours are those of its last save, so with its effect off
+-- they repainted every later neon or xenon colour on each driver entry: only running effects
+-- are restored.
 local function applyPersistedRgb(vehicle, rgb)
     if type(rgb) ~= "table" then return end
 
-    local neon = type(rgb.neon) == "table" and rgb.neon or nil
+    local neon = type(rgb.neon) == "table" and effectMode(rgb.neon) ~= RgbController.NEON_EFFECT_MODES.off and rgb.neon or nil
     if neon then
         local color = colorRecord(neon.color)
         RgbController.BindNeonEffectVehicle(vehicle)
@@ -494,7 +501,7 @@ local function applyPersistedRgb(vehicle, rgb)
         RgbController.SetNeonMode(vehicle, math.floor(math.max(0, math.min(3, tonumber(neon.mode) or 0))))
     end
 
-    local xenon = type(rgb.xenon) == "table" and rgb.xenon or nil
+    local xenon = type(rgb.xenon) == "table" and effectMode(rgb.xenon) ~= RgbController.XENON_EFFECT_MODES.off and rgb.xenon or nil
     if xenon then
         local color = colorRecord(xenon.color)
         RgbController.BindXenonEffectVehicle(vehicle)
@@ -553,6 +560,14 @@ function VehiclePersistence.LoadForVehicle(vehicle)
     end
 
     applyPersistedRgb(vehicle, state.rgb)
+
+    -- Garages (ox_lib, qb-core) restore only the xenon colour index, so a custom colour is kept
+    -- by the server and put back here while the xenon lights are on with no colour index.
+    local xenonColor = colorRecord(state.xenonCustom)
+    if xenonColor and IsToggleModOn(vehicle, 22) and GetVehicleXenonLightsColor(vehicle) == 255
+        and colorRecord(Entity(vehicle).state["sky_mechanicjob:xenonCustomColor"]) == nil then
+        XenonSync.SetCustomColor(vehicle, xenonColor)
+    end
 
     return true
 end

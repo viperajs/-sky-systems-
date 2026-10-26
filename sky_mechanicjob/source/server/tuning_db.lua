@@ -263,6 +263,7 @@ function TuningDB.GetVehicleProperties(plate)
     if tuningRecord then
         properties._skyMechanicTuning = {
             paint = tuningRecord.tuning and tuningRecord.tuning.paint or nil,
+            xenonCustom = tuningRecord.tuning and tuningRecord.tuning.xenonCustom or nil,
             stance = tuningRecord.stance,
             rgb = tuningRecord.rgb,
             nitro = tuningRecord.nitro,
@@ -331,6 +332,20 @@ local function mergeProperties(stored, properties)
     return stored
 end
 
+-- The custom xenon colour of a properties snapshot: { r, g, b }, false when the snapshot has a
+-- xenon colour index (no custom colour), nil when it says nothing about the xenon colour.
+-- Garages keep only the index (ox_lib has no custom xenon, qb-core expects another format), so
+-- the custom colour is kept in the tuning record and put back by the client on load.
+local function savedXenonCustom(properties)
+    if properties.xenonColor == nil and properties.customXenonColor == nil then return nil end
+    local color = properties.customXenonColor
+    if tonumber(properties.xenonColor) ~= 255 or type(color) ~= "table" then return false end
+    local r, g, b = tonumber(color.r or color[1]), tonumber(color.g or color[2]), tonumber(color.b or color[3])
+    if not r or not g or not b then return false end
+    local function byte(v) return math.floor(math.max(0, math.min(255, v))) end
+    return { byte(r), byte(g), byte(b) }
+end
+
 --- Save vehicle properties into framework table and sky tuning table. Merges into the
 --- stored properties; keys missing from the snapshot are kept.
 ---@param plate string
@@ -356,17 +371,20 @@ function TuningDB.SaveVehicleProperties(plate, properties)
         end
     end
 
-    if type(properties._skyMechanicTuning) == "table" then
-        local st = properties._skyMechanicTuning
-        -- The tuning JSON also holds anti-lag / two-step state; only the paint is replaced.
+    local st = type(properties._skyMechanicTuning) == "table" and properties._skyMechanicTuning or {}
+    local xenonCustom = savedXenonCustom(properties)
+    local current = (st.paint ~= nil or xenonCustom ~= nil) and TuningDB.GetVehicleTuning(cleanPlate) or nil
+    local currentTuning = current and type(current.tuning) == "table" and current.tuning or {}
+    if xenonCustom == false and currentTuning.xenonCustom == nil then xenonCustom = nil end
+    if type(properties._skyMechanicTuning) == "table" or xenonCustom ~= nil then
+        -- The tuning JSON also holds anti-lag / two-step state; only the paint and the custom
+        -- xenon colour are replaced.
         local tuning = nil
-        if st.paint ~= nil then
-            local current = TuningDB.GetVehicleTuning(cleanPlate)
+        if st.paint ~= nil or xenonCustom ~= nil then
             tuning = {}
-            if current and type(current.tuning) == "table" then
-                for key, value in pairs(current.tuning) do tuning[key] = value end
-            end
-            tuning.paint = st.paint
+            for key, value in pairs(currentTuning) do tuning[key] = value end
+            if st.paint ~= nil then tuning.paint = st.paint end
+            if xenonCustom ~= nil then tuning.xenonCustom = xenonCustom or nil end
         end
         TuningDB.SaveVehicleTuning(cleanPlate, {
             tuning = tuning,

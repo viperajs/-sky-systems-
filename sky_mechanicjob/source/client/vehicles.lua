@@ -8,10 +8,8 @@ local function getVehicleModelLabel(modelOrHash)
         return nil
     end
 
-    local hash = modelOrHash
-    if type(modelOrHash) == "string" then
-        hash = joaat(modelOrHash)
-    end
+    -- ESX rows give the model hash as text.
+    local hash = tonumber(modelOrHash) or joaat(modelOrHash)
 
     if type(hash) == "number" and hash ~= 0 then
         local displayName = GetDisplayNameFromVehicleModel(hash)

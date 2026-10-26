@@ -16,6 +16,9 @@ local PERSIST_THROTTLE_MS = 1200
 local MAX_SUSPENSION_HEIGHT = 2.0
 local MAX_CAMBER = 9.0
 local MAX_TRACK_WIDTH = 3.0
+-- SetVehicleWheelXOffset is a wheel's distance from the car's centre line. Below this the wheels
+-- sit inside the body: the rims "vanished" while still fitted. No real track is that narrow.
+local MIN_TRACK_WIDTH = 0.2
 
 local UNSUPPORTED_CLASSES = {
     [8] = true,   -- Motorcycles
@@ -262,21 +265,18 @@ local function resolveVehicleDefaultStance(vehicle)
     local cached = StanceKit.GetCachedDefaultForVehicle(vehicle)
     if type(cached) == "table" then return cached end
 
+    -- A saved default holds the car's own camber and track widths (taken from a stock copy of
+    -- it). They were set to 0 here, which pulled every wheel into the middle of the car.
     local loaded = StanceKit.LoadPersistedForVehicle(vehicle)
     if type(loaded) == "table" then
-        local sanitized = sanitizeStanceDefault(loaded)
-        sanitized.fCamberFront = 0.0
-        sanitized.fCamberRear = 0.0
-        sanitized.trackFront = 0.0
-        sanitized.trackRear = 0.0
-        sanitized.trackFrontLeft = 0.0
-        sanitized.trackFrontRight = 0.0
-        sanitized.trackRearLeft = 0.0
-        sanitized.trackRearRight = 0.0
-        return sanitized
+        return sanitizeStanceDefault(loaded)
     end
 
-    return getDefaultStanceState()
+    -- Without a default the car's own track widths are unknown: the wheels stay where they are.
+    local unknown = getDefaultStanceState()
+    unknown.trackFront, unknown.trackRear = nil, nil
+    unknown.trackFrontLeft, unknown.trackFrontRight, unknown.trackRearLeft, unknown.trackRearRight = nil, nil, nil, nil
+    return unknown
 end
 
 local function hasNonZeroStance(st)
@@ -302,32 +302,39 @@ local function applyHandlingCamber(vehicle, st)
     end
 end
 
+local function setWheelOffset(vehicle, wheel, offset)
+    offset = tonumber(offset)
+    if offset and math.abs(offset) >= MIN_TRACK_WIDTH then
+        SetVehicleWheelXOffset(vehicle, wheel, offset)
+    end
+end
+
 local function applyWheelOffsets(vehicle, st)
     if st.trackFrontLeft ~= nil or st.trackFrontRight ~= nil then
-        SetVehicleWheelXOffset(vehicle, 0, tonumber(st.trackFrontLeft) or 0.0)
-        SetVehicleWheelXOffset(vehicle, 1, tonumber(st.trackFrontRight) or 0.0)
+        setWheelOffset(vehicle, 0, st.trackFrontLeft)
+        setWheelOffset(vehicle, 1, st.trackFrontRight)
     elseif st.trackFront ~= nil then
-        SetVehicleWheelXOffset(vehicle, 0, -st.trackFront)
-        SetVehicleWheelXOffset(vehicle, 1, st.trackFront)
+        setWheelOffset(vehicle, 0, -st.trackFront)
+        setWheelOffset(vehicle, 1, st.trackFront)
     end
 
     if st.trackRearLeft ~= nil or st.trackRearRight ~= nil then
-        SetVehicleWheelXOffset(vehicle, 2, tonumber(st.trackRearLeft) or 0.0)
-        SetVehicleWheelXOffset(vehicle, 3, tonumber(st.trackRearRight) or 0.0)
+        setWheelOffset(vehicle, 2, st.trackRearLeft)
+        setWheelOffset(vehicle, 3, st.trackRearRight)
     elseif st.trackRear ~= nil then
-        SetVehicleWheelXOffset(vehicle, 2, -st.trackRear)
-        SetVehicleWheelXOffset(vehicle, 3, st.trackRear)
+        setWheelOffset(vehicle, 2, -st.trackRear)
+        setWheelOffset(vehicle, 3, st.trackRear)
     end
 end
 
 local function applyTrackWidthOffsets(vehicle, st)
     if st.trackFront ~= nil then
-        SetVehicleWheelXOffset(vehicle, 0, -st.trackFront)
-        SetVehicleWheelXOffset(vehicle, 1, st.trackFront)
+        setWheelOffset(vehicle, 0, -st.trackFront)
+        setWheelOffset(vehicle, 1, st.trackFront)
     end
     if st.trackRear ~= nil then
-        SetVehicleWheelXOffset(vehicle, 2, -st.trackRear)
-        SetVehicleWheelXOffset(vehicle, 3, st.trackRear)
+        setWheelOffset(vehicle, 2, -st.trackRear)
+        setWheelOffset(vehicle, 3, st.trackRear)
     end
 end
 
@@ -1134,8 +1141,8 @@ function StanceKit.AddOptions(arg1, arg2)
     local stancerBounds = STANCER_OPTION_BOUNDS or {
         camber_front = { min = -45, max = 45 },
         camber_rear = { min = -45, max = 45 },
-        track_width_front = { min = 0, max = 150 },
-        track_width_rear = { min = 0, max = 150 },
+        track_width_front = { min = 20, max = 150 },
+        track_width_rear = { min = 20, max = 150 },
         suspension_height = { min = -30, max = 30 }
     }
 

@@ -292,7 +292,7 @@ Nui = {
     app = {
         title = "Tuning en libre-service",
         admin_title = "Tuning admin",
-        subtitle = "Appuyez sur ESPACE pour activer/désactiver le mouvement libre de la caméra pendant le tuning."
+        subtitle = "Appuyez sur ESPACE pour activer/désactiver le mouvement libre de la caméra pendant le tuning, et sur H pour tourner la caméra autour du véhicule (Maj+H dans l'autre sens)."
     },
     currency = {
         symbol = "$"
@@ -639,7 +639,8 @@ tablet = {
             unknownDate = "Date inconnue",
             status = {
                 open = "Ouvert",
-                completed = "Terminé"
+                completed = "Terminé",
+                refunded = "Remboursée"
             }
         },
         history = {
