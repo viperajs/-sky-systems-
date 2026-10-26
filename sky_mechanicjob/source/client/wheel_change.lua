@@ -1633,7 +1633,12 @@ function completeActiveOrderInstall(vehicle, force)
 
     OrderInstallState.finalizing = true
     local eventName = "sky_mechanicjob:orders:completeInstall"
-    local payload = { orderId = OrderInstallState.orderId, partIndex = OrderInstallState.partIndex }
+    -- The server saves the installed part from these properties (only that part's keys).
+    local payload = {
+        orderId = OrderInstallState.orderId,
+        partIndex = OrderInstallState.partIndex,
+        properties = Sky.Vehicle.new(vehicle):GetVehicleProperties()
+    }
 
     local connVeh = getConnectedVehiclePayload()
     if connVeh and connVeh.plate then
@@ -1880,6 +1885,7 @@ function openTuning(vehicle, isAdmin, mode, societyJob, isInstant, isSelfService
         locales = nuiLocales,
         tuning = buildUiPayload()
     })
+    TuningCamera.SendConfig()
 end
 
 function openFromCurrentVehicle(isAdmin, mode, isSelfService, societyJob, isInstant, isDriverCheck)

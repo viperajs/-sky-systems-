@@ -148,6 +148,10 @@ local ENTRY_PROPERTY_KEYS = {
     wheel_custom_24 = { "modCustomBackWheels", "modCustomTiresR" }
 }
 
+-- A xenon or tyre smoke colour switches the lights / the smoke on: saving the colour alone left
+-- them off after a respawn.
+local ENTRY_TOGGLES = { xenon_color = 22, tire_smoke_color = 20 }
+
 local function filterPropertiesForParts(properties, parts)
     local keys = Sky.VehiclePropertyKeys
     local result = { mods = {}, toggleMods = {} }
@@ -177,6 +181,12 @@ local function filterPropertiesForParts(properties, parts)
         elseif ENTRY_PROPERTY_KEYS[id] then
             for _, key in ipairs(ENTRY_PROPERTY_KEYS[id]) do
                 result[key] = properties[key]
+            end
+            local toggle = ENTRY_TOGGLES[id]
+            local enabled = toggle and type(properties.toggleMods) == "table" and properties.toggleMods[tostring(toggle)]
+            if type(enabled) == "boolean" then
+                result.toggleMods[tostring(toggle)] = enabled
+                result[keys.toggles[toggle]] = enabled
             end
         end
     end
@@ -869,6 +879,12 @@ Sky.Cb.Register("sky_mechanicjob:orders:completeInstall", function(source, data)
 
     VehicleHistory.Add(order.plate, "part_installed",
         string.format("Installed: %s (Order #%d)", part.label or part.id, orderId), src, part.price or 0)
+
+    -- The installed part is saved here: the installer's later full save is refused beyond
+    -- 15 m (orders allow 20 m) and its result was never checked, so parts were lost on respawn.
+    if type(data.properties) == "table" then
+        TuningDB.SaveVehicleProperties(order.plate, filterPropertiesForParts(data.properties, { part }))
+    end
 
     -- Mods sync from the vehicle's network owner. When that is another player (the customer
     -- sitting in the car, or someone standing closer), their client applies the part as well;

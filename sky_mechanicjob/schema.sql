@@ -296,5 +296,12 @@ CREATE TABLE IF NOT EXISTS `sky_jobs_gallery_photos` (
     INDEX `idx_job` (`job`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Tablet chat profile photos (one per character).
+CREATE TABLE IF NOT EXISTS `sky_jobs_chat_profiles` (
+    `identifier` VARCHAR(64) NOT NULL PRIMARY KEY,
+    `image_url` VARCHAR(1024) DEFAULT NULL,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- MariaDB syntax; on MySQL drop "IF NOT EXISTS" (and skip it when the column already exists).
 ALTER TABLE `sky_jobs_chat_messages` ADD COLUMN IF NOT EXISTS `image_url` VARCHAR(1024) DEFAULT NULL;

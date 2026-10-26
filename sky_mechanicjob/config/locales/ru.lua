@@ -292,7 +292,7 @@ Locales["ru"] = {
         app = {
             title = "Тюнинг",
             admin_title = "Админ-тюнинг",
-            subtitle = "SPACE — свободная камера."
+            subtitle = "SPACE — свободная камера, H — повернуть камеру вокруг машины (Shift+H — в другую сторону)."
         },
         currency = {
             symbol = "$"
@@ -639,7 +639,8 @@ Locales["ru"] = {
                     unknownDate = "Дата неизвестна",
                     status = {
                         open = "Открыт",
-                        completed = "Завершён"
+                        completed = "Завершён",
+                        refunded = "Возвращён"
                     }
                 },
                 history = {

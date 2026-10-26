@@ -37,6 +37,54 @@ local function denied()
     return { success = false, error = "not_authorized" }
 end
 
+-- Order statuses as the registry's Linked Orders (and the Orders tablet) name them.
+local ORDER_STATUS = { pending = "open", in_progress = "open", completed = "completed", refunded = "refunded" }
+
+-- Linked Orders: the caller's workshop orders for each listed vehicle, newest first.
+local function attachOrders(vehicles, job)
+    local placeholders, params, byPlate = {}, {}, {}
+    for _, vehicle in ipairs(vehicles) do
+        vehicle.orders = {}
+        local plate = sanitizePlate(vehicle.plate)
+        if plate ~= "" and not byPlate[plate] then
+            byPlate[plate] = {}
+            placeholders[#placeholders + 1] = "?"
+            params[#params + 1] = plate
+        end
+    end
+    if #params == 0 or type(job) ~= "string" then return end
+    params[#params + 1] = job
+
+    local ok, rows = pcall(MySQL.query.await, ([[
+        SELECT id, plate, status, price, paid, UNIX_TIMESTAMP(created_at) AS created_ts FROM sky_mechanic_orders
+        WHERE UPPER(TRIM(plate)) IN (%s) AND job = ? ORDER BY id DESC LIMIT 500
+    ]]):format(table.concat(placeholders, ",")), params)
+    for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
+        local list = byPlate[sanitizePlate(row.plate)]
+        if list and #list < 20 then
+            local paid = row.paid == 1 or row.paid == true
+            local createdAt = tonumber(row.created_ts)
+            list[#list + 1] = {
+                id = row.id,
+                orderUid = "#" .. tostring(row.id),
+                status = ORDER_STATUS[row.status] or row.status,
+                amountPaid = paid and (tonumber(row.price) or 0) or 0,
+                createdAt = createdAt and os.date("%Y-%m-%d %H:%M", math.floor(createdAt)) or nil
+            }
+        end
+    end
+    for _, vehicle in ipairs(vehicles) do
+        vehicle.orders = byPlate[sanitizePlate(vehicle.plate)] or {}
+    end
+end
+
+-- Search text also matches registry tags and the workshop's orders (customer name, #id).
+local function searchClause(plateColumn, ownColumns)
+    return ("(%s OR r.tags LIKE @search OR EXISTS (SELECT 1 FROM sky_mechanic_orders o"
+        .. " WHERE o.plate COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci"
+        .. " AND (o.customer_name LIKE @search OR CONCAT('#', o.id) LIKE @search)))"):format(ownColumns, plateColumn)
+end
+
 -- ── Registry Paginated Search Callback ────────────────
 
 Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
@@ -61,12 +109,16 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
             LEFT JOIN sky_mechanic_vehicle_registry r ON r.plate COLLATE utf8mb4_unicode_ci = pv.plate COLLATE utf8mb4_unicode_ci
             LEFT JOIN sky_mechanic_vehicle_wear w ON w.plate COLLATE utf8mb4_unicode_ci = pv.plate COLLATE utf8mb4_unicode_ci
         ]]
-        local countQuery = "SELECT COUNT(*) as count FROM player_vehicles pv"
+        local countQuery = [[
+            SELECT COUNT(*) as count FROM player_vehicles pv
+            LEFT JOIN sky_mechanic_vehicle_registry r ON r.plate COLLATE utf8mb4_unicode_ci = pv.plate COLLATE utf8mb4_unicode_ci
+        ]]
         local params = {}
 
         if search ~= "" then
-            query = query .. " WHERE (pv.plate LIKE @search OR pv.vehicle LIKE @search OR pv.citizenid LIKE @search)"
-            countQuery = countQuery .. " WHERE (pv.plate LIKE @search OR pv.vehicle LIKE @search OR pv.citizenid LIKE @search)"
+            local where = " WHERE " .. searchClause("pv.plate", "pv.plate LIKE @search OR pv.vehicle LIKE @search OR pv.citizenid LIKE @search")
+            query = query .. where
+            countQuery = countQuery .. where
             params["@search"] = "%" .. search .. "%"
         end
 
@@ -99,12 +151,16 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
             LEFT JOIN sky_mechanic_vehicle_registry r ON r.plate COLLATE utf8mb4_unicode_ci = ov.plate COLLATE utf8mb4_unicode_ci
             LEFT JOIN sky_mechanic_vehicle_wear w ON w.plate COLLATE utf8mb4_unicode_ci = ov.plate COLLATE utf8mb4_unicode_ci
         ]]
-        local countQuery = "SELECT COUNT(*) as count FROM owned_vehicles ov"
+        local countQuery = [[
+            SELECT COUNT(*) as count FROM owned_vehicles ov
+            LEFT JOIN sky_mechanic_vehicle_registry r ON r.plate COLLATE utf8mb4_unicode_ci = ov.plate COLLATE utf8mb4_unicode_ci
+        ]]
         local params = {}
 
         if search ~= "" then
-            query = query .. " WHERE (ov.plate LIKE @search OR ov.owner LIKE @search)"
-            countQuery = countQuery .. " WHERE (ov.plate LIKE @search OR ov.owner LIKE @search)"
+            local where = " WHERE " .. searchClause("ov.plate", "ov.plate LIKE @search OR ov.owner LIKE @search")
+            query = query .. where
+            countQuery = countQuery .. where
             params["@search"] = "%" .. search .. "%"
         end
 
@@ -136,6 +192,8 @@ Sky.Cb.Register("sky_mechanicjob:vehicles:getRegistry", function(source, data)
             }
         end
     end
+
+    attachOrders(vehicles, Functions.GetJob(source))
 
     return {
         success = true,

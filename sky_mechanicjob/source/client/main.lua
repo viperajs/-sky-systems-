@@ -275,8 +275,9 @@ STANCER_SCALE = 100
 STANCER_OPTION_BOUNDS = {
     camber_front = { min = -45, max = 45 },
     camber_rear = { min = -45, max = 45 },
-    track_width_front = { min = 0, max = 150 },
-    track_width_rear = { min = 0, max = 150 },
+    -- Under 20 cm the wheels sit inside the body (stance_kit.lua MIN_TRACK_WIDTH).
+    track_width_front = { min = 20, max = 150 },
+    track_width_rear = { min = 20, max = 150 },
     suspension_height = { min = -30, max = 30 }
 }
 

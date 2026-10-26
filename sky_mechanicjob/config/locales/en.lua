@@ -264,6 +264,11 @@ Locales["en"] = {
         PartsDeliveryNoneReady = "No parts delivery is ready here.",
         PartsDeliveryNotOnDuty = "You must be on duty to open deliveries.",
         PartsDeliveryInventoryFull = "You cannot carry all items from this delivery.",
+        PartsDeliveryStorageChoice = "~INPUT_PICKUP~ Put the parts in the workshop storage~n~~INPUT_DETONATE~ Take them into your inventory~n~~INPUT_FRONTEND_RRIGHT~ Cancel",
+        PartsDeliveryFullChoice = "Your inventory is full.~n~~INPUT_PICKUP~ Send the parts to the workshop storage~n~~INPUT_FRONTEND_RRIGHT~ Leave them in the box",
+        PartsDeliveryTaken = "Parts taken into your inventory.",
+        PartsDeliveryStorageFull = "The workshop storage is full.",
+        PartsDeliveryStorageUnavailable = "There is no workshop storage for these parts.",
         CarryItemStored = "Part placed in workshop storage.",
         CarryItemStoreFailed = "Unable to place this part in storage.",
         CarryItemTransportRequired = "Bring the part transport closer to storage.",
@@ -292,7 +297,7 @@ Locales["en"] = {
         app = {
             title = "Self Service Tuning",
             admin_title = "Admin Tuning",
-            subtitle = "Press SPACE to toggle free camera movement while tuning."
+            subtitle = "Press SPACE to toggle free camera movement while tuning, H to turn the camera around the vehicle (Shift+H turns the other way)."
         },
         currency = {
             symbol = "$"
@@ -639,7 +644,8 @@ Locales["en"] = {
                     unknownDate = "Unknown date",
                     status = {
                         open = "Open",
-                        completed = "Completed"
+                        completed = "Completed",
+                        refunded = "Refunded"
                     }
                 },
                 history = {

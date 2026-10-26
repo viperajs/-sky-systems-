@@ -876,6 +876,37 @@ local function canInteractWithDelivery()
     return type(heldItem) ~= "table"
 end
 
+-- ─── Unpack Destination Prompt ─────────────────────
+-- Where unpacked parts go: "storage" (E), "inventory" (G, when offered) or nil (Backspace /
+-- nothing pressed within 10 seconds). Drawn as a help text so it works with any HUD.
+local DESTINATION_PROMPT_MS = 10000
+
+local function askUnpackDestination(text, allowInventory)
+    local deadline = GetGameTimer() + DESTINATION_PROMPT_MS
+    Wait(200) -- the E that opened the storage or the box is still down
+    while GetGameTimer() < deadline do
+        BeginTextCommandDisplayHelp("STRING")
+        AddTextComponentSubstringPlayerName(text)
+        EndTextCommandDisplayHelp(0, false, false, -1)
+        if IsControlJustPressed(0, 38) then return "storage" end
+        if allowInventory and IsControlJustPressed(0, 47) then return "inventory" end
+        if IsControlJustPressed(0, 194) or IsControlJustPressed(0, 202) then return nil end
+        Wait(0)
+    end
+    return nil
+end
+
+local function unpackErrorMessage(errorCode, fallback)
+    if errorCode == "inventory_full" then
+        return getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery.")
+    elseif errorCode == "storage_full" then
+        return getLocale("PartsDeliveryStorageFull", "The workshop storage is full.")
+    elseif errorCode == "storage_unavailable" then
+        return getLocale("PartsDeliveryStorageUnavailable", "There is no workshop storage for these parts.")
+    end
+    return fallback
+end
+
 -- ─── Open / Claim Delivery ─────────────────────────
 local function openDelivery(delivery)
     if State.opening or not canInteractWithDelivery() then
@@ -899,6 +930,18 @@ local function openDelivery(delivery)
     local result = Sky.Cb.Trigger("sky_mechanicjob:partsDelivery:claim", {
         deliveryId = tonumber(delivery.id) or 0,
     })
+
+    -- A full inventory may send the parts to the workshop storage instead.
+    if type(result) == "table" and result.error == "inventory_full" and result.canStore == true then
+        local choice = askUnpackDestination(getLocale("PartsDeliveryFullChoice",
+            "Your inventory is full.~n~~INPUT_PICKUP~ Send the parts to the workshop storage~n~~INPUT_FRONTEND_RRIGHT~ Leave them in the box"), false)
+        if choice == "storage" then
+            result = Sky.Cb.Trigger("sky_mechanicjob:partsDelivery:claim", {
+                deliveryId = tonumber(delivery.id) or 0,
+                destination = "storage"
+            })
+        end
+    end
 
     if type(result) == "table" and result.success == true then
         local data = result.data or {}
@@ -926,6 +969,12 @@ local function openDelivery(delivery)
                 getLocale("PartsDeliveryEmpty", "This delivery held no parts the shop still sells, so nothing was added."),
                 "error"
             )
+        elseif data.stored == true then
+            Sky.Show.Notification(
+                getLocale("PartsDeliveryTitle", "Parts Delivery"),
+                getLocale("CarryDeliveryStored", "Delivery placed in workshop storage."),
+                "success"
+            )
         else
             Sky.Show.Notification(
                 getLocale("PartsDeliveryTitle", "Parts Delivery"),
@@ -944,8 +993,8 @@ local function openDelivery(delivery)
 
         if errorCode == "not_on_duty" then
             errorMsg = getLocale("PartsDeliveryNotOnDuty", "You must be on duty to open deliveries.")
-        elseif errorCode == "inventory_full" then
-            errorMsg = getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery.")
+        elseif errorCode == "inventory_full" or errorCode == "storage_full" or errorCode == "storage_unavailable" then
+            errorMsg = unpackErrorMessage(errorCode, errorMsg)
         elseif errorCode == "too_far" then
             errorMsg = getLocale("PartsDeliveryTooFar", "Move closer to the delivery bay.")
         end
@@ -991,26 +1040,34 @@ exports("TryDepositCarryItemToStorage", function(stationId)
                 return true
             end
 
+            -- The parts go into this storage (E) or along with the player (G).
+            local destination = askUnpackDestination(getLocale("PartsDeliveryStorageChoice",
+                "~INPUT_PICKUP~ Put the parts in the workshop storage~n~~INPUT_DETONATE~ Take them into your inventory~n~~INPUT_FRONTEND_RRIGHT~ Cancel"), true)
+            if not destination then return true end
+
             -- Deposit carry item
             -- The server knows which delivery is carried; nothing about it is sent.
             local depositResult = Sky.Cb.Trigger("sky_mechanicjob:carryItem:depositToStorage", {
                 stationId = tostring(stationId or ""),
+                destination = destination
             }) or {}
             local depositError = type(depositResult) == "table" and depositResult.error or nil
 
             if type(depositResult) == "table" and depositResult.success == true then
                 clearHeldDeliveryCarry()
+                local stored = type(depositResult.data) == "table" and depositResult.data.stored == true
                 Sky.Show.Notification(
                     getLocale("PartsDeliveryTitle", "Parts Delivery"),
-                    getLocale("CarryItemStored", "Part placed in workshop storage."),
+                    stored and getLocale("CarryItemStored", "Part placed in workshop storage.")
+                        or getLocale("PartsDeliveryTaken", "Parts taken into your inventory."),
                     "success"
                 )
                 return true
             end
 
             local failMsg = getLocale("CarryItemStoreFailed", "Unable to place this part in storage.")
-            if depositError == "inventory_full" then
-                failMsg = getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery.")
+            if depositError == "inventory_full" or depositError == "storage_full" or depositError == "storage_unavailable" then
+                failMsg = unpackErrorMessage(depositError, failMsg)
             elseif depositError == "too_far" then
                 -- Not a storage of the player's workshop (another job's, or a locker).
                 showCarryHint(CARRYING_DELIVERY[1], CARRYING_DELIVERY[2])
@@ -1030,25 +1087,32 @@ exports("TryDepositCarryItemToStorage", function(stationId)
         return false
     end
 
+    local destination = askUnpackDestination(getLocale("PartsDeliveryStorageChoice",
+        "~INPUT_PICKUP~ Put the parts in the workshop storage~n~~INPUT_DETONATE~ Take them into your inventory~n~~INPUT_FRONTEND_RRIGHT~ Cancel"), true)
+    if not destination then return true end
+
     local result = Sky.Cb.Trigger("sky_mechanicjob:partsDelivery:depositToStorage", {
         stationId = tostring(stationId or ""),
         deliveryId = tonumber(nearestDelivery.id) or 0,
+        destination = destination
     }) or {}
 
     if type(result) == "table" and result.success == true then
         deleteDeliveryEntity(tonumber(nearestDelivery.id) or 0)
         fetchReadyDeliveries()
+        local stored = type(result.data) == "table" and result.data.stored == true
         Sky.Show.Notification(
             getLocale("PartsDeliveryTitle", "Parts Delivery"),
-            getLocale("CarryDeliveryStored", "Delivery placed in workshop storage."),
+            stored and getLocale("CarryDeliveryStored", "Delivery placed in workshop storage.")
+                or getLocale("PartsDeliveryTaken", "Parts taken into your inventory."),
             "success"
         )
         return true
     end
-    if type(result) == "table" and result.error == "inventory_full" then
+    if type(result) == "table" and (result.error == "inventory_full" or result.error == "storage_full" or result.error == "storage_unavailable") then
         Sky.Show.Notification(
             getLocale("PartsDeliveryTitle", "Parts Delivery"),
-            getLocale("PartsDeliveryInventoryFull", "You cannot carry all items from this delivery."),
+            unpackErrorMessage(result.error, ""),
             "error"
         )
         return true

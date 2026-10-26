@@ -608,6 +608,18 @@ RegisterNetEvent("sky_jobs_base:cctv:updateCamera", function(data)
     })
 end)
 
+-- /addcctvcam asks for the current view. updateCamPosition looks along heading + 180, so the
+-- yaw is stored turned around.
+RegisterNetEvent("sky_jobs_base:cctv:capturePose", function()
+    local pos = GetFinalRenderedCamCoord()
+    local rot = GetFinalRenderedCamRot(2)
+    TriggerServerEvent("sky_jobs_base:cctv:addCamera", {
+        coords = { x = pos.x, y = pos.y, z = pos.z },
+        heading = (rot.z + 180.0) % 360.0,
+        pitch = rot.x
+    })
+end)
+
 RegisterNetEvent("sky_jobs_base:cctv:saveResult", function(data)
     if type(data) ~= "table" then return end
     SendNUIMessage({

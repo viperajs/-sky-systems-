@@ -56,6 +56,8 @@ function MechanicWorkshopData.GetPoints(types)
                     if x and y and z then
                         points[#points + 1] = {
                             key = ("%s:%s:%s"):format(tostring(point.type), tostring(entry.id), tostring(point.uid)),
+                            -- sky_jobs_base keeps a storage's items per workshop (its station).
+                            stationId = tostring(entry.id),
                             job = (type(job) == "string" and job ~= "") and job or nil,
                             label = tostring(point.label or entry.label or entry.name or "Delivery Bay"),
                             coords = vector3(x, y, z),
@@ -382,6 +384,20 @@ local function releaseHeldCarry(src)
     end
 end
 
+-- Unpacks into the workshop storage at `storage` (a storage point of the job) instead of the
+-- player's inventory; false plus "storage_full" / "storage_unavailable".
+local function storeLines(job, storage, lines)
+    if GetResourceState("sky_jobs_base") ~= "started" then return false, "storage_unavailable" end
+    local items = {}
+    for _, line in ipairs(lines) do items[#items + 1] = { name = line.name, count = line.quantity } end
+    if #items == 0 then return true end
+    local ok, stored, err = pcall(function()
+        return exports.sky_jobs_base:DepositToJobStorage(job, storage.stationId, items)
+    end)
+    if ok and stored == true then return true end
+    return false, (ok and err == "storageFull") and "storage_full" or "storage_unavailable"
+end
+
 local function giveLines(src, lines)
     for index, line in ipairs(lines) do
         if not Functions.AddItem(src, line.name, line.quantity) then
@@ -397,11 +413,14 @@ end
 -- Moves the row from fromStatus to 'claimed' before handing out its items, so two
 -- requests for the same delivery cannot both receive them. The third value is true when
 -- none of its parts is sold anymore (the row is still closed, nothing is given).
-local function completeDelivery(src, row, fromStatus)
+-- With `storage` (a storage point of the job) the parts go into that workshop storage.
+local function completeDelivery(src, row, fromStatus, storage)
     local lines = decodeLines(row.items, row.job)
-    for _, line in ipairs(lines) do
-        if not Functions.CanCarryItem(src, line.name, line.quantity) then
-            return false, "inventory_full"
+    if not storage then
+        for _, line in ipairs(lines) do
+            if not Functions.CanCarryItem(src, line.name, line.quantity) then
+                return false, "inventory_full"
+            end
         end
     end
 
@@ -416,11 +435,17 @@ local function completeDelivery(src, row, fromStatus)
         return false, "delivery_not_found"
     end
 
-    if not giveLines(src, lines) then
+    local given, giveErr
+    if storage then
+        given, giveErr = storeLines(row.job, storage, lines)
+    else
+        given, giveErr = giveLines(src, lines), "inventory_full"
+    end
+    if not given then
         MySQL.update.await("UPDATE sky_mechanic_parts_deliveries SET status = ?, delivery_point = ? WHERE id = ? AND status = 'claimed'", {
             fromStatus, row.delivery_point, row.id
         })
-        return false, "inventory_full"
+        return false, giveErr
     end
 
     local empty = #lines == 0
@@ -458,12 +483,38 @@ end
 -- The job's storage a carried delivery is taken to (the one nearest to the player at the bay),
 -- or nil when the workshop has none. A player carrying a delivery opens no other one, and
 -- without a storage it could never be unpacked.
-local function findCarryStorage(src, job)
+local function findCarryStorage(src, job, maxDistance)
     local storage = pickJobPoint(src, job, MechanicWorkshopData.GetPoints(STORAGE_POINT_TYPES) or {})
-    if storage and isPlayerNear(src, storage.coords, MAX_CARRY_DISTANCE) then
+    if storage and isPlayerNear(src, storage.coords, maxDistance or MAX_CARRY_DISTANCE) then
         return storage
     end
     return nil
+end
+
+-- Workshop storages are ox_inventory stashes kept by sky_jobs_base.
+local function storageWorks()
+    return GetResourceState("ox_inventory") == "started" and GetResourceState("sky_jobs_base") == "started"
+end
+
+-- Where a delivery is unpacked: the player's inventory (false), or with destination "storage"
+-- the job's storage nearest to the player (within maxDistance). nil plus an error without one.
+local function unpackDestination(src, job, data, maxDistance)
+    if type(data) ~= "table" or data.destination ~= "storage" then return false end
+    local storage = storageWorks() and findCarryStorage(src, job, maxDistance) or nil
+    if not storage then return nil, "storage_unavailable" end
+    return storage
+end
+
+-- Whether a full inventory can send the parts to the workshop storage instead.
+local function canUseStorage(src, job)
+    return storageWorks() and findCarryStorage(src, job) ~= nil
+end
+
+-- At a storage: into that storage unless the player takes the parts along (destination
+-- "inventory"). Without ox_inventory or readable workshops they go to the inventory as before.
+local function storageAtPlayer(src, job, data)
+    if not storageWorks() or (type(data) == "table" and data.destination == "inventory") then return nil end
+    return findCarryStorage(src, job, STORAGE_DISTANCE)
 end
 
 local function isPalletMode()
@@ -689,11 +740,14 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:claim", function(source, data)
         }
     end
 
-    local ok, err, empty = completeDelivery(src, row, "ready")
+    local storage, storageErr = unpackDestination(src, job, data, MAX_CARRY_DISTANCE)
+    if storage == nil then return { success = false, error = storageErr } end
+    local ok, err, empty = completeDelivery(src, row, "ready", storage or nil)
     if not ok then
-        return { success = false, error = err }
+        -- A full inventory may send the parts to the workshop storage (the client asks).
+        return { success = false, error = err, canStore = err == "inventory_full" and canUseStorage(src, job) or nil }
     end
-    return { success = true, data = { deliveryClaimed = true, emptyDelivery = empty == true or nil } }
+    return { success = true, data = { deliveryClaimed = true, emptyDelivery = empty == true or nil, stored = storage and true or nil } }
 end)
 
 -- ── Carry Item Actions ────────────────────────────────
@@ -728,14 +782,15 @@ Sky.Cb.Register("sky_mechanicjob:carryItem:depositToStorage", function(source, d
         return { success = false, error = "delivery_not_found" }
     end
 
-    local ok, err = completeDelivery(src, row, "claiming")
+    local storage = storageAtPlayer(src, held.job, data)
+    local ok, err = completeDelivery(src, row, "claiming", storage)
     if not ok then
         if err == "delivery_not_found" then heldCarry[src] = nil end
         return { success = false, error = err }
     end
 
     if heldCarry[src] == held then heldCarry[src] = nil end
-    return { success = true }
+    return { success = true, data = { stored = storage and true or nil } }
 end)
 
 -- A whole delivery pallet brought to storage by forklift (carry items mode).
@@ -765,11 +820,12 @@ Sky.Cb.Register("sky_mechanicjob:partsDelivery:depositToStorage", function(sourc
         return { success = false, error = "not_found" }
     end
 
-    local ok, err = completeDelivery(src, row, "ready")
+    local storage = storageAtPlayer(src, job, data)
+    local ok, err = completeDelivery(src, row, "ready", storage)
     if not ok then
         return { success = false, error = err }
     end
-    return { success = true }
+    return { success = true, data = { stored = storage and true or nil } }
 end)
 
 -- ── Order History Callback ────────────────────────────

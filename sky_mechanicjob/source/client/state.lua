@@ -161,8 +161,8 @@ STANCER_SCALE = STANCER_SCALE or 100
 STANCER_OPTION_BOUNDS = STANCER_OPTION_BOUNDS or {
     camber_front       = { min = -45, max = 45 },
     camber_rear        = { min = -45, max = 45 },
-    track_width_front  = { min = 0,   max = 150 },
-    track_width_rear   = { min = 0,   max = 150 },
+    track_width_front  = { min = 20,  max = 150 },
+    track_width_rear   = { min = 20,  max = 150 },
     suspension_height  = { min = -30, max = 30 }
 }
 

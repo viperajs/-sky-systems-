@@ -425,7 +425,40 @@ function restoreVehicleToOptionBaselines()
     local prevSuppress = TuningState.suppressPreviews
     TuningState.suppressPreviews = true
 
+    -- Only what the preview changed goes back. Re-applying every option switched the xenon
+    -- lights and the tyre smoke on (their colours turn them on) and gave every car a stance
+    -- (StanceKit.RestorePreviewState puts the stance back). The wheel type goes first: the rims
+    -- are numbered per wheel type, so they are put back after it.
+    -- A xenon or tyre smoke colour switches the lights / the smoke on: their switch goes back last.
+    local SWITCHES = { xenon_color = "toggle_22", tire_smoke_color = "toggle_20" }
+    local optionMap = TuningState.optionMap or {}
+    local first, middle, last, included = {}, {}, {}, {}
+    local function include(bucket, opt)
+        if opt and not included[opt.id] then
+            included[opt.id] = true
+            bucket[#bucket + 1] = opt
+        end
+    end
     for _, opt in ipairs(TuningState.options) do
+        if opt.kind ~= "stancer" and hasOptionChangedFromBaseline(opt) and opt.id ~= "toggle_22" and opt.id ~= "toggle_20" then
+            include(opt.id == "wheel_type" and first or middle, opt)
+        end
+    end
+    if included.wheel_type then
+        include(last, optionMap.mod_23)
+        include(last, optionMap.mod_24)
+    end
+    for colorId, switchId in pairs(SWITCHES) do
+        local switch = optionMap[switchId]
+        if switch and (included[colorId] or hasOptionChangedFromBaseline(switch)) then include(last, switch) end
+    end
+
+    local changed = {}
+    for _, bucket in ipairs({ first, middle, last }) do
+        for _, opt in ipairs(bucket) do changed[#changed + 1] = opt end
+    end
+
+    for _, opt in ipairs(changed) do
         local base = TuningState.optionBaselines[opt.id]
         if base then
             local valNum = tonumber(base.value)

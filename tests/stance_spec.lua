@@ -10,8 +10,9 @@ stub = setmetatable({}, {
 
 local VEHICLE = 9
 
-local function newClient()
-    local f = { offsets = { [0] = -0.8, [1] = 0.8, [2] = -0.82, [3] = 0.82 }, bag = {} }
+local function newClient(savedDefault)
+    if savedDefault == nil then savedDefault = { trackFront = 0.8, trackRear = 0.82, wheelSize = 1.0, wheelWidth = 1.0 } end
+    local f = { offsets = { [0] = -0.8, [1] = 0.8, [2] = -0.82, [3] = 0.82 }, bag = {}, timeouts = {} }
     -- Constants the stance kit falls back on when they are not set (STANCER_OPTION_BOUNDS, ...).
     local env = setmetatable({}, { __index = function(_, key)
         local value = _G[key]
@@ -29,7 +30,8 @@ local function newClient()
         Math = { Trim = function(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end },
         Cb = { Trigger = function(name)
             if name == "sky_mechanicjob:stance:loadDefault" then
-                return { success = true, stance = { trackFront = 0.8, trackRear = 0.82, wheelSize = 1.0, wheelWidth = 1.0 } }
+                if savedDefault == false then return { success = false, error = "no_default_saved" } end
+                return { success = true, stance = savedDefault }
             end
             return { success = true }
         end },
@@ -48,6 +50,10 @@ local function newClient()
     env.GetVehicleHandlingFloat = function() return 0.0 end
     env.GetVehicleNumberOfWheels = function() return 4 end
     env.NetworkGetEntityIsNetworked = function() return false end
+    env.GetNumModKits = function() return 1 end
+    env.SetTimeout = function(_, fn) f.timeouts[#f.timeouts + 1] = fn end
+    env.AddStateBagChangeHandler = function(key, _, fn) if key == "sky_mechanicjob:stance" then f.onBag = fn end end
+    env.GetEntityFromStateBagName = function() return VEHICLE end
     env.STANCER_SCALE = 100
     env.WHEEL_SIZE_SCALE = 100
     assert(loadfile("sky_mechanicjob/source/client/stance_kit.lua", "t", env))()
@@ -88,4 +94,38 @@ do
     assert(opts.stancer_track_width_rear.value == 82, "the current rear track width")
 end
 
-print("PASS: stance sliders start at the vehicle's current track width, and a step moves the wheels by that step.")
+-- The wheels' distance from the centre line after a stance reset or a stored stance: never 0,
+-- which put the wheels inside the body (the rims vanished when someone got in).
+local function assertWheelsAt(f, front, rear, label)
+    for _, fn in ipairs(f.timeouts) do fn() end
+    f.timeouts = {}
+    assert(math.abs(f.offsets[0] + front) < 1e-6 and math.abs(f.offsets[1] - front) < 1e-6, label .. ": front wheels at " .. tostring(f.offsets[1]))
+    assert(math.abs(f.offsets[2] + rear) < 1e-6 and math.abs(f.offsets[3] - rear) < 1e-6, label .. ": rear wheels at " .. tostring(f.offsets[3]))
+end
+
+-- 3. A stance reset (another player's client raises it) puts the saved default back.
+do
+    local f = newClient()
+    f.offsets = { [0] = -1.0, [1] = 1.0, [2] = -1.1, [3] = 1.1 }
+    f.onBag("entity:9", "sky_mechanicjob:stance", { enabled = false })
+    assertWheelsAt(f, 0.8, 0.82, "reset to the saved default")
+end
+
+-- 4. Without a saved default the reset leaves the wheels where they are.
+do
+    local f = newClient(false)
+    f.offsets = { [0] = -0.9, [1] = 0.9, [2] = -0.91, [3] = 0.91 }
+    f.onBag("entity:9", "sky_mechanicjob:stance", { enabled = false })
+    assertWheelsAt(f, 0.9, 0.91, "reset without a default")
+end
+
+-- 5. A stored stance whose track width is 0 (the old slider started at 0) does not pull the wheels in.
+do
+    local f = newClient()
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = 0.0, trackRear = 0.05, fCamberFront = 0.2 })
+    assertWheelsAt(f, 0.8, 0.82, "stance with a zero track width")
+    local opts = f.options()
+    assert(opts.stancer_track_width_front.min >= 20, "the track width slider still goes down to " .. tostring(opts.stancer_track_width_front.min))
+end
+
+print("PASS: stance sliders start at the vehicle's current track width, and a step moves the wheels by that step; a stance reset puts the saved default back (or leaves the wheels) and a zero track width never pulls the wheels into the body.")
