@@ -721,6 +721,55 @@ do
     assert(W.lastNotification() == "Part placed in workshop storage.", tostring(W.lastNotification()))
 end
 
+-- 8d. The E that answers the storage prompt also reaches the storage point again: that second
+-- call does nothing while the first deposit runs. The prompt's text reaches the game whole, in
+-- pieces of at most 99 bytes (one text component holds no more).
+do
+    local W = newWorld({
+        clientConfig = function(Config) Config.ToggleFeatures.carryItems = true end,
+        workshops = (function() local d = defaultWorkshops(); d.features = { partsDelivery = true, carryItems = true }; return d end)(),
+    })
+    W.storage = {}
+    W.order({ { name = "brakes", quantity = 1 } })
+    W.advance(65000)
+    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
+    W.pressE()
+    W.player.pos = LSC_STORAGE
+
+    local shown, pieces = {}, nil
+    W.client.env.BeginTextCommandDisplayHelp = function() pieces = {} end
+    W.client.env.AddTextComponentSubstringPlayerName = function(text) pieces[#pieces + 1] = text end
+    W.client.env.EndTextCommandDisplayHelp = function() shown[#shown + 1] = pieces end
+
+    -- The first deposit waits at its prompt.
+    local first = coroutine.create(function() return W.client.exports.TryDepositCarryItemToStorage("mechanic_lscustoms") end)
+    assert(coroutine.resume(first))
+    W.clock = W.clock + 300
+    assert(coroutine.resume(first))
+    assert(coroutine.status(first) == "suspended" and #shown > 0, "no prompt shown")
+
+    -- The same E press reaches the storage point again: handled, nothing else happens.
+    local again
+    W.run(function() again = W.client.exports.TryDepositCarryItemToStorage("mechanic_lscustoms") end)
+    assert(again == true and W.db.rows[1].status == "claiming", "a second deposit ran")
+
+    -- E picks the storage; the first deposit finishes.
+    W.choice = 38
+    local done, handled = false, nil
+    while coroutine.status(first) ~= "dead" do
+        W.clock = W.clock + 16
+        local ok, result = coroutine.resume(first)
+        assert(ok, tostring(result))
+        if coroutine.status(first) == "dead" then handled = result end
+    end
+    W.choice = nil
+    assert(handled == true and W.storage["mechanic/mechanic_lscustoms/brakes"] == 1 and W.db.rows[1].status == "claimed")
+
+    local text = table.concat(shown[1])
+    assert(text == "~INPUT_PICKUP~ Put the parts in the workshop storage~n~~INPUT_DETONATE~ Take them into your inventory~n~~INPUT_FRONTEND_RRIGHT~ Cancel", text)
+    for _, piece in ipairs(shown[1]) do assert(#piece <= 99, "a text component of " .. #piece .. " bytes") end
+end
+
 -- 8c. Unpacked at the bay with a full inventory, the parts can go to the workshop storage.
 do
     local W = newWorld()

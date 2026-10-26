@@ -381,6 +381,17 @@ local function findClosestPresetIndex(presets, targetR, targetG, targetB, fallba
     return targetIdx
 end
 
+-- A xenon or tyre smoke colour switches its lights / smoke on. The switch option follows, so
+-- the basket holds the switch with the colour: charged, ordered and saved like any part.
+local function switchOnWithColor(modType)
+    local switch = TuningState.optionMap and TuningState.optionMap["toggle_" .. modType]
+    if not switch or tonumber(switch.value) == 1 then return end
+    switch.value = 1
+    if not TuningState.suppressPreviews then
+        sendUi("tuning:update", { id = switch.id, value = 1 })
+    end
+end
+
 function applyOption(opt, rawVal)
     local veh = TuningState.vehicle
     if veh == 0 or not DoesEntityExist(veh) then return false end
@@ -452,6 +463,7 @@ function applyOption(opt, rawVal)
 
         RgbController.BindXenonEffectVehicle(veh)
         ToggleVehicleMod(veh, 22, true)
+        switchOnWithColor(22)
         SetVehicleXenonLightsColor(veh, targetVal)
         ClearVehicleXenonLightsCustomColor(veh)
 
@@ -687,6 +699,7 @@ function applyCustomColorOption(opt, paintType, customColor)
     if opt.id == "xenon_color" then
         RgbController.BindXenonEffectVehicle(veh)
         ToggleVehicleMod(veh, 22, true)
+        switchOnWithColor(22)
         if hasCustom then
             SetVehicleXenonLightsColor(veh, 255)
             SetVehicleXenonLightsCustomColor(veh, r, g, b)
@@ -734,6 +747,7 @@ function applyCustomColorOption(opt, paintType, customColor)
         if not IsToggleModOn(veh, 20) then
             ToggleVehicleMod(veh, 20, true)
         end
+        switchOnWithColor(20)
         if hasCustom then
             SetVehicleTyreSmokeColor(veh, r, g, b)
         else

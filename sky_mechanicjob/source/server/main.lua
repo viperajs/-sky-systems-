@@ -148,10 +148,6 @@ local ENTRY_PROPERTY_KEYS = {
     wheel_custom_24 = { "modCustomBackWheels", "modCustomTiresR" }
 }
 
--- A xenon or tyre smoke colour switches the lights / the smoke on: saving the colour alone left
--- them off after a respawn.
-local ENTRY_TOGGLES = { xenon_color = 22, tire_smoke_color = 20 }
-
 local function filterPropertiesForParts(properties, parts)
     local keys = Sky.VehiclePropertyKeys
     local result = { mods = {}, toggleMods = {} }
@@ -181,12 +177,6 @@ local function filterPropertiesForParts(properties, parts)
         elseif ENTRY_PROPERTY_KEYS[id] then
             for _, key in ipairs(ENTRY_PROPERTY_KEYS[id]) do
                 result[key] = properties[key]
-            end
-            local toggle = ENTRY_TOGGLES[id]
-            local enabled = toggle and type(properties.toggleMods) == "table" and properties.toggleMods[tostring(toggle)]
-            if type(enabled) == "boolean" then
-                result.toggleMods[tostring(toggle)] = enabled
-                result[keys.toggles[toggle]] = enabled
             end
         end
     end
@@ -332,6 +322,12 @@ Sky.Cb.Register("sky_mechanicjob:tuning:purchase", function(source, data)
             paintType = tonumber(entry.paintType),
             customColor = customColor
         }
+    end
+
+    -- With publicUsersSeePrices off, public users see 0 prices: their order is not charged (the
+    -- workshop bills them). Their baskets never reached the server before, so nothing was saved.
+    if not directApply and Pricing.GetSetting("publicUsersSeePrices") == false and not Functions.IsMechanic(src) then
+        totalAmount = 0
     end
 
     -- A stance kit is used up by the stance it installs.

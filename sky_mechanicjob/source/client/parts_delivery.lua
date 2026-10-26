@@ -881,12 +881,35 @@ end
 -- nothing pressed within 10 seconds). Drawn as a help text so it works with any HUD.
 local DESTINATION_PROMPT_MS = 10000
 
+-- A text component holds at most 99 bytes (longer text was cut off): one per line, and long
+-- lines in pieces that split neither a UTF-8 character nor a ~INPUT_...~ key.
+local function addHelpText(text)
+    local lines = {}
+    for line in (text .. "~n~"):gmatch("(.-)~n~") do lines[#lines + 1] = line end
+    for index, line in ipairs(lines) do
+        if index < #lines then line = line .. "~n~" end
+        while #line > 0 do
+            local cut = math.min(#line, 99)
+            if cut < #line then
+                while cut > 1 and (line:byte(cut + 1) or 0) >= 0x80 and (line:byte(cut + 1) or 0) < 0xC0 do cut = cut - 1 end
+                local _, tildes = line:sub(1, cut):gsub("~", "")
+                if tildes % 2 == 1 then
+                    local open = line:sub(1, cut):match(".*()~")
+                    if open and open > 1 then cut = open - 1 end
+                end
+            end
+            AddTextComponentSubstringPlayerName(line:sub(1, cut))
+            line = line:sub(cut + 1)
+        end
+    end
+end
+
 local function askUnpackDestination(text, allowInventory)
     local deadline = GetGameTimer() + DESTINATION_PROMPT_MS
     Wait(200) -- the E that opened the storage or the box is still down
     while GetGameTimer() < deadline do
         BeginTextCommandDisplayHelp("STRING")
-        AddTextComponentSubstringPlayerName(text)
+        addHelpText(text)
         EndTextCommandDisplayHelp(0, false, false, -1)
         if IsControlJustPressed(0, 38) then return "storage" end
         if allowInventory and IsControlJustPressed(0, 47) then return "inventory" end
@@ -1018,7 +1041,7 @@ local function clearHeldDeliveryCarry()
 end
 
 -- ─── Export: Deposit Carry Item To Storage ──────────
-exports("TryDepositCarryItemToStorage", function(stationId)
+local function depositAtStorage(stationId)
     -- Only a part carried out of a delivery goes to storage; parts held for an order
     -- install keep the normal storage interaction.
     local heldItem = OrderInstallState and OrderInstallState.heldCarryItem or nil
@@ -1124,6 +1147,20 @@ exports("TryDepositCarryItemToStorage", function(stationId)
         "error"
     )
     return true
+end
+
+-- The E that answers the storage prompt also reaches the storage point again (sky_base reads E
+-- every frame there): while a deposit runs, that press does nothing.
+exports("TryDepositCarryItemToStorage", function(stationId)
+    if State.depositing then return true end
+    State.depositing = true
+    local ok, handled = pcall(depositAtStorage, stationId)
+    State.depositing = false
+    if not ok then
+        Sky.Debug("debug", ("[sky_mechanicjob][parts_delivery] storage deposit failed: %s"):format(tostring(handled)))
+        return true
+    end
+    return handled
 end)
 
 -- ─── Net Event: Hold Carry Item ────────────────────

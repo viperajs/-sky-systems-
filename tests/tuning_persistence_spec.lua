@@ -1,5 +1,5 @@
 -- Run from the workspace root: lua tests/tuning_persistence_spec.lua
--- Tuning that did not stick: a xenon or tyre smoke colour bought without its switch, order
+-- Tuning that did not stick: a xenon or tyre smoke colour whose switch was never bought, order
 -- installs that were only saved by the installer's later full save, custom xenon colours lost by
 -- garages, a stale RGB controller colour repainting the neons on every driver entry, and the
 -- preview restore after a purchase that became an order.
@@ -51,7 +51,7 @@ local snapshot = {
     neonEnabled = { true, true, false, false }, neonColor = { 0, 255, 0 }
 }
 
--- 1. An instant purchase of a xenon colour also saves the xenon lights as on (and the tyre smoke).
+-- 1. An instant purchase saves the parts in the basket (the xenon switch is its own part) and only those.
 server.Functions = setmetatable({
     GetNearbyVehicleByPlate = function() return 5 end,
     NormalizePlate = function(plate) return (tostring(plate):gsub("^%s+", ""):gsub("%s+$", "")):upper() end,
@@ -70,15 +70,38 @@ server.Pricing = {
 server.Config.InstantTuning = { locations = { { coords = { x = 0, y = 0, z = 0 } } } }
 local res = callbacks["sky_mechanicjob:tuning:purchase"](1, {
     plate = "ABC123", instantTuning = true, method = "cash",
-    parts = { { id = "xenon_color", value = 255 }, { id = "tire_smoke_color", value = 1 } },
+    parts = { { id = "xenon_color", value = 255 }, { id = "toggle_22", value = 1 }, { id = "tire_smoke_color", value = 1 } },
     properties = snapshot
 })
 assert(res.success and res.appliedDirect, "instant purchase failed: " .. tostring(res.error))
 local props = saved[#saved].props
 assert(props.xenonColor == 255 and props.customXenonColor[2] == 200, "xenon colour not saved")
 assert(props.modXenon == true and props.toggleMods["22"] == true, "the xenon lights are saved off")
-assert(props.modSmokeEnabled == true and props.toggleMods["20"] == true, "the tyre smoke is saved off")
+assert(props.tyreSmokeColor[1] == 255 and props.modSmokeEnabled == nil, "a switch that was not bought was saved")
 assert(props.modTurbo == nil and props.toggleMods["18"] == nil, "a part that was not bought was saved")
+
+-- 1b. With publicUsersSeePrices off, public users see 0 prices: their order is not charged.
+local charged = 0
+server.Functions.RemoveMoney = function(_, _, amount) charged = charged + amount; return true end
+server.Functions.IsMechanic = function() return false end
+server.Functions.GetIdentifier = function() return "CID1" end
+server.Functions.GetName = function() return "Customer" end
+server.Functions.IsMechanicJobName = function() return false end
+server.Pricing.PriceEntry = function() return { price = 900 } end
+server.Pricing.GetSetting = function(key) if key == "publicUsersSeePrices" then return false end end
+local inserted
+server.MySQL = { insert = { await = function(_, params) inserted = params; return 77 end }, update = { await = function() return 1 end } }
+res = callbacks["sky_mechanicjob:tuning:purchase"](1, { plate = "ABC123", method = "cash", parts = { { id = "toggle_18", value = 1 } } })
+assert(res.success and res.order == 77, "the order was not created: " .. tostring(res.error))
+assert(charged == 0 and inserted[8] == 0 and inserted[9] == "free", "a public user was charged a price they never saw")
+-- Mechanics (and servers that show the prices) pay as before.
+server.Functions.IsMechanic = function() return true end
+res = callbacks["sky_mechanicjob:tuning:purchase"](1, { plate = "ABC123", method = "cash", parts = { { id = "toggle_18", value = 1 } } })
+assert(res.success and charged == 900, "a mechanic's order was not charged")
+server.Functions.IsMechanic = function() return false end
+server.Pricing.GetSetting = function() return nil end
+res = callbacks["sky_mechanicjob:tuning:purchase"](1, { plate = "ABC123", method = "cash", parts = { { id = "toggle_18", value = 1 } } })
+assert(res.success and charged == 1800, "visible prices were not charged")
 
 -- 2. An order install saves the installed part on the server (only that part).
 saved = {}
@@ -197,6 +220,34 @@ env, calls = clientEnv({ xenonCustom = { 10, 200, 255 } }, false, 255)
 env.VehiclePersistence.LoadForVehicle(9)
 assert(calls.customXenon == nil, "a custom xenon colour with the lights off")
 
+-- ── Client: a colour that turns its lights / smoke on puts the switch in the basket ──
+
+do
+    local sent = {}
+    local wc = newEnv()
+    wc.Sky = { Debug = function() end }
+    wc.DoesEntityExist = function() return true end
+    wc.IsToggleModOn = function() return false end
+    wc.GetGameTimer = function() return 0 end
+    wc.GetVehicleClass = function() return 0 end
+    wc.sendUi = function(action, payload) sent[#sent + 1] = { action = action, payload = payload } end
+    assert(loadfile("sky_mechanicjob/source/client/wheel_change.lua", "t", wc))()
+    local xenonSwitch = { id = "toggle_22", kind = "toggle", modType = 22, value = 0 }
+    local smokeSwitch = { id = "toggle_20", kind = "toggle", modType = 20, value = 0 }
+    wc.TuningState = { vehicle = 9, optionMap = { toggle_22 = xenonSwitch, toggle_20 = smokeSwitch }, suppressPreviews = false }
+    wc.XENON_COLOR_PRESETS = {}
+    wc.TIRE_SMOKE_PRESETS = {}
+    assert(wc.applyOption({ id = "xenon_color", kind = "color", value = 3 }, 3))
+    assert(xenonSwitch.value == 1, "the xenon switch did not follow its colour")
+    assert(sent[1] and sent[1].action == "tuning:update" and sent[1].payload.id == "toggle_22" and sent[1].payload.value == 1)
+    assert(wc.applyCustomColorOption({ id = "tire_smoke_color", kind = "color", value = 1, supportsCustom = true }, 0, { r = 255, g = 0, b = 0 }))
+    assert(smokeSwitch.value == 1, "the tyre smoke switch did not follow its colour")
+    -- Putting a car back (previews suppressed) changes the switch without telling the menu.
+    xenonSwitch.value, wc.TuningState.suppressPreviews, sent = 0, true, {}
+    wc.applyOption({ id = "xenon_color", kind = "color", value = 3 }, 3)
+    assert(xenonSwitch.value == 1 and #sent == 0)
+end
+
 -- ── Client: putting the car back after a purchase that became an order ──────
 
 local applied = {}
@@ -234,4 +285,4 @@ assert(order:find("xenon_color=255.*toggle_22=0"), "the xenon switch is not put 
 assert(not order:find("mod_1=", 1, true), "an unchanged option was re-applied: " .. order)
 assert(not order:find("stancer", 1, true), "the stance is re-applied here: " .. order)
 
-print("PASS: xenon / tyre smoke colours saved with their switch, order installs saved by the server (that part only), custom xenon colours kept and put back, no stale RGB neon colour on driver entry, the post-purchase restore puts back only what changed (wheel type before rims, switches after colours).")
+print("PASS: a xenon / tyre smoke colour puts its switch in the basket (charged and saved like any part), hidden public prices are not charged, order installs saved by the server (that part only), custom xenon colours kept and put back, no stale RGB neon colour on driver entry, the post-purchase restore puts back only what changed (wheel type before rims, switches after colours).")
