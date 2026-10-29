@@ -19,6 +19,10 @@ local MAX_TRACK_WIDTH = 3.0
 -- SetVehicleWheelXOffset is a wheel's distance from the car's centre line. Below this the wheels
 -- sit inside the body: the rims "vanished" while still fitted. No real track is that narrow.
 local MIN_TRACK_WIDTH = 0.2
+-- How much narrower than the car's own track a stance may set its wheels. A stored stance of
+-- 0.2-0.5 m (a Golf's wheels sit 0.65 m out) still hid the rims and tyres inside the body when
+-- someone got in, with only the brake discs left in the arches.
+local MAX_NARROWING = 0.15
 
 local UNSUPPORTED_CLASSES = {
     [8] = true,   -- Motorcycles
@@ -37,6 +41,7 @@ local autoCapturingPlates = {}
 local resetTokenByVehicle = {}
 local localResetUntilTimer = {}
 local pendingResetByVehicle = {}
+local ownWheelOffsets = {} -- vehicle -> { model, [0..3] = the wheels' own X offsets }
 
 local RESET_COOLDOWN_MS = 5000
 
@@ -302,14 +307,51 @@ local function applyHandlingCamber(vehicle, st)
     end
 end
 
-local function setWheelOffset(vehicle, wheel, offset)
-    offset = tonumber(offset)
-    if offset and math.abs(offset) >= MIN_TRACK_WIDTH then
-        SetVehicleWheelXOffset(vehicle, wheel, offset)
+-- The wheels' X offsets before this client first moved them (wheel offsets are local, so an
+-- untouched car has its own), or nil while they read as nothing a car has (left wheels sit
+-- left of the centre line, right wheels right).
+local function getOwnWheelOffsets(vehicle)
+    local model = GetEntityModel(vehicle)
+    local own = ownWheelOffsets[vehicle]
+    if own and own.model == model then return own end
+
+    own = { model = model }
+    for wheel = 0, 3 do
+        local offset = tonumber(GetVehicleWheelXOffset(vehicle, wheel))
+        local isLeft = wheel % 2 == 0
+        if not offset or math.abs(offset) < MIN_TRACK_WIDTH or (offset < 0) ~= isLeft then
+            return nil
+        end
+        own[wheel] = offset
     end
+    ownWheelOffsets[vehicle] = own
+    return own
 end
 
+-- A stance never moves a wheel to the other side or more than MAX_NARROWING inward; such a
+-- wheel stays where the car has it.
+local function setWheelOffset(vehicle, wheel, offset)
+    offset = tonumber(offset)
+    if not offset or math.abs(offset) < MIN_TRACK_WIDTH then return end
+
+    local own = getOwnWheelOffsets(vehicle)
+    local ownOffset = own and own[wheel]
+    if ownOffset and ((offset < 0) ~= (ownOffset < 0) or math.abs(offset) < math.abs(ownOffset) * (1.0 - MAX_NARROWING)) then
+        offset = ownOffset
+    end
+    SetVehicleWheelXOffset(vehicle, wheel, offset)
+end
+
+-- A reset: the wheels go back where the car has them, else to the saved default.
 local function applyWheelOffsets(vehicle, st)
+    local own = getOwnWheelOffsets(vehicle)
+    if own then
+        for wheel = 0, 3 do
+            SetVehicleWheelXOffset(vehicle, wheel, own[wheel])
+        end
+        return
+    end
+
     if st.trackFrontLeft ~= nil or st.trackFrontRight ~= nil then
         setWheelOffset(vehicle, 0, st.trackFrontLeft)
         setWheelOffset(vehicle, 1, st.trackFrontRight)
@@ -693,6 +735,12 @@ CreateThread(function()
         for veh in pairs(pendingResetByVehicle) do
             if veh == 0 or not DoesEntityExist(veh) then
                 pendingResetByVehicle[veh] = nil
+            end
+        end
+
+        for veh in pairs(ownWheelOffsets) do
+            if not DoesEntityExist(veh) then
+                ownWheelOffsets[veh] = nil
             end
         end
 
@@ -1162,6 +1210,12 @@ function StanceKit.AddOptions(arg1, arg2)
     -- Track width is the wheels' distance from the centre line. Without a stance of its own the
     -- slider started at 0, and the first step pulled the wheels into the middle of the car.
     local function addTrackWidthOption(optionId, labelText, stanceWidth, wheelIndex, boundsCfg, cameraPart)
+        -- Narrower than this the wheels would not move (setWheelOffset).
+        local own = getOwnWheelOffsets(vehicle)
+        if own then
+            local ownMin = math.ceil(math.abs(own[wheelIndex]) * (1.0 - MAX_NARROWING) * STANCER_SCALE - 1e-6)
+            boundsCfg = { min = math.max(boundsCfg.min, math.min(ownMin, boundsCfg.max)), max = boundsCfg.max }
+        end
         local width = tonumber(stanceWidth)
         if width and math.abs(width) > EPSILON then
             addStancerSubOption(optionId, labelText, width, boundsCfg, cameraPart, STANCER_SCALE)
@@ -1332,3 +1386,27 @@ RegisterNetEvent("sky_mechanicjob:debug:saveCurrentStanceAsDefault", function()
         Sky.Show.Notification(title, ("Failed to save stance default: %s"):format(tostring(res)), "error")
     end
 end)
+
+-- /debugwheels (debug mode): what the wheels of the car the player sits in are set to, for a
+-- report of rims that look wrong.
+RegisterCommand("debugwheels", function()
+    if not (Sky and Sky.IsDebugActive and Sky.IsDebugActive()) then return end
+
+    local vehicle = GetVehiclePedIsIn(PlayerPedId(), false)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then return end
+
+    local offsets, ownText = {}, {}
+    local own = getOwnWheelOffsets(vehicle)
+    for wheel = 0, 3 do
+        offsets[#offsets + 1] = ("%.3f"):format(tonumber(GetVehicleWheelXOffset(vehicle, wheel)) or 0.0)
+        ownText[#ownText + 1] = own and ("%.3f"):format(own[wheel]) or "?"
+    end
+
+    local state = Entity(vehicle).state
+    Sky.Debug("debug", ("[sky_mechanicjob][wheels] plate=%s offsets=%s own=%s wheelType=%s rim=%s size=%.3f width=%.3f stance=%s wheelDamage=%s"):format(
+        tostring(GetVehicleNumberPlateText(vehicle)), table.concat(offsets, "/"), table.concat(ownText, "/"),
+        tostring(GetVehicleWheelType(vehicle)), tostring(GetVehicleMod(vehicle, 23)),
+        tonumber(GetVehicleWheelSize(vehicle)) or 0.0, tonumber(GetVehicleWheelWidth(vehicle)) or 0.0,
+        json.encode(state[STANCE_STATE_BAG_KEY]), json.encode(state["sky_mechanic_wheel_damage"])
+    ))
+end, false)

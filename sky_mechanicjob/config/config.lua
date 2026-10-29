@@ -1447,17 +1447,13 @@ Config.OrderInstall = {
     nonMinigameDurationMs = 10000
 }
 
--- Tuning menu camera. Press the key (default H) to swing the camera around the vehicle by `step`
--- degrees; hold it to keep turning, hold Shift to turn the other way. In free camera mode (SPACE)
--- the mouse turns and tilts it and the mouse wheel zooms. Players can rebind the key in
--- Settings > Key Bindings > FiveM ("Tuning menu: rotate the camera around the vehicle").
+-- Tuning menu free camera. One press of the key (default H; Shift+H works too) frees the camera
+-- while the menu stays open: the mouse looks around and V changes the view, first person
+-- included. Press it again to go back to the menu (SPACE does the same). Players can rebind the
+-- key in Settings > Key Bindings > FiveM ("Tuning menu: free camera on/off").
 Config.TuningCamera = {
     enabled = true,
-    key = "H",
-    step = 45.0,      -- degrees per key press
-    holdSpeed = 90.0, -- degrees per second while the key is held
-    height = 1.0,     -- camera height above the vehicle's centre, in metres
-    distance = nil    -- metres from the vehicle; nil = from the vehicle's size
+    key = "H"
 }
 
 Config.TuningWorkshopRequirement = {

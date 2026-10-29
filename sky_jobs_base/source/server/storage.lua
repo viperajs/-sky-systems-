@@ -441,55 +441,6 @@ local function stationTransfer(source, slot, stationId, direction, name, amount,
     return fail("invalidTransfer")
 end
 
--- Puts items straight into the storage of `job` at station `stationId` (parts deliveries that
--- are unpacked there). items: { { name, count } }. All or nothing: false plus "storageFull",
--- "unknown_station" or "inventory_unavailable" when they do not all go in.
-function Sky_Jobs.DepositToStationStorage(job, stationId, items)
-    if not oxStarted() then return false, "inventory_unavailable" end
-    stationId = tostring(stationId or "")
-    if type(job) ~= "string" or job == "" or stationId == "" or #stationId > 64 or type(items) ~= "table" then
-        return false, "invalid"
-    end
-
-    local entry
-    for _, item in ipairs(loadStationEntries()) do
-        local itemJob = entryJob(item)
-        if tostring(item.entry.id) == stationId and (itemJob == nil or itemJob == job) then
-            entry = item.entry
-            break
-        end
-    end
-    if not entry then return false, "unknown_station" end
-
-    local capacity = capacityFor(job, entry, "storage")
-    local name = stashName("st", job, stationId)
-    if not ensureStash(name, "Storage", math.max(50, math.min(capacity > 0 and capacity or 500, 500)), 5000000) then
-        return false, "inventory_unavailable"
-    end
-
-    local total = 0
-    for _, it in ipairs(items) do
-        local count = math.tointeger(tonumber(it.count))
-        if type(it.name) ~= "string" or not count or count < 1 then return false, "invalid" end
-        total = total + count
-    end
-    if capacity > 0 and countItems(name) + total > capacity then return false, "storageFull" end
-
-    for index, it in ipairs(items) do
-        if not ox("AddItem", name, it.name, math.tointeger(tonumber(it.count))) then
-            for undo = 1, index - 1 do
-                ox("RemoveItem", name, items[undo].name, math.tointeger(tonumber(items[undo].count)))
-            end
-            return false, "storageFull"
-        end
-    end
-    return true
-end
-
-exports("DepositToJobStorage", function(job, stationId, items)
-    return Sky_Jobs.DepositToStationStorage(job, stationId, items)
-end)
-
 Sky.Cb.Register("sky_jobs_base:storageTransfer", function(source, stationId, direction, name, amount, category, metadata, metadataKey)
     return stationTransfer(source, "storage", stationId, direction, name, amount, metadataKey)
 end)

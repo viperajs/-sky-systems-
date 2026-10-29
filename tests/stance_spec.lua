@@ -103,20 +103,30 @@ local function assertWheelsAt(f, front, rear, label)
     assert(math.abs(f.offsets[2] + rear) < 1e-6 and math.abs(f.offsets[3] - rear) < 1e-6, label .. ": rear wheels at " .. tostring(f.offsets[3]))
 end
 
--- 3. A stance reset (another player's client raises it) puts the saved default back.
+-- 3. A stance reset (another player's client raises it) puts the car's own wheels back.
 do
     local f = newClient()
-    f.offsets = { [0] = -1.0, [1] = 1.0, [2] = -1.1, [3] = 1.1 }
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = 1.0, trackRear = 1.1 })
+    assertWheelsAt(f, 1.0, 1.1, "a wide stance")
     f.onBag("entity:9", "sky_mechanicjob:stance", { enabled = false })
-    assertWheelsAt(f, 0.8, 0.82, "reset to the saved default")
+    assertWheelsAt(f, 0.8, 0.82, "reset to the car's own track")
 end
 
--- 4. Without a saved default the reset leaves the wheels where they are.
+-- 4. Without a saved default the reset puts them back as well.
 do
     local f = newClient(false)
-    f.offsets = { [0] = -0.9, [1] = 0.9, [2] = -0.91, [3] = 0.91 }
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = 0.9, trackRear = 0.91 })
+    assertWheelsAt(f, 0.9, 0.91, "a wide stance")
     f.onBag("entity:9", "sky_mechanicjob:stance", { enabled = false })
-    assertWheelsAt(f, 0.9, 0.91, "reset without a default")
+    assertWheelsAt(f, 0.8, 0.82, "reset without a default")
+end
+
+-- 4b. A saved default that is wrong (a stock copy read too early) does not move the wheels in.
+do
+    local f = newClient({ trackFrontLeft = -0.3, trackFrontRight = 0.3, trackRearLeft = 0.82, trackRearRight = 0.82 })
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = 0.9 })
+    f.onBag("entity:9", "sky_mechanicjob:stance", { enabled = false })
+    assertWheelsAt(f, 0.8, 0.82, "reset with a wrong saved default")
 end
 
 -- 5. A stored stance whose track width is 0 (the old slider started at 0) does not pull the wheels in.
@@ -128,4 +138,34 @@ do
     assert(opts.stancer_track_width_front.min >= 20, "the track width slider still goes down to " .. tostring(opts.stancer_track_width_front.min))
 end
 
-print("PASS: stance sliders start at the vehicle's current track width, and a step moves the wheels by that step; a stance reset puts the saved default back (or leaves the wheels) and a zero track width never pulls the wheels into the body.")
+-- 6. The rims vanished when someone got in: the stored stance (0.35 / 0.4 m, over the old 0.2 m
+--    floor) put the wheels inside the body, leaving only the brake discs in the arches. The
+--    wheels stay at the car's own track; the camber still goes on.
+do
+    local f = newClient()
+    local camber
+    f.env.SetVehicleHandlingFloat = function(_, _, field, value) if field == "fCamberFront" then camber = value end end
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = 0.35, trackRear = 0.4, fCamberFront = 0.3 })
+    assertWheelsAt(f, 0.8, 0.82, "a stance narrower than the body")
+    assert(camber == 0.3, "the rest of the stance was dropped")
+    -- A little narrower than the car is still allowed (up to 15 %).
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = 0.7, trackRear = 0.72 })
+    assertWheelsAt(f, 0.7, 0.72, "a slightly narrower stance")
+end
+
+-- 7. A stance on the wrong side (a negative track width) does not swap the wheels across the car.
+do
+    local f = newClient()
+    f.env.StanceKit.ApplyPersistedState(VEHICLE, { enabled = true, trackFront = -0.9, trackRear = 0.9 })
+    assertWheelsAt(f, 0.8, 0.9, "a negative track width")
+end
+
+-- 8. The track width sliders stop where the wheels would go into the body (85 % of the car's own).
+do
+    local f = newClient()
+    local opts = f.options()
+    assert(opts.stancer_track_width_front.min == 68 and opts.stancer_track_width_rear.min == 70,
+        ("the sliders go down to %s / %s"):format(tostring(opts.stancer_track_width_front.min), tostring(opts.stancer_track_width_rear.min)))
+end
+
+print("PASS: stance sliders start at the vehicle's current track width (never below 85 % of it), and a step moves the wheels by that step; a stance reset puts the car's own track back; a stored stance never pulls the wheels into the body or across the car (the rims vanished on entry).")

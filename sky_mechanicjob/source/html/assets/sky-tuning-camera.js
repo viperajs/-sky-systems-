@@ -1,16 +1,16 @@
-// Tuning menu camera key (Config.TuningCamera, default H). While the tuning menu has the
-// keyboard the game cannot see the key, so the page reports presses to tuning_camera.lua.
+// Tuning menu free camera key (Config.TuningCamera, default H; Shift+H too). While the tuning
+// menu has the keyboard the game cannot see the key, so the page reports a press to
+// tuning_camera.lua, which hands the camera to the player until the key is pressed again.
 (() => {
   let enabled = true;
   let key = 'h';
-  let down = false;
 
   const resource = typeof GetParentResourceName === 'function' ? GetParentResourceName() : 'sky_mechanicjob';
-  const send = (body) => {
-    fetch(`https://${resource}/tuning:rotateCamera`, {
+  const send = () => {
+    fetch(`https://${resource}/tuning:toggleCamera`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({}),
     }).catch(() => {});
   };
 
@@ -26,19 +26,8 @@
   });
 
   window.addEventListener('keydown', (event) => {
-    if (!enabled || event.repeat || down || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!enabled || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
     if (String(event.key || '').toLowerCase() !== key || isTyping(event.target)) return;
-    down = true;
-    send({ pressed: true, direction: event.shiftKey ? -1 : 1 });
+    send();
   });
-
-  const release = () => {
-    if (!down) return;
-    down = false;
-    send({ pressed: false });
-  };
-  window.addEventListener('keyup', (event) => {
-    if (String(event.key || '').toLowerCase() === key) release();
-  });
-  window.addEventListener('blur', release);
 })();
