@@ -292,7 +292,7 @@ Locales["hu"] = {
         app = {
             title = "Önkiszolgáló hangolás",
             admin_title = "Admin Tuning",
-            subtitle = "Nyomja meg a SPACE gombot a kamera szabad mozgásának váltásához hangolás közben, a H gombot a kamera jármű körüli forgatásához (Shift+H az ellenkező irányba)."
+            subtitle = "Nyomja meg a H-t (vagy a SPACE-t) a kamera felszabadításához hangolás közben: körbenézhet, a V nézetet vált (belső nézet is). Nyomja meg újra a H-t a menübe való visszatéréshez."
         },
         currency = {
             symbol = "$"

@@ -1,129 +1,151 @@
 -- Run from the workspace root: lua tests/tuning_camera_spec.lua
--- The tuning menu's orbit camera: the key (Config.TuningCamera, default H) swings a camera
--- around the tuned vehicle by `step` degrees per press (Shift the other way), keeps turning
--- while held, and the camera goes away with the menu.
+-- The tuning menu's free camera: one press of the key (Config.TuningCamera, default H; Shift+H
+-- too) frees the game camera while the menu stays open, so the player can look around and
+-- change the view (V, first person included); the next press gives the mouse back to the menu.
+-- Plays it through the real tuning_camera.lua, orders.lua (focus) and wheel_change.lua (the
+-- free camera's controls) with mocked natives.
 
-local function vector3(x, y, z)
-    return setmetatable({ x = x, y = y, z = z }, {
-        __sub = function(a, b) return vector3(a.x - b.x, a.y - b.y, a.z - b.z) end,
-        __len = function(v) return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) end,
-    })
-end
+local stub
+stub = setmetatable({}, {
+    __index = function() return stub end,
+    __call = function() return stub end,
+})
+
+local MODULE_GLOBALS = {
+    Config = true, Locales = true, Functions = true, Sky_Jobs = true, CustomTuning = true,
+    OrderInstallState = true, WheelOrderInstallState = true, OrderTabletState = true,
+    TuningCamera = true,
+}
 
 local now = 1000
 local threads, commands, keyMappings, nuiCallbacks, sent = {}, {}, {}, {}, {}
-local camCoord, camTarget, camsCreated, camsRemoved = nil, nil, 0, 0
-local nuiFocused, mouse, justPressed = true, { [1] = 0.0, [2] = 0.0 }, {}
+local nuiFocus = { focus = false, cursor = false }
+local enabledControls, disabledGroups = {}, {}
 
--- The tuned car sits at the origin facing north (+Y); entity offsets are world offsets.
-local VEHICLE = 77
-
-local env = setmetatable({}, { __index = _G })
+local env = setmetatable({}, { __index = function(_, key)
+    local value = _G[key]
+    if value ~= nil or MODULE_GLOBALS[key] then return value end
+    return stub
+end })
 env._G = env
-env.Config = { TuningCamera = { enabled = true, key = "H", step = 45.0, holdSpeed = 90.0, height = 1.0 } }
-env.TuningState = { active = false, vehicle = 0, camera = nil, nuiFocused = true }
+env.print = function() end
 env.CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end
-env.Wait = function() coroutine.yield() end
+env.Wait = function(ms) if coroutine.isyieldable() then coroutine.yield(ms) end end
+env.Citizen = { CreateThread = env.CreateThread, Wait = env.Wait }
 env.GetGameTimer = function() return now end
-env.DoesEntityExist = function(entity) return entity == VEHICLE end
-env.GetEntityModel = function() return 1 end
-env.GetModelDimensions = function() return vector3(-1.0, -2.5, -0.6), vector3(1.0, 2.5, 0.8) end
-env.GetFinalRenderedCamCoord = function() return vector3(0.0, -6.0, 1.5) end -- behind the car
-env.GetOffsetFromEntityGivenWorldCoords = function(_, x, y, z) return vector3(x, y, z) end
-env.GetOffsetFromEntityInWorldCoords = function(_, x, y, z) return vector3(x, y, z) end
-env.SetCamCoord = function(_, x, y, z) camCoord = vector3(x, y, z) end
-env.PointCamAtCoord = function(_, x, y, z) camTarget = vector3(x, y, z) end
-env.GetControlNormal = function(_, control) return nuiFocused and 0.0 or mouse[control] or 0.0 end
-env.IsDisabledControlJustPressed = function(_, control) return justPressed[control] == true end
-env.IsDisabledControlPressed = function(_, control) return control == 21 and env.shiftHeld == true end
+env.GetGameBuildNumber = function() return 3258 end
+env.json = { encode = function() return "[]" end, decode = function() return {} end }
+env.Sky = setmetatable({ Config = { locale = "en" }, Debug = function() end }, { __index = function() return stub end })
+env.exports = setmetatable({}, { __call = function() end, __index = function() return stub end })
 env.RegisterCommand = function(name, fn) commands[name] = fn end
-env.RegisterKeyMapping = function(command, description, mapper, key) keyMappings[#keyMappings + 1] = { command = command, mapper = mapper, key = key } end
-env.RegisterNUICallback = function(name, fn) nuiCallbacks[name] = fn end
-env.AddEventHandler = function() end
-env.GetCurrentResourceName = function() return "sky_mechanicjob" end
-env.sendUi = function(action, payload) sent[#sent + 1] = { action = action, payload = payload } end
-env.Sky = { Cam = {} }
-env.Sky.Cam.new = function()
-    camsCreated = camsCreated + 1
-    return { cam = 900 + camsCreated, Remove = function() camsRemoved = camsRemoved + 1 end }
+env.RegisterKeyMapping = function(command, description, mapper, key)
+    keyMappings[#keyMappings + 1] = { command = command, description = description, mapper = mapper, key = key }
 end
+env.RegisterNUICallback = function(name, fn) nuiCallbacks[name] = fn end
+env.SendNUIMessage = function(message) sent[#sent + 1] = message end
+env.SetNuiFocus = function(focus, cursor) nuiFocus.focus, nuiFocus.cursor = focus, cursor end
+env.SetNuiFocusKeepInput = function() end
+env.DisableAllControlActions = function(group) disabledGroups[group] = true end
+env.EnableControlAction = function(group, control) enabledControls[group .. ":" .. control] = true end
+env.IsDisabledControlJustPressed = function() return false end
 
-assert(loadfile("sky_mechanicjob/source/client/tuning_camera.lua", "t", env))()
-local TuningCamera = env.TuningCamera
+local function load(path) assert(loadfile(path, "t", env))() end
+load("sky_mechanicjob/config/init.lua")
+load("sky_mechanicjob/config/config.lua")
+load("sky_mechanicjob/config/adv_config.lua")
+load("sky_mechanicjob/config/locales/en.lua")
+load("sky_mechanicjob/source/client/state.lua")
+load("sky_mechanicjob/source/client/main.lua")
+load("sky_mechanicjob/source/client/tuning_camera.lua")
+load("sky_mechanicjob/source/client/orders.lua")
+load("sky_mechanicjob/source/client/wheel_change.lua")
 
+local TuningCamera, TuningState = env.TuningCamera, env.TuningState
+
+-- Runs every thread for a frame (ms of game time each).
 local function step(frames, ms)
     for _ = 1, frames do
         now = now + (ms or 16)
+        enabledControls, disabledGroups = {}, {}
         for i = #threads, 1, -1 do
-            if coroutine.status(threads[i]) == "dead" then
+            local co = threads[i]
+            if coroutine.status(co) == "dead" then
                 table.remove(threads, i)
             else
-                assert(coroutine.resume(threads[i]))
+                local ok, err = coroutine.resume(co)
+                if not ok then table.remove(threads, i) end
             end
         end
     end
 end
 
--- Angle of the camera around the car: 0 in front, 90 on its right, +-180 behind.
-local function camAngle() return math.deg(math.atan(camCoord.x, camCoord.y)) end
--- Turn from one angle to another, in -180..180.
-local function turn(from, to) return (to - from + 540.0) % 360.0 - 180.0 end
+local function pressInMenu()
+    local answer
+    nuiCallbacks["tuning:toggleCamera"]({}, function(res) answer = res end)
+    return answer
+end
 
--- 1. The key is mapped (rebindable in FiveM's key bindings) and nothing happens outside the menu.
-assert(#keyMappings == 1 and keyMappings[1].command == "+sky_tuning_camera" and keyMappings[1].key == "H" and keyMappings[1].mapper == "keyboard")
-assert(TuningCamera.Press(1, true) == false and camsCreated == 0, "a camera outside the tuning menu")
+-- 1. The key is mapped (rebindable in FiveM's key bindings) and does nothing outside the menu.
+assert(#keyMappings == 1 and keyMappings[1].command == "+sky_tuning_camera" and keyMappings[1].key == "H" and keyMappings[1].mapper == "keyboard",
+    "the free camera key is not mapped to H")
+assert(commands["-sky_tuning_camera"], "the key's release command is missing")
+assert(TuningCamera.Toggle() == false, "the free camera toggled outside the tuning menu")
+assert(pressInMenu().success == false, "the NUI key did something outside the tuning menu")
 
--- 2. In the menu, the NUI page reports H: the camera starts at the current view (behind the
---    car) and swings 45 degrees.
-env.TuningState.active, env.TuningState.vehicle = true, VEHICLE
+-- 2. The menu opens with the mouse; the NUI page learns the key.
+TuningState.active, TuningState.vehicle = true, 77
+env.setNuiFocusState(true)
 TuningCamera.SendConfig()
-assert(sent[1].action == "tuningCamera:config" and sent[1].payload.key == "H" and sent[1].payload.enabled == true)
-local answer
-nuiCallbacks["tuning:rotateCamera"]({ pressed = true, direction = 1 }, function(res) answer = res end)
-assert(answer.success == true and camsCreated == 1 and env.TuningState.camera ~= nil)
-nuiCallbacks["tuning:rotateCamera"]({ pressed = false }, function() end)
-step(60)
-assert(math.abs(math.abs(camAngle()) - 135.0) < 1.0, "first press did not turn 45 degrees from behind: " .. camAngle())
-assert(math.abs(#camCoord - math.sqrt(36.0 + 1.0)) > 0, "camera not placed")
-assert(camTarget.x == 0.0 and camTarget.y == 0.0, "camera does not look at the car")
-local distance = math.sqrt(camCoord.x ^ 2 + camCoord.y ^ 2)
+local config = sent[#sent]
+assert(config.action == "tuningCamera:config" and config.payload.key == "H" and config.payload.enabled == true)
+now = now + 1000
 
--- 3. Shift+H turns back the other way; the same camera is reused.
-nuiCallbacks["tuning:rotateCamera"]({ pressed = true, direction = -1 }, function() end)
-nuiCallbacks["tuning:rotateCamera"]({ pressed = false }, function() end)
-step(60)
-assert(math.abs(math.abs(camAngle()) - 180.0) < 1.0 and camsCreated == 1, "Shift+H did not turn back")
+-- 3. One press of H in the menu (the page has the keyboard) frees the camera; nothing has to be held.
+assert(pressInMenu().success == true, "H in the menu did not free the camera")
+assert(TuningState.nuiFocused == false and nuiFocus.focus == false, "the menu kept the mouse")
+assert(TuningState.active == true, "freeing the camera closed the menu")
+step(1)
+assert(enabledControls["0:1"] and enabledControls["0:2"], "the mouse cannot look around in free camera")
+assert(enabledControls["0:0"], "V (next view / first person) is off in free camera")
+assert(enabledControls["0:26"] and enabledControls["0:79"], "looking behind is off in free camera")
+assert(disabledGroups[0] and not enabledControls["0:71"] and not enabledControls["0:24"], "driving or shooting allowed in free camera")
 
--- 4. Holding the key keeps turning (90 degrees a second after a short delay).
-nuiCallbacks["tuning:rotateCamera"]({ pressed = true, direction = 1 }, function() end)
-step(100, 10) -- one second held
-nuiCallbacks["tuning:rotateCamera"]({ pressed = false }, function() end)
-step(80)
-local turned = (camAngle() + 180.0) % 360.0
-assert(turned > 45.0 + 50.0 and turned < 45.0 + 80.0, "holding did not keep turning: " .. turned)
-
--- 5. Free camera mode (SPACE): the key mapping turns it, the mouse orbits, the wheel zooms.
-nuiFocused, env.TuningState.nuiFocused = false, false
-local before = camAngle()
+-- 4. The same press reaching the game right after (the page let go of the keyboard) is ignored.
 commands["+sky_tuning_camera"]()
 commands["-sky_tuning_camera"]()
-step(60)
-assert(math.abs(turn(before, camAngle()) - 45.0) < 1.5, "the key mapping did not turn the camera")
-before = camAngle()
-mouse[1] = 1.0
-step(10)
-mouse[1] = 0.0
-step(60)
-assert(turn(before, camAngle()) > 30.0, "the mouse does not orbit in free camera mode")
-justPressed[241] = true
+assert(TuningState.nuiFocused == false, "one press toggled twice")
+
+-- 5. Later, H in free camera (the key mapping) gives the mouse back to the menu.
+step(30)
+commands["+sky_tuning_camera"]()
+commands["-sky_tuning_camera"]()
+assert(TuningState.nuiFocused == true and nuiFocus.focus == true and nuiFocus.cursor == true, "H in free camera did not go back to the menu")
 step(1)
-justPressed[241] = nil
-step(5)
-assert(math.sqrt(camCoord.x ^ 2 + camCoord.y ^ 2) < distance - 0.4, "the mouse wheel does not zoom")
+assert(not enabledControls["0:0"], "free camera controls stayed on in the menu")
 
--- 6. Closing the menu removes the camera.
-env.TuningState.active = false
-step(2)
-assert(camsRemoved == 1 and env.TuningState.camera == nil and #threads == 0, "camera left after the menu closed")
+-- 6. Shift+H does the same (the page reports the key with or without Shift).
+now = now + 1000
+assert(pressInMenu().success == true and TuningState.nuiFocused == false, "Shift+H did not free the camera")
+now = now + 1000
+commands["+sky_tuning_camera"]()
+assert(TuningState.nuiFocused == true, "Shift+H did not go back to the menu")
 
-print("PASS: tuning camera key mapped to H, turns 45 degrees per press from the current view, Shift turns back, holding keeps turning, free camera mouse orbit and wheel zoom, removed with the menu.")
+-- 7. Turned off in the config: no key mapping, the page is told, presses do nothing.
+env.Config.TuningCamera.enabled = false
+TuningCamera.SendConfig()
+assert(sent[#sent].payload.enabled == false)
+now = now + 1000
+assert(pressInMenu().success == false and TuningState.nuiFocused == true, "a turned-off free camera still toggled")
+env.Config.TuningCamera.enabled = true
+
+-- 8. Closing the menu in free camera leaves no free camera behind.
+now = now + 1000
+assert(pressInMenu().success == true and TuningState.nuiFocused == false)
+TuningState.active = false
+step(1)
+assert(not enabledControls["0:0"] and not disabledGroups[0], "free camera controls after the menu closed")
+now = now + 1000
+commands["+sky_tuning_camera"]()
+assert(nuiFocus.focus == false, "the key took the mouse after the menu closed")
+
+print("PASS: tuning free camera on one press of H (Shift+H too) with the menu open, look around and V / first person, no driving or shooting, the same press never toggles twice, H again goes back to the menu, off in the config, nothing after the menu closed.")

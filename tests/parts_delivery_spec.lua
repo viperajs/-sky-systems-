@@ -320,20 +320,9 @@ local function newWorld(opts)
                 RemoveSocietyMoney = function() return true end,
                 AddSocietyMoney = function() return true end,
                 GetJobConfiguratorJobNames = function() return { "mechanic" } end,
-                -- A workshop storage (ox_inventory stash of the station) with room for storageRoom items.
-                DepositToJobStorage = function(_, job, stationId, items)
-                    local total = 0
-                    for _, it in ipairs(items) do total = total + it.count end
-                    if W.storageRoom and total > W.storageRoom then return false, "storageFull" end
-                    for _, it in ipairs(items) do
-                        local key = job .. "/" .. stationId .. "/" .. it.name
-                        W.storage[key] = (W.storage[key] or 0) + it.count
-                    end
-                    return true
-                end,
             },
             ox_inventory = {
-                CanCarryItem = function() return not W.inventoryFull end,
+                CanCarryItem = function() return true end,
                 AddItem = function(_, _, item, count) W.player.items[item] = (W.player.items[item] or 0) + count return true end,
                 RemoveItem = function(_, _, item, count) W.player.items[item] = (W.player.items[item] or 0) - count return true end,
             },
@@ -394,8 +383,7 @@ local function newWorld(opts)
     cenv.FreezeEntityPosition = function(entity, frozen) if W.objects[entity] then W.objects[entity].frozen = frozen end end
     cenv.RequestCollisionAtCoord = function() end
     cenv.GetInteriorAtCoords = function() return 0 end
-    -- W.choice: the key pressed at an unpack prompt (38 E, 47 G, 194 Backspace).
-    cenv.IsControlJustPressed = function(_, key) return (key == 38 and W.pressingE == true) or (W.choice ~= nil and key == W.choice) end
+    cenv.IsControlJustPressed = function(_, key) return key == 38 and W.pressingE == true end
     cenv.SendNUIMessage = function() end
     cenv.RegisterNUICallback = function(name, fn) C.nui[name] = fn end
     -- Net events reach the server's handlers with the player as source.
@@ -678,69 +666,9 @@ do
 
     W.player.pos = LSC_STORAGE
     local handled
-    -- At the storage the player chooses: Backspace keeps carrying it, G takes the parts along.
-    W.choice = 194
     W.run(function() handled = W.client.exports.TryDepositCarryItemToStorage("mechanic_lscustoms") end)
-    assert(handled == true and W.player.items.brakes == nil and W.db.rows[1].status == "claiming", "cancelled, still carried")
-    assert(W.client.env.OrderInstallState.heldCarryItem ~= nil)
-    W.choice = 47
-    W.run(function() handled = W.client.exports.TryDepositCarryItemToStorage("mechanic_lscustoms") end)
-    W.choice = nil
-    assert(handled == true and W.player.items.brakes == 1 and W.db.rows[1].status == "claimed", "taken along")
+    assert(handled == true and W.player.items.brakes == 1 and W.db.rows[1].status == "claimed", "stored")
     assert(W.client.env.OrderInstallState.heldCarryItem == nil)
-    assert(W.lastNotification() == "Parts taken into your inventory.", tostring(W.lastNotification()))
-end
-
--- 8b. Carried to the storage, E puts the parts into that workshop storage (not the inventory),
--- also with a full inventory; a full storage keeps the delivery carried.
-do
-    local W = newWorld({
-        clientConfig = function(Config) Config.ToggleFeatures.carryItems = true end,
-        workshops = (function() local d = defaultWorkshops(); d.features = { partsDelivery = true, carryItems = true }; return d end)(),
-    })
-    W.storage = {}
-    W.order({ { name = "brakes", quantity = 2 } })
-    W.advance(65000)
-    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
-    W.pressE()
-    assert(W.client.env.OrderInstallState.heldCarryItem ~= nil, "carrying the delivery")
-
-    W.player.pos = LSC_STORAGE
-    W.inventoryFull = true
-    W.storageRoom = 1
-    W.choice = 38
-    W.run(function() W.client.exports.TryDepositCarryItemToStorage("mechanic_lscustoms") end)
-    assert(W.lastNotification() == "The workshop storage is full.", tostring(W.lastNotification()))
-    assert(W.db.rows[1].status == "claiming" and W.client.env.OrderInstallState.heldCarryItem ~= nil, "still carried")
-
-    W.storageRoom = nil
-    W.run(function() W.client.exports.TryDepositCarryItemToStorage("mechanic_lscustoms") end)
-    W.choice = nil
-    assert(W.storage["mechanic/mechanic_lscustoms/brakes"] == 2 and W.player.items.brakes == nil, "parts not in the workshop storage")
-    assert(W.db.rows[1].status == "claimed" and W.client.env.OrderInstallState.heldCarryItem == nil)
-    assert(W.lastNotification() == "Part placed in workshop storage.", tostring(W.lastNotification()))
-end
-
--- 8c. Unpacked at the bay with a full inventory, the parts can go to the workshop storage.
-do
-    local W = newWorld()
-    W.storage = {}
-    W.order({ { name = "brakes", quantity = 1 } })
-    W.advance(65000)
-    W.player.pos = W.boxes()[1].pos + vec(1.0, 0.0, 0.0)
-    W.inventoryFull = true
-    -- Left in the box: nothing changes.
-    W.choice = 194
-    W.pressE()
-    assert(W.db.rows[1].status == "ready" and W.player.items.brakes == nil and #W.boxes() == 1, "the box was emptied")
-    assert(W.lastNotification() == "You cannot carry all items from this delivery.", tostring(W.lastNotification()))
-    -- Sent to the storage.
-    W.choice = 38
-    W.pressE()
-    W.choice = nil
-    assert(W.storage["mechanic/mechanic_lscustoms/brakes"] == 1 and W.player.items.brakes == nil, "parts not sent to the storage")
-    assert(W.db.rows[1].status == "claimed" and #W.boxes() == 0)
-    assert(W.lastNotification() == "Delivery placed in workshop storage.", tostring(W.lastNotification()))
 end
 
 -- 9. sky_jobs_base access: without the duty system every member is on duty (as on the
@@ -799,14 +727,10 @@ local function heldCount(W)
     return n
 end
 
--- E at the storage, then E again on its prompt: into the workshop storage.
 local function depositAt(W, x)
     W.player.pos = vec(x, -140.0, 39.0)
-    W.storage = W.storage or {}
     local handled
-    W.choice = 38
     W.run(function() handled = W.client.exports.TryDepositCarryItemToStorage("custom_1") end)
-    W.choice = nil
     return handled
 end
 
@@ -860,7 +784,7 @@ do
     assert(W.db.rows[1].status == "claiming" and W.client.env.OrderInstallState.heldCarryItem ~= nil, "still carried")
 
     assert(depositAt(W, -315.5) == true, "the workshop storage takes it")
-    assert(W.storage["mechanic/custom_1/brakes"] == 1 and W.db.rows[1].status == "claimed", "unpacked into the storage")
+    assert(W.player.items.brakes == 1 and W.db.rows[1].status == "claimed", "unpacked at the storage")
     assert(W.client.env.OrderInstallState.heldCarryItem == nil and heldCount(W) == 0, "hands empty")
     assert(W.lastNotification() == "Part placed in workshop storage.")
 end
@@ -878,7 +802,7 @@ do
     assert(W.waypoint == nil, "no waypoint for a storage in sight")
 
     for id, object in pairs(W.objects) do if object.carried then W.objects[id] = nil end end -- /mechanicprop
-    assert(depositAt(W, -347.5) == true and W.storage["mechanic/custom_1/engine"] == 1, "stored without the prop: " .. tostring(W.lastNotification()))
+    assert(depositAt(W, -347.5) == true and W.player.items.engine == 1, "stored without the prop: " .. tostring(W.lastNotification()))
 end
 
 -- 13. Starting other work (an order install, a repair) cleared the carried part while the
@@ -904,4 +828,4 @@ do
     assert(W.db.rows[1].status == "claiming", "picked up again")
 end
 
-print("PASS: unpacking at the storage asks storage or inventory, a full inventory can send a delivery to the workshop storage; parts orders from the tablet, delivery timer, box placement near the player, unpacking, moved bays, catalogue changes, carry items (unpacked at the bay without a storage, directions and waypoint to the storage, the bay prompt while carrying, a visible engine, a cleaned-away prop, a delivery put back when other work starts, ending the carry pose), no-bay/order error messages, client duty without the duty system.")
+print("PASS: parts orders from the tablet, delivery timer, box placement near the player, unpacking, moved bays, catalogue changes, carry items (unpacked at the bay without a storage, directions and waypoint to the storage, the bay prompt while carrying, a visible engine, a cleaned-away prop, a delivery put back when other work starts, ending the carry pose), no-bay/order error messages, client duty without the duty system.")

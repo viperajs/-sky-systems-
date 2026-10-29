@@ -292,7 +292,7 @@ Locales["de"] = {
         app = {
             title = "Self Service Tuning",
             admin_title = "Admin Tuning",
-            subtitle = "Drücken Sie die LEERTASTE, um die freie Kamerabewegung während des Einstellens zu aktivieren/deaktivieren, und H, um die Kamera um das Fahrzeug zu drehen (Umschalt+H in die andere Richtung)."
+            subtitle = "Drücken Sie H (oder die LEERTASTE), um die Kamera beim Tuning freizugeben: umsehen, V wechselt die Ansicht (auch Ego-Perspektive). Erneut H drücken, um zum Menü zurückzukehren."
         },
         currency = {
             symbol = "$"

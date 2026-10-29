@@ -2343,6 +2343,10 @@ RegisterNUICallback("tuning:toggleFocus", function(data, cb)
     cb({ success = true, enabled = false })
 end)
 
+-- Free camera (H or SPACE): looking around, V (the next view, first person included) and
+-- looking behind. Driving, shooting and the rest stay off.
+local FREE_CAMERA_CONTROLS = { 0, 1, 2, 3, 4, 5, 6, 26, 79 }
+
 -- Thread: Camera & Control restriction when Tuning UI active (unfocused mode)
 CreateThread(function()
     while true do
@@ -2353,8 +2357,9 @@ CreateThread(function()
                 DisableAllControlActions(1)
                 DisableAllControlActions(2)
 
-                EnableControlAction(0, 1, true)
-                EnableControlAction(0, 2, true)
+                for _, control in ipairs(FREE_CAMERA_CONTROLS) do
+                    EnableControlAction(0, control, true)
+                end
                 EnableControlAction(1, 1, true)
                 EnableControlAction(1, 2, true)
                 EnableControlAction(2, 1, true)
